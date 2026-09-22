@@ -110,6 +110,8 @@ class Builder {
       bevelEnabled: bevel > 0,
       bevelThickness: bevel,
       bevelSize: bevel,
+      // 모서리를 깎아도 옆면이 주어진 윤곽에 그대로 오게 (안 그러면 전조등·그릴·유리가 차체 속에 묻힌다)
+      bevelOffset: -bevel,
       bevelSegments: 1,
       curveSegments: 4,
     });
@@ -429,7 +431,12 @@ function cab(b: Builder, t: VehicleType, x0: number, len: number, W: number, H: 
     [front - len, y0],
   ];
   b.profile(pts, W, "paint", 0, 0.05);
-  b.box(0.05, H * 0.42, W - 0.2, front - 0.06, y0 + H * 0.7, 0, C.glass);
+  // 앞유리: 앞면 기울기에 맞춰 살짝 눕힌 판
+  const lean = Math.atan2(0.1, H * 0.52);
+  const glass = new THREE.BoxGeometry(0.05, H * 0.42, W - 0.24);
+  glass.rotateZ(lean);
+  glass.translate(front - 0.048 + 0.02, y0 + H * 0.7, 0);
+  b.add(glass, C.glass, "fixed");
   for (const side of [-1, 1]) {
     b.box(len * 0.55, H * 0.38, 0.02, front - len * 0.4, y0 + H * 0.72, side * (W / 2 + 0.005), C.glass);
     b.box(0.05, 0.14, 0.3, front + 0.01, y0 + 0.28, side * (W / 2 - 0.3), C.headlight);
@@ -518,33 +525,29 @@ function buildTruck(t: VehicleType, b: Builder, rand: () => number) {
       break;
     }
     case "dump": {
-      const dh = 1.3;
-      b.profile(
-        [
-          [bodyX0, deckY],
-          [bodyX0, deckY + dh + 0.2],
-          [bodyX1, deckY + dh],
-          [bodyX1, deckY + 0.3],
-        ],
-        W,
-        "paint",
-        0,
-        0.03,
-        0.85,
-      );
-      b.box(bodyLen * 0.9, 0.05, W - 0.2, bodyMid, deckY + dh - 0.1, 0, 0x6e5a42); // 흙
+      // 위가 열린 적재함 + 흙
+      const dh = 1.25;
+      const shade = 0.85;
+      b.box(bodyLen, 0.1, W, bodyMid, deckY + 0.05, 0, "paint", shade);
+      for (const side of [-1, 1]) b.box(bodyLen, dh, 0.08, bodyMid, deckY + dh / 2, side * (W / 2 - 0.04), "paint", shade);
+      b.box(0.1, dh + 0.35, W, bodyX0 - 0.05, deckY + (dh + 0.35) / 2, 0, "paint", shade);
+      b.box(0.08, dh, W, bodyX1 + 0.04, deckY + dh / 2, 0, "paint", shade);
+      // 옆면 보강대
+      for (const side of [-1, 1]) for (let k = 1; k < 4; k++) b.box(0.08, dh, 0.03, bodyX1 + (bodyLen * k) / 4, deckY + dh / 2, side * (W / 2 + 0.01), "paint", 0.7);
+      b.box(bodyLen - 0.2, 0.05, W - 0.18, bodyMid, deckY + dh * 0.75, 0, 0x6e5a42); // 흙
+      b.box(bodyLen * 0.5, 0.25, W * 0.6, bodyMid, deckY + dh * 0.75 + 0.12, 0, 0x7a6448);
       break;
     }
     case "mixer": {
       const r = 1.05;
       const g = new THREE.CylinderGeometry(r * 0.55, r, bodyLen * 0.95, 14);
-      g.rotateZ(Math.PI / 2 + 0.12);
+      g.rotateZ(Math.PI / 2 - 0.12); // 좁은 투입구가 뒤쪽 위로
       g.translate(bodyMid, deckY + r + 0.25, 0);
       pushGeo(b, g, 0xf0f0ee);
       for (let k = 0; k < 3; k++) {
         const s = new THREE.TorusGeometry(r * (0.7 + k * 0.1), 0.04, 4, 16);
         s.rotateY(Math.PI / 2);
-        s.translate(bodyMid + bodyLen * (0.25 - k * 0.25), deckY + r + 0.25 - (k - 1) * 0.1, 0);
+        s.translate(bodyMid + bodyLen * (0.25 - k * 0.25), deckY + r + 0.25 + (k - 1) * 0.1, 0);
         pushGeo(b, s, rand() < 0.5 ? 0x2d5e9e : 0xd1352a);
       }
       break;
@@ -632,8 +635,8 @@ function buildTractor(t: VehicleType, b: Builder, rand: () => number) {
     b.box(tLen, 0.12, W, tMid, deckY + 0.06, 0, C.steel);
     const coils = 2 + Math.floor(rand() * 3);
     for (let i = 0; i < coils; i++) {
-      const g = new THREE.CylinderGeometry(0.75, 0.75, 1.3, 16, 1, false);
-      g.translate(tx1 + 1.4 + i * (tLen - 2.6) / Math.max(1, coils - 1), deckY + 0.85, 0);
+      const g = new THREE.CylinderGeometry(0.9, 0.9, 1.5, 18, 1, false);
+      g.translate(tx1 + 1.4 + i * (tLen - 2.6) / Math.max(1, coils - 1), deckY + 0.9, 0);
       pushGeo(b, g, 0x8e959c);
     }
   } else if (cargo === "tanktrailer") {

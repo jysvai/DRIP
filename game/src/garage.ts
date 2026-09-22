@@ -173,12 +173,61 @@ async function main() {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
   });
-  renderer.setAnimationLoop(() => {
+  const loop = () => {
     if (spinning) selected.group.rotation.y += 0.01;
     controls.update();
     renderer.render(scene, camera);
-  });
-  (window as unknown as { __garage: unknown }).__garage = { entries, select };
+  };
+  renderer.setAnimationLoop(loop);
+
+  /** 모아보기: 모든 차를 같은 각도로 한 화면에 격자로 그린다 (검수용). view = front(앞 3/4) | rear(뒤 3/4) | side */
+  function sheet(view: "front" | "rear" | "side" = "front", cols = 10, category = "") {
+    const list = category ? entries.filter((e) => e.type.category === category) : entries;
+    renderer.setAnimationLoop(null);
+    panel.style.display = "none";
+    info.style.display = "none";
+    document.querySelector(".sheet")?.remove();
+    const W = innerWidth;
+    const H = innerHeight;
+    const rows = Math.ceil(list.length / cols);
+    const cw = W / cols;
+    const ch = H / rows;
+    const cam = new THREE.PerspectiveCamera(28, cw / ch, 0.1, 500);
+    const labels = document.createElement("div");
+    labels.className = "sheet";
+    labels.style.cssText = `position:fixed;inset:0;display:grid;grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);pointer-events:none;font-size:11px;color:#fff`;
+    renderer.autoClear = false;
+    renderer.setScissorTest(true);
+    renderer.setViewport(0, 0, W, H);
+    renderer.setScissor(0, 0, W, H);
+    renderer.clear();
+    list.forEach((e, i) => {
+      for (const o of entries) o.group.visible = o === e;
+      const t = e.type;
+      const target = e.group.position.clone().add(new THREE.Vector3(0, t.height * 0.45, 0));
+      const dist = Math.max(t.length, t.height * 1.6) * 2.1;
+      const dir = view === "front" ? new THREE.Vector3(0.75, 0.42, 1) : view === "rear" ? new THREE.Vector3(-0.75, 0.42, -1) : new THREE.Vector3(1, 0.15, 0);
+      cam.position.copy(target).addScaledVector(dir.normalize(), dist);
+      cam.lookAt(target);
+      const x = (i % cols) * cw;
+      const y = H - (Math.floor(i / cols) + 1) * ch;
+      renderer.setViewport(x, y, cw, ch);
+      renderer.setScissor(x, y, cw, ch);
+      renderer.clear();
+      renderer.render(scene, cam);
+      const l = document.createElement("div");
+      l.style.cssText = "padding:2px 4px;text-shadow:0 1px 2px #000;border:1px solid rgba(255,255,255,.08)";
+      l.textContent = `${entries.indexOf(e) + 1}. ${t.name}`;
+      labels.appendChild(l);
+    });
+    document.body.appendChild(labels);
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, W, H);
+  }
+
+  const sheetParam = params.get("sheet");
+  if (sheetParam) sheet(sheetParam as "front" | "rear" | "side", Number(params.get("cols") ?? 10), params.get("cat") ?? "");
+  (window as unknown as { __garage: unknown }).__garage = { entries, select, sheet };
 }
 
 main().catch((e) => {
