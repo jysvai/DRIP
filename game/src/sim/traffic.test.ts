@@ -113,3 +113,43 @@ describe("주행 조건", () => {
     expect(trafficFor({ road: { id: "x" }, preset: "정체", hour: 3 }, cfg).density).toBe(60);
   });
 });
+
+describe("공사 구간 합류", () => {
+  const cfg = makeConfig();
+
+  for (const [side, lane] of [
+    ["right", 3],
+    ["left", 1],
+  ] as const) {
+    it(`${lane}차로가 막히면 막히기 전에 옆 차로로 옮기고, 흐름은 이어진다`, () => {
+      const road = makeRoad({ length: 12000, lanes: 3 });
+      const t = new Traffic(road, cfg, 11);
+      t.density = 18;
+      const zone = { s0: 4000, sClosed: 4120, s1: 4800, lane, side };
+      t.workZones = [zone];
+      // 플레이어는 공사 구간을 따라 지나가며 주변 교통을 끌고 간다
+      const player: PlayerState = { s: 2500, d: road.laneCenter(2, 2500), v: 22, len: 4.9, width: 1.86 };
+      t.fill(player);
+      let inside = 0;
+      // 구간 앞에서 본 차 중 구간 뒤로 빠져나간 차
+      const before = new Set<number>();
+      const passed = new Set<number>();
+      let wasInLane = 0;
+      for (let i = 0; i < 180 * 20; i++) {
+        player.s = Math.min(player.s + player.v * 0.05, 6000);
+        t.update(0.05, player, i * 0.05);
+        for (const a of t.agents) {
+          if (a.lane === lane && a.s > zone.sClosed && a.s < zone.s1) inside++;
+          if (a.s < zone.s0 - 300) {
+            if (!before.has(a.id) && a.lane === lane) wasInLane++;
+            before.add(a.id);
+          }
+          if (a.s > zone.s1 + 100 && before.has(a.id)) passed.add(a.id);
+        }
+      }
+      expect(inside).toBe(0);
+      expect(wasInLane).toBeGreaterThan(3);
+      expect(passed.size).toBeGreaterThan(15);
+    });
+  }
+});

@@ -5,6 +5,7 @@ import type { Road } from "../road/road";
 import { Structure } from "../road/road";
 import type { Enforcement, EnforcementSection } from "../sim/cameras";
 import { designatedLanes, type Rules } from "../sim/config";
+import { zoneLimit, type WorkZone } from "../sim/workzones";
 import type { Agent, BusLaneZone } from "../sim/traffic";
 
 export type EventType =
@@ -23,6 +24,7 @@ export type EventType =
   | "designated_lane"
   | "camera_speeding"
   | "section_speeding"
+  | "work_zone_merge"
   | "near_miss"
   | "crash";
 
@@ -52,6 +54,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   designated_lane: "지정차로 위반 (화물·대형승합은 오른쪽 차로)",
   camera_speeding: "과속 단속 카메라 적발",
   section_speeding: "구간단속 평균속도 초과",
+  work_zone_merge: "공사 구간 앞 합류",
   near_miss: "아차사고",
   crash: "충돌",
 };
@@ -147,6 +150,15 @@ export class RuleEngine {
   enforcement: Enforcement = { fixed: [], sections: [] };
   private lastS = NaN;
   private inSection: { sec: EnforcementSection; t0: number } | null = null;
+  /** 공사 구간: 임시 제한속도와 막힌 차로에서 언제 빠져나왔는지 */
+  workZones: WorkZone[] = [];
+
+  /** 이 차가 지켜야 하는 제한속도 (화물차 제한속도, 공사 구간 임시 제한속도) */
+  limitAt(s: number): number {
+    const zl = zoneLimit(this.workZones, s);
+    const base = this.road.speedAt(s, this.heavySpeed);
+    return zl ? Math.min(zl, base) : base;
+  }
 
   constructor(
     private road: Road,
@@ -161,7 +173,7 @@ export class RuleEngine {
       s: Math.round(f.s * 10) / 10,
       lane,
       speedKmh: Math.round(f.speed * 3.6 * 10) / 10,
-      limitKmh: this.road.speedAt(f.s, this.heavySpeed),
+      limitKmh: this.limitAt(f.s),
       detail,
     };
     this.events.push(e);
@@ -218,7 +230,7 @@ export class RuleEngine {
     const r = this.rules.rules;
     const road = this.road;
     const kmh = f.speed * 3.6;
-    const limit = road.speedAt(f.s, this.heavySpeed);
+    const limit = this.limitAt(f.s);
     this.checkEnforcement(f, kmh, limit);
     const lane = road.laneOf(f.d, f.s);
     const lanes = road.lanesAt(f.s);
@@ -331,6 +343,9 @@ export class RuleEngine {
         else if (dist < r.turnSignal.leadDistanceM) this.emit(f, "late_signal", { signalDistanceM: Math.round(dist) }, lane);
       }
       if (r.tunnelLaneChange.enabled && road.structureAt(f.s) === Structure.Tunnel) this.emit(f, "tunnel_lane_change", {}, lane);
+      // 공사로 막히는 차로에서 빠져나온 곳: 막히는 지점까지 남은 거리 (미리 합류하는지, 끝에서 끼어드는지)
+      const zone = this.workZones.find((z) => z.lane === this.lastLane && f.s > z.s0 - 2000 && f.s < z.sClosed);
+      if (zone) this.emit(f, "work_zone_merge", { closedLane: zone.lane, beforeClosedM: Math.round(zone.sClosed - f.s) }, lane);
     }
     if (lane >= 1 && lane <= lanes) this.lastLane = lane;
 

@@ -3,7 +3,8 @@
 
 import * as THREE from "three";
 import { LANE_WIDTH, LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from "../road/road";
-import { enforcementSigns, planSigns, type SignSpec } from "./signs";
+import { arrowBoardTexture, enforcementSigns, planSigns, workZoneSigns, type SignSpec } from "./signs";
+import { coneLine, END_TAPER_M, type WorkZone } from "../sim/workzones";
 import type { Enforcement } from "../sim/cameras";
 import type { World } from "./world";
 
@@ -204,6 +205,15 @@ export class RoadChunks {
   overrides: LaneOverride[] = [];
   /** 단속 카메라: 고정식은 오른쪽 기둥과 팔, 구간단속 시점·종점은 도로를 건너는 문형 구조물 */
   private enforcement: Enforcement = { fixed: [], sections: [] };
+  private workZones: WorkZone[] = [];
+  private coneGeo = makeConeGeometry();
+  private arrowMats = new Map<string, THREE.MeshBasicMaterial>();
+
+  /** 공사 구간과 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
+  setWorkZones(zones: WorkZone[]) {
+    this.workZones = zones;
+    this.signs = [...this.signs, ...workZoneSigns(zones, this.road)].sort((a, b) => a.s - b.s);
+  }
 
   /** 단속 카메라와 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setEnforcement(e: Enforcement) {
@@ -235,6 +245,7 @@ export class RoadChunks {
       lamp: new THREE.MeshBasicMaterial({ color: 0xfff1cf, side: THREE.DoubleSide }),
       tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
       post: new THREE.MeshStandardMaterial({ color: 0x8e9396, roughness: 0.5, metalness: 0.6 }),
+      cone: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }),
       glare: new THREE.MeshStandardMaterial({ vertexColors: true, map: glareTexture(), transparent: true, depthWrite: false, roughness: 0.7, side: THREE.DoubleSide }),
       signBack: new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.6, metalness: 0.4, side: THREE.DoubleSide }),
     };
@@ -250,6 +261,9 @@ export class RoadChunks {
 
   /** 플레이어 위치에 맞춰 조각을 만들고 지운다. 한 프레임에 최대 maxBuild개만 만든다 */
   update(s: number, maxBuild = 2) {
+    // 화살표 차량 뒤판은 깜빡인다
+    const blink = Math.floor(performance.now() / 450) % 2 === 0 ? 1 : 0.18;
+    for (const m of this.arrowMats.values()) m.color.setScalar(blink);
     const k0 = Math.max(0, Math.floor((s - BEHIND) / CHUNK));
     const k1 = Math.min(Math.floor(this.road.length / CHUNK), Math.floor((s + AHEAD) / CHUNK));
     for (const [k, g] of this.chunks) {
@@ -544,6 +558,54 @@ export class RoadChunks {
         const lw = row.w / Math.max(1, row.lanes);
         for (let i = 0; i < row.lanes; i++) camera(s - 0.3, L.ourL + lw * (i + 0.5), 6.85);
       }
+    }
+
+    // ---- 공사 구간: 라바콘 줄과 화살표 차량 ----
+    const conePos: THREE.Vector3[] = [];
+    const truckCol = new THREE.Color(0xf0b41c);
+    const cabCol = new THREE.Color(0xe9e6dc);
+    const beaconCol = new THREE.Color(0xff8a00);
+    for (const z of this.workZones) {
+      if (z.s1 + END_TAPER_M < s0 || z.s0 > s1) continue;
+      // 테이퍼에서는 6m, 막힌 구간에서는 12m마다
+      for (let s = Math.ceil(Math.max(s0, z.s0) / 6) * 6; s < Math.min(s1, z.s1 + END_TAPER_M); s += 6) {
+        if (s > z.sClosed + 6 && s < z.s1 && Math.round(s / 6) % 2) continue;
+        const line = coneLine(road, z, s);
+        if (line === null) continue;
+        const row = this.rows(s, s, 1)[0];
+        conePos.push(P(row, line + (z.side === "right" ? 0.3 : -0.3), 0));
+      }
+      // 화살표 차량: 막힌 차로 가운데, 테이퍼가 끝나고 30m 뒤. 뒤판은 열린 쪽을 가리킨다
+      const ts = z.sClosed + 30;
+      if (ts >= s0 && ts < s1) {
+        const lane = -road.widthAt(ts) / 2 + (z.lane - 0.5) * LANE_WIDTH;
+        const at = (ds: number) => this.rows(ts + ds, ts + ds, 1)[0];
+        this.box(postGeo, P(at(2.2), lane, 0.95), 4.4, 1.0, 2.3, at(2.2), truckCol);
+        this.box(postGeo, P(at(5.3), lane, 1.35), 1.8, 2.2, 2.3, at(5.3), cabCol);
+        this.box(postGeo, P(at(5.3), lane - 0.6, 2.6), 0.3, 0.2, 0.3, at(5.3), beaconCol);
+        this.box(postGeo, P(at(5.3), lane + 0.6, 2.6), 0.3, 0.2, 0.3, at(5.3), beaconCol);
+        this.box(postGeo, P(at(0.2), lane, 1.9), 0.15, 1.9, 0.15, at(0.2), new THREE.Color(0x333333));
+        for (const w of [-0.95, 0.95]) for (const ds of [0.9, 5.2]) this.box(postGeo, P(at(ds), lane + w, 0.4), 0.8, 0.8, 0.3, at(ds), new THREE.Color(0x151515));
+        const dir = z.side === "right" ? "left" : "right";
+        let mat = this.arrowMats.get(dir);
+        if (!mat) {
+          mat = new THREE.MeshBasicMaterial({ map: arrowBoardTexture(dir), side: THREE.DoubleSide, toneMapped: false });
+          this.arrowMats.set(dir, mat);
+        }
+        const board = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.1), mat);
+        const row = at(0);
+        board.position.copy(P(row, lane, 2.75));
+        board.rotation.y = Math.atan2(-row.te, row.tn);
+        group.add(board);
+      }
+    }
+    if (conePos.length) {
+      const cones = new THREE.InstancedMesh(this.coneGeo, this.mats.cone, conePos.length);
+      const m = new THREE.Matrix4();
+      conePos.forEach((p, i) => cones.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)));
+      cones.castShadow = true;
+      cones.computeBoundingSphere();
+      group.add(cones);
     }
 
     // ---- 지형 ----
@@ -1124,6 +1186,27 @@ function makeBroadleafGeometry(): THREE.BufferGeometry {
     s.translate(b.x, b.y, b.z);
     parts.push(paintPart(s, b.c, 0.3, i + 10));
   });
+  const merged = mergeSimple(parts);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+function makeConeGeometry(): THREE.BufferGeometry {
+  // 라바콘: 검은 받침 + 주황 원뿔에 흰 반사띠 두 줄
+  const bands: [number, number, number][] = [
+    [0.04, 0.32, 0xff5a0a],
+    [0.32, 0.42, 0xf4f4f0],
+    [0.42, 0.52, 0xff5a0a],
+    [0.52, 0.6, 0xf4f4f0],
+    [0.6, 0.74, 0xff5a0a],
+  ];
+  const r = (y: number) => 0.2 * (1 - y / 0.8) + 0.02;
+  const parts = [paintPart(new THREE.BoxGeometry(0.42, 0.04, 0.42).translate(0, 0.02, 0), 0x1a1a1a)];
+  for (const [y0, y1, c] of bands) {
+    const g = new THREE.CylinderGeometry(r(y1), r(y0), y1 - y0, 10, 1, true);
+    g.translate(0, (y0 + y1) / 2, 0);
+    parts.push(paintPart(g, c));
+  }
   const merged = mergeSimple(parts);
   merged.computeVertexNormals();
   return merged;

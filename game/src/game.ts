@@ -11,6 +11,7 @@ import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
+import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
@@ -62,6 +63,7 @@ export class Game {
   readonly hud: Hud;
   readonly busZones: BusLaneZone[];
   readonly enforcement: Enforcement;
+  readonly workZones: WorkZone[];
   readonly road: Road;
   readonly spec: PlayerSpec;
   state: "ready" | "run" | "pause" | "crash" | "end" = "ready";
@@ -120,6 +122,9 @@ export class Game {
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
     const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8, 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
+    // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
+    this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
+    this.chunks.setWorkZones(this.workZones);
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
     const tr = this.trafficAt(s0);
@@ -130,6 +135,7 @@ export class Game {
     this.traffic.headwayScale = 1 + 0.1 * sun.night;
     this.traffic.setComposition(tr.composition);
     this.traffic.busZones = this.busZones;
+    this.traffic.workZones = this.workZones;
     this.traffic.fill(this.playerState());
     // 출발 속도는 주변 차 흐름에 맞춘다 (막히는 길에서 바로 급제동하지 않게)
     const near = this.traffic.agents.filter((a) => Math.abs(a.s - s0) < 400);
@@ -155,6 +161,7 @@ export class Game {
         return true;
       },
       enforcement: this.enforcement,
+      workZones: this.workZones,
       chime: () => this.sound.chime(),
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
@@ -166,6 +173,7 @@ export class Game {
     this.rules.vehicleClass = this.spec.vehicleClass;
     this.rules.heavySpeed = heavySpeed;
     this.rules.enforcement = this.enforcement;
+    this.rules.workZones = this.workZones;
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.recorder.start({
@@ -236,6 +244,8 @@ export class Game {
     const notes: string[] = [];
     if (this.busZones.some((z) => z.s1 > s)) notes.push("경로에 버스전용차로 구간이 있습니다(파란 선, 1차로).");
     if (this.spec.vehicleClass !== "car") notes.push("화물·대형승합은 지정차로(오른쪽 차로)로 달려야 합니다. 앞지르기 때만 바로 왼쪽 차로를 쓸 수 있습니다.");
+    const works = this.workZones.filter((z) => z.s0 > s).length;
+    if (works) notes.push(`경로에 공사 구간이 ${works}곳 있습니다. 한 차로를 라바콘으로 막고 제한속도 ${ZONE_KMH}km/h입니다.`);
     showDialog(
       `${this.setup.originName} → ${this.setup.destName}`,
       `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
@@ -328,6 +338,7 @@ export class Game {
       p.step(PHYS_DT, road, c);
       this.acc -= PHYS_DT;
       for (const h of p.hits) this.guardrail(h.lateralSpeed, h.side);
+      this.workZoneContact();
       if (this.state !== "run") return;
     }
     this.contactCooldown -= dt;
@@ -398,7 +409,7 @@ export class Game {
       r2(c.steer),
       r2(c.throttle),
       r2(c.brake),
-      this.road.speedAt(p.s),
+      this.rules.limitAt(p.s),
       near,
     ];
   }
@@ -450,6 +461,31 @@ export class Game {
     }
   }
 
+  /** 공사 구간 라바콘 줄을 넘으면: 빠르면 충돌, 느리면 되돌린다 */
+  private workZoneContact() {
+    const p = this.player;
+    const half = p.spec.width / 2;
+    for (const z of this.workZones) {
+      const line = coneLine(this.road, z, p.s);
+      if (line === null) continue;
+      const over = z.side === "right" ? p.d + half - line : line - (p.d - half);
+      if (over <= 0.15) continue;
+      const kmh = p.speed * 3.6;
+      if (this.contactCooldown <= 0) {
+        this.rules.crash(this.frameInfo(0), "work_zone", kmh);
+        this.contactCooldown = 1;
+        this.sound.crash(Math.min(1, kmh / 40));
+      }
+      if (kmh >= 30) {
+        this.crashed("공사 구간 라바콘·작업 차량 충돌", kmh);
+        return;
+      }
+      p.d += z.side === "right" ? -(over - 0.15) : over - 0.15;
+      p.vy = 0;
+      this.hud.toast("라바콘에 닿았습니다", 1.2);
+    }
+  }
+
   private guardrail(lateral: number, side: "left" | "right") {
     const kmh = lateral * 3.6;
     if (kmh < 4) return;
@@ -480,7 +516,10 @@ export class Game {
     const p = this.player;
     const s = Math.min(road.length - 100, p.s + 30);
     const lanes = road.lanesAt(s);
-    const lane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
+    let lane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
+    // 공사로 막힌 차로면 옆 차로에서 다시 출발
+    const zone = this.workZones.find((z) => z.lane === lane && s > z.s0 - 50 && s < z.s1 + END_TAPER_M);
+    if (zone) lane = zone.side === "right" ? lane - 1 : lane + 1;
     this.traffic.clearAround(s, 300);
     p.place(road, s, lane, 50 / 3.6);
     this.hazard = false;

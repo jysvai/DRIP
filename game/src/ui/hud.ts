@@ -6,6 +6,7 @@ import { Structure } from "../road/road";
 import type { Network } from "../road/route";
 import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
+import { zoneLimit, type WorkZone } from "../sim/workzones";
 
 export interface HudFrame {
   kmh: number;
@@ -50,8 +51,11 @@ export interface HudOptions {
   enforcement?: Enforcement;
   /** 단속 카메라 앞에서 과속하면 울리는 경고음 */
   chime?: () => void;
+  /** 공사 구간 (planWorkZones) */
+  workZones?: WorkZone[];
 }
 
+const CONE_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 3h4l5 16H5z"/><path fill="#fff" d="M8.6 9h6.8l.8 2.6H7.8zM7.2 13.6h9.6l.7 2.4H6.5z"/><rect x="3" y="19" width="18" height="2" rx="1" fill="currentColor"/></svg>`;
 const CAM_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 7h11l2-2h3v4l-2 1v5H4z"/><circle cx="9.5" cy="11" r="2.3" fill="#111"/><rect x="8" y="15" width="3" height="5" fill="currentColor"/></svg>`;
 
 type Turn = "left" | "right" | "straight";
@@ -382,6 +386,7 @@ export class Hud {
     const sec = f.section ?? null;
     let html = "";
     let cls = "";
+    let icon = CAM_ICON;
     let warn = false;
     if (sec) {
       const over = sec.avgKmh > sec.limit;
@@ -393,7 +398,17 @@ export class Hud {
       this.opts.say?.(`구간 단속이 끝났습니다. 평균 속도 ${Math.round(this.lastSection.avgKmh)}킬로미터였습니다.`);
     }
     this.lastSection = sec;
-    if (!sec && enf) {
+    const work = (this.opts.workZones ?? []).find((z) => z.s1 > s && z.s0 - s < 2000);
+    if (!sec && work && (!enf || !enf.fixed.some((c) => c.s > s && c.s < work.s0))) {
+      const dist = work.s0 - s;
+      const inLane = f.lane === work.lane;
+      cls = inLane ? "work over" : "work";
+      icon = CONE_ICON;
+      html = dist > 0 ? `<b>공사 구간</b> ${work.lane}차로 차단 · ${fmtDist(dist)}` : `<b>공사 구간</b> ${work.lane}차로 차단 · 남은 ${fmtDist(work.s1 - s)}`;
+      if (dist <= 1000 && dist > 0) this.sayOnce(`work|${Math.round(work.s0)}`, `${spokenDist(dist)} 앞 공사 구간입니다. ${work.lane}차로가 막혀 있습니다.`);
+      if (dist <= 300 && dist > 0 && inLane) this.sayOnce(`work-near|${Math.round(work.s0)}`, "잠시 후 차로가 막힙니다. 옆 차로로 옮기세요.");
+      warn = inLane && dist < 300;
+    } else if (!sec && enf) {
       const cam = enf.fixed.find((c) => c.s > s - 5 && c.s - s < 1000);
       const start = enf.sections.find((x) => x.s0 > s && x.s0 - s < 1000);
       if (cam && (!start || cam.s < start.s0)) {
@@ -409,7 +424,7 @@ export class Hud {
       }
     }
     this.enfEl.className = `enf${html ? " on" : ""}${cls ? ` ${cls}` : ""}`;
-    if (html) this.enfEl.innerHTML = CAM_ICON + `<span>${html}</span>`;
+    if (html) this.enfEl.innerHTML = icon + `<span>${html}</span>`;
     this.chimeTimer -= 0.2;
     if (warn && this.chimeTimer <= 0) {
       this.opts.chime?.();
@@ -469,7 +484,8 @@ export class Hud {
     this.slowTimer -= dt;
     if (this.slowTimer > 0) return;
     this.slowTimer = 0.2;
-    const limit = road.speedAt(s, this.opts.heavy);
+    const zl = zoneLimit(this.opts.workZones ?? [], s);
+    const limit = zl ? Math.min(zl, road.speedAt(s, this.opts.heavy)) : road.speedAt(s, this.opts.heavy);
     this.limit.textContent = String(limit);
     // 제한속도가 바뀌면 알린다 (속도가 굽기에 따라 바뀌는 연결로는 빼고)
     if (this.lastLimit && limit !== this.lastLimit && !road.onConnector(s)) this.opts.say?.(`제한속도 ${limit}킬로미터 구간입니다.`);
@@ -508,13 +524,16 @@ export class Hud {
       const lanes = road.lanesAt(s);
       const bus = this.busZones.filter((z) => s >= z.s0 && s <= z.s1).map((z) => z.lane);
       const guide = near && dist < 2000 && m.lanes !== "all" ? m.lanes : "";
-      const key = `${lanes}|${f.lane}|${guide}|${bus.join(",")}`;
+      // 공사로 막힌 차로 (1.5km 앞부터)
+      const work = (this.opts.workZones ?? []).find((z) => s > z.s0 - 1500 && s < z.s1);
+      const key = `${lanes}|${f.lane}|${guide}|${bus.join(",")}|${work?.lane ?? 0}`;
       if (key !== this.lastLanesKey) {
         this.lastLanesKey = key;
         let html = "";
         for (let l = 1; l <= lanes; l++) {
           const rec = guide === "right" ? l > lanes - 2 : guide === "left" ? l >= Math.min(2, lanes) && l <= Math.min(3, lanes) : false;
-          html += `<i class="${l === f.lane ? "me" : ""}${rec ? " rec" : ""}${bus.includes(l) ? " bus" : ""}">${rec ? (guide === "right" ? "↗" : "↖") : "↑"}</i>`;
+          const closed = work?.lane === l;
+          html += `<i class="${l === f.lane ? "me" : ""}${rec && !closed ? " rec" : ""}${bus.includes(l) ? " bus" : ""}${closed ? " closed" : ""}">${closed ? "✕" : rec ? (guide === "right" ? "↗" : "↖") : "↑"}</i>`;
         }
         this.navLanes.innerHTML = html;
       }

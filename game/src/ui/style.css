@@ -215,6 +215,9 @@ kbd { display: inline-grid; place-items: center; min-width: 24px; height: 24px; 
 .hud2 .enf em { font-style: normal; font-weight: 800; font-size: 15px; }
 .hud2 .enf.section { border-color: rgba(93, 169, 255, 0.6); }
 .hud2 .enf.section b, .hud2 .enf.section svg { color: #7cb8ff; }
+.hud2 .enf.work { border-color: rgba(242, 138, 30, 0.8); }
+.hud2 .enf.work b, .hud2 .enf.work svg { color: #ffa24d; }
+.hud2 .nav-lanes i.closed { color: #ff8a3d; background: rgba(242, 138, 30, 0.18); }
 .hud2 .enf.over { border-color: #ff5a4e; box-shadow: 0 0 0 3px rgba(255, 90, 78, 0.25); }
 .hud2 .enf.over em, .hud2 .enf.over b, .hud2 .enf.over svg { color: #ff6b5e; }
 .hud2 .status { position: absolute; right: 16px; top: 16px; text-align: right; font-size: 12px; color: #aab3af; background: var(--glass); border-radius: 10px; padding: 7px 11px; }

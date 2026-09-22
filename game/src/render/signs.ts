@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
 import type { Enforcement } from "../sim/cameras";
+import { ZONE_KMH, type WorkZone } from "../sim/workzones";
 
 export const SIGN_GREEN = "#0b6a3b";
 const FONT = `"Pretendard Variable", Pretendard, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif`;
@@ -275,6 +276,68 @@ export function sectionSignTexture(kind: "start" | "end", lengthKm: number, limi
   });
 }
 
+/** 공사 안내판: 주황 바탕에 "공사중", 거리, 막힌 차로 */
+export function workSignTexture(dist: string, lane: number): THREE.CanvasTexture {
+  return canvasTexture(`work|${dist}|${lane}`, 512, 600, (g) => {
+    g.fillStyle = "#f28a1e";
+    roundRect(g, 0, 0, 512, 600, 20);
+    g.fill();
+    g.strokeStyle = "#111";
+    g.lineWidth = 14;
+    roundRect(g, 16, 16, 480, 568, 14);
+    g.stroke();
+    // 삽질하는 사람 대신 간단한 주의 삼각형
+    g.fillStyle = "#111";
+    g.beginPath();
+    g.moveTo(256, 50);
+    g.lineTo(346, 190);
+    g.lineTo(166, 190);
+    g.closePath();
+    g.fill();
+    g.fillStyle = "#f28a1e";
+    g.fillRect(250, 95, 12, 55);
+    g.fillRect(250, 160, 12, 14);
+    g.fillStyle = "#111";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    fitText(g, "공사중", 440, 120);
+    g.fillText("공사중", 256, 290);
+    fitText(g, `전방 ${dist}`, 440, 78);
+    g.fillText(`전방 ${dist}`, 256, 410);
+    fitText(g, `${lane}차로 차단`, 440, 78);
+    g.fillText(`${lane}차로 차단`, 256, 515);
+  });
+}
+
+/** 화살표 차량 뒤판: 검은 판에 노란 화살표 (막힌 차로에서 열린 쪽으로) */
+export function arrowBoardTexture(dir: "left" | "right"): THREE.CanvasTexture {
+  return canvasTexture(`arrow|${dir}`, 512, 256, (g) => {
+    g.fillStyle = "#0c0c0c";
+    g.fillRect(0, 0, 512, 256);
+    g.save();
+    if (dir === "right") {
+      g.translate(512, 0);
+      g.scale(-1, 1);
+    }
+    g.fillStyle = "#ffcc1a";
+    // 점등 화살표: 굵은 막대 + 머리, LED 점 느낌으로 격자를 뺀다
+    g.beginPath();
+    g.moveTo(40, 128);
+    g.lineTo(170, 30);
+    g.lineTo(170, 88);
+    g.lineTo(470, 88);
+    g.lineTo(470, 168);
+    g.lineTo(170, 168);
+    g.lineTo(170, 226);
+    g.closePath();
+    g.fill();
+    g.fillStyle = "#0c0c0c";
+    for (let x = 0; x < 512; x += 16) g.fillRect(x, 0, 3, 256);
+    for (let y = 0; y < 256; y += 16) g.fillRect(0, y, 512, 3);
+    g.restore();
+  });
+}
+
 export function sloganTexture(text: string): THREE.CanvasTexture {
   return canvasTexture(`slogan|${text}`, 1536, 192, (g) => {
     g.fillStyle = "#123c7a";
@@ -390,6 +453,22 @@ export function planSigns(road: Road): SignSpec[] {
     }
   }
   out.sort((a, b) => a.s - b.s);
+  return out;
+}
+
+/** 공사 구간 표지: 1km·500m 앞 공사 안내판, 300m 앞 임시 제한속도 */
+export function workZoneSigns(zones: WorkZone[], road: Road): SignSpec[] {
+  const out: SignSpec[] = [];
+  const ok = (s: number) => s > 30 && s < road.length - 30;
+  for (const z of zones) {
+    for (const [before, label] of [
+      [1000, "1km"],
+      [500, "500m"],
+    ] as const) {
+      if (ok(z.s0 - before)) out.push({ s: z.s0 - before, kind: "guide", w: 1.8, h: 2.1, texture: () => workSignTexture(label, z.lane) });
+    }
+    if (ok(z.s0 - 300)) out.push({ s: z.s0 - 300, kind: "speed", w: 1.2, h: 1.2, texture: () => speedTexture(ZONE_KMH, "max") });
+  }
   return out;
 }
 

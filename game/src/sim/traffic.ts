@@ -1,5 +1,5 @@
 // 주변 교통. 차마다 운전 습관(driver_profiles.json)을 뽑아 IDM(앞차 따라가기)과 MOBIL(차로 변경)로 움직인다.
-// 한국 규칙: 1차로 앞지르기 후 복귀, 대형차 지정차로, 버스전용차로, 터널 안 차로변경 금지, 차로 감소 구간 합류.
+// 한국 규칙: 1차로 앞지르기 후 복귀, 대형차 지정차로, 버스전용차로, 터널 안 차로변경 금지, 차로 감소·공사 구간 합류.
 
 import type { Road } from "../road/road";
 import { LANE_WIDTH, Structure } from "../road/road";
@@ -7,6 +7,7 @@ import type { VehicleType } from "../render/vehicleModels";
 import { paletteFor } from "../render/vehicleModels";
 import { designatedLanes, type DriverProfile, type GameConfig } from "./config";
 import { Rng } from "./rng";
+import { TAPER_M, zoneLimit, type WorkZone } from "./workzones";
 
 export interface Agent {
   id: number;
@@ -101,6 +102,8 @@ export class Traffic {
   agents: Agent[] = [];
   opposite: Agent[] = [];
   busZones: BusLaneZone[] = [];
+  /** 공사 구간: 막힌 차로로는 들어가지 않고, 막히기 전에 옆 차로로 합류한다 */
+  workZones: WorkZone[] = [];
   density = 15; // 대/km/차로
   /** 실측 교통이 막히는 시간대면 그 흐름 속도(m/s). 같은 방향 차의 희망속도를 이 근처로 묶는다 */
   flowSpeed: number | null = null;
@@ -214,6 +217,10 @@ export class Traffic {
     const k = Math.abs(road.sample(Math.max(0, Math.min(road.length - 1, look))).kappa);
     if (k > 1e-4) v0 = Math.min(v0, Math.sqrt(2.3 / k));
     if (this.flowSpeed && !a.opposite) v0 = Math.min(v0, this.flowSpeed * a.speedFactor);
+    if (!a.opposite) {
+      const zl = zoneLimit(this.workZones, look);
+      if (zl) v0 = Math.min(v0, (zl / 3.6) * a.speedFactor);
+    }
     return v0;
   }
 
@@ -258,6 +265,8 @@ export class Traffic {
     if (!a.opposite && this.cfg.rules.rules.busLane.enabled && a.busCompliant && !a.bus) {
       if (this.busZones.some((z) => z.lane === lane && s >= z.s0 && s <= z.s1)) return false;
     }
+    // 공사로 막힌 차로와 곧 막힐 차로
+    if (!a.opposite && this.workZones.some((z) => z.lane === lane && s >= z.s0 - 150 && s <= z.s1)) return false;
     if (a.heavy && a.compliant && lanes >= 3 && !a.bus) {
       const { right } = designatedLanes(lanes);
       const lowest = Math.min(...right);
@@ -429,12 +438,22 @@ export class Traffic {
     }
   }
 
+  /** 이 차로가 앞으로 몇 m 뒤에 끝나는지 (차로 감소, 공사로 막힘). 600m 안에 없으면 Infinity */
   private laneEnd(lane: number, s: number): number {
     const road = this.road;
+    let end = Infinity;
     for (let ds = 0; ds <= 600; ds += 50) {
-      if (road.lanesAt(Math.min(road.length - 1, s + ds)) < lane) return ds;
+      if (road.lanesAt(Math.min(road.length - 1, s + ds)) < lane) {
+        end = ds;
+        break;
+      }
     }
-    return Infinity;
+    for (const z of this.workZones) {
+      // 라바콘이 차로 절반을 넘게 막는 곳 앞에서 선다
+      const block = z.s0 + TAPER_M / 2;
+      if (z.lane === lane && s <= z.s1 && block - s <= 600) end = Math.min(end, Math.max(0, block - s));
+    }
+    return end;
   }
 
   private safeToChange(a: Agent, lane: number): boolean {
@@ -497,9 +516,10 @@ export class Traffic {
       // (앞지르기 차로에 머무는 시간은 passingLaneStay: 실측에서 편도 3차로 대형화물의 42%가 2차로)
       // 2차로 정속 대형차(cruiser)는 돌아가지 않는다
       if (a.heavy && a.compliant && !a.cruiser && dir === 1 && !this.laneAllowed(a, a.lane, s) && a.laneTime > a.passingStay) score += 1.2;
-      // 차로가 곧 끝나면 무조건 왼쪽으로
-      if (dir === -1 && endAhead < 500) score += 3;
-      if (dir === 1 && endAhead < 500) score -= 5;
+      // 차로가 곧 끝나면(차로 감소·공사) 이어지는 차로로, 더 먼저 끝나는 차로로는 가지 않는다
+      const targetEnd = this.laneEnd(tl, s);
+      if (endAhead < 500 && targetEnd > endAhead + 100) score += 3;
+      if (targetEnd < 500 && targetEnd <= endAhead) score -= 5;
       // 버스는 전용차로가 있으면 그쪽으로
       if (a.bus && this.busZones.some((z) => z.lane === tl && s >= z.s0 && s <= z.s1)) score += 1;
       if (score > a.thr && score > bestScore) {

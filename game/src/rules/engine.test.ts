@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeConfig, makeRoad } from "../testing/fixtures";
 import type { Agent } from "../sim/traffic";
+import { TAPER_M, type WorkZone } from "../sim/workzones";
 import { RuleEngine, type PlayerFrame } from "./engine";
 
 const DT = 0.05;
@@ -140,5 +141,44 @@ describe("무인 단속 카메라", () => {
     const v = 150 / 3.6;
     drive(e, (t) => ({ s: 1000 + t * v, speed: v, d: road.laneCenter(2, 1000) }), 60);
     expect(e.events.filter((x) => x.type === "section_speeding")).toHaveLength(0);
+  });
+});
+
+describe("공사 구간", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ lanes: 3, speed: 100 });
+  const zone: WorkZone = { s0: 3000, sClosed: 3000 + TAPER_M, s1: 3800, lane: 3, side: "right" };
+
+  it("공사 구간에서는 임시 제한속도 80으로 과속을 본다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.workZones = [zone];
+    expect(e.limitAt(2000)).toBe(100);
+    expect(e.limitAt(2800)).toBe(80);
+    const v = 95 / 3.6;
+    // 95km/h로 들어갔다가 6초 뒤 75km/h로 줄인다 (제한 100 도로였다면 과속이 아니다)
+    drive(e, (t) => ({ s: 2750 + t * v, speed: t < 6 ? v : 75 / 3.6, d: road.laneCenter(2, 3000) }), 8);
+    const ev = e.events.filter((x) => x.type === "speeding");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].limitKmh).toBe(80);
+  });
+
+  it("막히는 차로에서 빠져나온 곳을 남은 거리와 함께 남긴다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.workZones = [zone];
+    const v = 25;
+    // 막히는 차로(3)로 달리다 테이퍼 끝 약 400m 전에 2차로로
+    drive(e, (t) => ({ s: 2000 + t * v, speed: v, d: t < 28 ? road.laneCenter(3, 2000) : road.laneCenter(2, 2000), signal: t > 22 && t < 29 ? -1 : 0 }), 32);
+    const ev = e.events.filter((x) => x.type === "work_zone_merge");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].detail.closedLane).toBe(3);
+    expect(ev[0].detail.beforeClosedM).toBeGreaterThan(350);
+    expect(ev[0].detail.beforeClosedM).toBeLessThan(450);
+  });
+
+  it("다른 차로에서 바꾸면 남기지 않는다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.workZones = [zone];
+    drive(e, (t) => ({ s: 2000 + t * 25, d: t < 28 ? road.laneCenter(1, 2000) : road.laneCenter(2, 2000), signal: t > 22 && t < 29 ? 1 : 0 }), 32);
+    expect(e.events.filter((x) => x.type === "work_zone_merge")).toHaveLength(0);
   });
 });
