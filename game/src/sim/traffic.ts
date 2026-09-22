@@ -39,6 +39,8 @@ export interface Agent {
   hazard: boolean;
   decideTimer: number;
   lane1Time: number;
+  /** 지금 차로에 머문 시간 (초) */
+  laneTime: number;
   wander: number;
   // 습관 (뽑은 값)
   speedFactor: number;
@@ -77,6 +79,8 @@ export interface BusLaneZone {
 }
 
 const REGION_BEHIND = 700;
+/** 대형차가 앞지르기 차로(지정차로 바로 왼쪽)에서 나타나는 비율. 실측(AVC)에서 편도 3차로 대형화물의 42%가 2차로 */
+const TRUCK_PASSING_SPAWN = 0.45;
 const REGION_AHEAD = 2300;
 const MAX_DECEL = 9;
 
@@ -173,6 +177,7 @@ export class Traffic {
       hazard: false,
       decideTimer: this.rng.next() * 1.5,
       lane1Time: 0,
+      laneTime: 0,
       wander: this.rng.next() * 100,
       speedFactor: this.draw(pr.speedFactor, 0.6),
       T: this.draw(pr.timeHeadway, 0.5) * this.headwayScale,
@@ -228,7 +233,7 @@ export class Traffic {
         if (Math.abs(s - player.s) < 12) continue;
         const idx = this.pickType();
         const a = this.make(idx, s, lane, 0, false);
-        if (!this.laneAllowed(a, lane, s)) continue;
+        if (!this.laneAllowed(a, lane, s, a.heavy && this.rng.next() < TRUCK_PASSING_SPAWN)) continue;
         a.v = this.desiredSpeed(a, s) * (this.density > 30 ? 0.35 : 0.9);
         a.d = road.laneCenter(lane, s);
         this.agents.push(a);
@@ -404,6 +409,7 @@ export class Traffic {
       }
       if (a.lane === 1) a.lane1Time += dt;
       else a.lane1Time = 0;
+      a.laneTime = a.targetLane === a.lane ? a.laneTime + dt : 0;
 
       // 가로 위치
       const sr = Math.max(0, Math.min(road.length - 1, s));
@@ -481,11 +487,14 @@ export class Traffic {
         // 1차로 정속 주행: 오른쪽으로 돌아가려 하지 않고, 1차로 쪽으로 옮기려 한다
         score += dir === -1 ? 0.5 : -0.5;
       } else {
-        score += dir === 1 ? a.keepRight : -a.keepRight;
+        // 대형차는 앞지르기 차로에 들어가면 passingLaneStay 동안은 오른쪽으로 돌아가려 하지 않는다
+        const holdPassing = a.heavy && dir === 1 && a.laneTime < a.passingStay && !this.laneAllowed(a, a.lane, s);
+        if (!holdPassing) score += dir === 1 ? a.keepRight : -a.keepRight;
         if (a.lane === 1 && dir === 1 && a.lane1Time > a.passingStay) score += 0.6;
       }
       // 대형차가 앞지르기 차로(지정차로 바로 왼쪽)에 있으면 앞지르기 뒤 돌아간다
-      if (a.heavy && a.compliant && dir === 1 && !this.laneAllowed(a, a.lane, s)) score += 1.2;
+      // (앞지르기 차로에 머무는 시간은 passingLaneStay: 실측에서 편도 3차로 대형화물의 42%가 2차로)
+      if (a.heavy && a.compliant && dir === 1 && !this.laneAllowed(a, a.lane, s) && a.laneTime > a.passingStay) score += 1.2;
       // 차로가 곧 끝나면 무조건 왼쪽으로
       if (dir === -1 && endAhead < 500) score += 3;
       if (dir === 1 && endAhead < 500) score -= 5;
@@ -556,7 +565,7 @@ export class Traffic {
       const need = spacing * (0.7 + this.rng.next() * 0.9);
       if (nearest < need) return;
       const a = this.make(this.pickType(), coord, lane, 0, opposite);
-      if (!opposite && !this.laneAllowed(a, lane, sPos)) return;
+      if (!opposite && !this.laneAllowed(a, lane, sPos, a.heavy && this.rng.next() < TRUCK_PASSING_SPAWN)) return;
       const v0 = this.desiredSpeed(a, sPos);
       // 앞쪽에 넣는 차는 흐름 속도, 뒤쪽에 넣는 차는 플레이어보다 빠를 때만
       if (!opposite && !ahead && v0 <= player.v + 1) return;
