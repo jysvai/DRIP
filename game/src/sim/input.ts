@@ -42,6 +42,11 @@ export class Input {
   constructor(target: HTMLElement) {
     window.addEventListener("keydown", this.onKey, { passive: false });
     window.addEventListener("keyup", this.onKey);
+    // 창 밖을 누르면 keyup이 오지 않아 가속 키가 눌린 채로 남는다
+    window.addEventListener("blur", () => {
+      keysDown.up = keysDown.down = keysDown.left = keysDown.right = false;
+      this.pressed.clear();
+    });
     target.addEventListener("mousemove", (e) => {
       const rect = target.getBoundingClientRect();
       this.mouseX = (e.clientX - rect.left) / rect.width;
