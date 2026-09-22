@@ -59,6 +59,25 @@ export interface RoadFile {
   sectionName: Run<string>[];
   junctions: [number, string, string][];
   terrain: { step: number; offsets: number[]; rows: number[][] };
+  /** 경로(여러 주행선을 이어 붙인 도로)일 때만: 구간마다 원래 노선 번호 */
+  refs?: Run<string>[];
+  /** 경로일 때만: 이어 붙인 조각들 */
+  legs?: LegInfo[];
+}
+
+/** 경로 조각: 이어 붙인 도로의 s0~s1이 원래 주행선 road의 src0~src1 */
+export interface LegInfo {
+  road: string;
+  ref: string;
+  name: string;
+  from: string;
+  to: string;
+  s0: number;
+  s1: number;
+  src0: number;
+  src1: number;
+  /** 이 조각으로 들어올 때 지난 분기점 이름 (첫 조각은 "") */
+  via: string;
 }
 
 export interface Junction {
@@ -148,6 +167,10 @@ export class Road {
   readonly sections: { s0: number; name: string }[];
   readonly junctions: Junction[];
   readonly terrain: RoadFile["terrain"];
+  /** 경로일 때 조각들 (한 주행선이면 그 주행선 전체 한 조각) */
+  readonly legs: LegInfo[];
+  readonly isRoute: boolean;
+  private readonly refs: Run<string>[];
 
   constructor(f: RoadFile) {
     this.id = f.id;
@@ -257,6 +280,11 @@ export class Road {
         return { s, name: shortJunctionName(name, kind), exitNo: ref, kind };
       });
     this.terrain = f.terrain;
+    this.isRoute = !!f.legs?.length;
+    this.legs = f.legs?.length
+      ? f.legs
+      : [{ road: f.id, ref: f.ref, name: f.name, from: f.from, to: f.to, s0: 0, s1: this.length, src0: 0, src1: this.length, via: "" }];
+    this.refs = f.refs?.length ? f.refs : [[0, f.ref]];
   }
 
   static async load(id: string, base = "./roads/"): Promise<Road> {
@@ -340,6 +368,35 @@ export class Road {
       else break;
     }
     return name;
+  }
+
+  /** s 위치의 노선 번호 (경로는 구간마다 다르다) */
+  refAt(s: number): string {
+    let ref = this.refs[0][1];
+    for (const r of this.refs) {
+      if (r[0] <= s) ref = r[1];
+      else break;
+    }
+    return ref;
+  }
+
+  /** s 위치가 속한 조각. 연결로 위면 다음 조각 */
+  legAt(s: number): LegInfo {
+    for (const l of this.legs) if (s < l.s1) return l;
+    return this.legs[this.legs.length - 1];
+  }
+
+  /** s가 연결로(조각과 조각 사이) 위인가 */
+  onConnector(s: number): boolean {
+    if (!this.isRoute) return false;
+    const l = this.legAt(s);
+    return s < l.s0;
+  }
+
+  /** 원래 주행선에서의 위치 (연결로 위면 다음 조각의 시작) */
+  sourceAt(s: number): { road: string; s: number } {
+    const l = this.legAt(s);
+    return { road: l.road, s: l.src0 + Math.max(0, s - l.s0) };
   }
 
   nextJunction(s: number): Junction | undefined {
