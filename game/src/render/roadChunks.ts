@@ -4,7 +4,7 @@
 import * as THREE from "three";
 import { LANE_WIDTH, LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from "../road/road";
 import { planSigns, type SignSpec } from "./signs";
-import { noiseTexture, type World } from "./world";
+import type { World } from "./world";
 
 export const CHUNK = 200;
 const ROW = 5; // 노면 가로줄 간격 (m)
@@ -87,6 +87,102 @@ class Geo {
 
 const tmpColor = new THREE.Color();
 
+/** 이음매 없이 반복되는 부드러운 값 잡음 (cells × cells 격자를 보간) */
+function tiledNoise(size: number, cells: number, rand: () => number): Float32Array {
+  const grid = new Float32Array(cells * cells);
+  for (let i = 0; i < grid.length; i++) grid[i] = rand();
+  const out = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const gy = (y / size) * cells;
+    const y0 = Math.floor(gy);
+    const ty = gy - y0;
+    const sy = ty * ty * (3 - 2 * ty);
+    const y1 = (y0 + 1) % cells;
+    for (let x = 0; x < size; x++) {
+      const gx = (x / size) * cells;
+      const x0 = Math.floor(gx);
+      const tx = gx - x0;
+      const sx = tx * tx * (3 - 2 * tx);
+      const x1 = (x0 + 1) % cells;
+      const top = grid[y0 * cells + x0] * (1 - sx) + grid[y0 * cells + x1] * sx;
+      const bot = grid[y1 * cells + x0] * (1 - sx) + grid[y1 * cells + x1] * sx;
+      out[y * size + x] = top * (1 - sy) + bot * sy;
+    }
+  }
+  return out;
+}
+
+function xorshift(seed: number): () => number {
+  let x = seed * 1234567;
+  return () => {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    return ((x >>> 0) % 10000) / 10000;
+  };
+}
+
+function grayTexture(size: number, value: (i: number) => number): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d")!;
+  const img = g.createImageData(size, size);
+  for (let i = 0; i < size * size; i++) {
+    const b = Math.max(0, Math.min(255, value(i)));
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = b;
+    img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** 아스팔트: 골재 알갱이, 얼룩, 패인 곳 (4m마다 반복) */
+function asphaltTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const rand = xorshift(3);
+  const blotch = tiledNoise(size, 5, rand);
+  const fine = tiledNoise(size, 40, rand);
+  return grayTexture(size, (i) => {
+    const v = 150 + (blotch[i] - 0.5) * 34 + (fine[i] - 0.5) * 22 + (rand() - 0.5) * 46;
+    const r = rand();
+    if (r < 0.012) return v + 50; // 밝은 골재
+    if (r < 0.022) return v - 40; // 패인 곳
+    return v;
+  });
+}
+
+/** 풀밭: 덤불 덩어리와 잔디 결 (30m마다 반복) */
+function grassTexture(): THREE.CanvasTexture {
+  const size = 256;
+  const rand = xorshift(7);
+  const clump = tiledNoise(size, 6, rand);
+  const tuft = tiledNoise(size, 48, rand);
+  return grayTexture(size, (i) => 160 + (clump[i] - 0.5) * 80 + (tuft[i] - 0.5) * 50 + (rand() - 0.5) * 50);
+}
+
+/** 중앙분리대 눈부심 방지판: 0.5m마다 세운 날개판과 위아래 테 (사이로 건너편이 보인다) */
+function glareTexture(): THREE.CanvasTexture {
+  const w = 64;
+  const h = 32;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#ffffff";
+  g.fillRect(0, 0, 22, h);
+  g.fillRect(0, 0, w, 3);
+  g.fillRect(0, h - 3, w, 3);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
 function hash(n: number): number {
   let x = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
   x ^= x >>> 13;
@@ -101,7 +197,8 @@ export class RoadChunks {
   private signs: SignSpec[];
   private mats: Record<string, THREE.Material>;
   private signMats = new Map<THREE.Texture, THREE.Material>();
-  private treeGeo: THREE.BufferGeometry;
+  private pineGeo: THREE.BufferGeometry;
+  private broadGeo: THREE.BufferGeometry;
   private noiseWallBlocks = new Set<number>();
   overrides: LaneOverride[] = [];
 
@@ -111,9 +208,8 @@ export class RoadChunks {
   ) {
     this.world.scene.add(this.group);
     this.signs = planSigns(road);
-    const asphalt = noiseTexture(256, 150, 60, 3);
-    asphalt.repeat.set(1, 1);
-    const grass = noiseTexture(128, 170, 90, 7);
+    const asphalt = asphaltTexture();
+    const grass = grassTexture();
     this.mats = {
       surface: new THREE.MeshStandardMaterial({ vertexColors: true, map: asphalt, roughness: 0.95, metalness: 0 }),
       marks: new THREE.MeshStandardMaterial({
@@ -128,11 +224,13 @@ export class RoadChunks {
       terrain: new THREE.MeshStandardMaterial({ vertexColors: true, map: grass, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
       tunnel: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide }),
       lamp: new THREE.MeshBasicMaterial({ color: 0xfff1cf, side: THREE.DoubleSide }),
-      tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }),
+      tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
       post: new THREE.MeshStandardMaterial({ color: 0x8e9396, roughness: 0.5, metalness: 0.6 }),
+      glare: new THREE.MeshStandardMaterial({ vertexColors: true, map: glareTexture(), transparent: true, depthWrite: false, roughness: 0.7, side: THREE.DoubleSide }),
       signBack: new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.6, metalness: 0.4, side: THREE.DoubleSide }),
     };
-    this.treeGeo = makeTreeGeometry();
+    this.pineGeo = makePineGeometry();
+    this.broadGeo = makeBroadleafGeometry();
     // 방음벽 구간: IC·JC 근처(도시 부근)일수록 자주
     for (let b = 0; b * 400 < road.length; b++) {
       const s = b * 400;
@@ -221,8 +319,8 @@ export class RoadChunks {
     const lamps = new Geo();
 
     // ---- 노면 ----
-    const asphaltOur = new THREE.Color(0x5b5d5f);
-    const asphaltOpp = new THREE.Color(0x585a5c);
+    const asphaltOur = new THREE.Color(0x646668);
+    const asphaltOpp = new THREE.Color(0x616365);
     const shoulderCol = new THREE.Color(0x6a6c6c);
     const medianCol = new THREE.Color(0x77776f);
     const a = new THREE.Vector3();
@@ -246,11 +344,40 @@ export class RoadChunks {
       }
     };
     const inTunnel = (r: Row) => r.structure === Structure.Tunnel;
-    strip(surface, (_, L) => L.ourL, (_, L) => L.ourR, 0, asphaltOur);
+    // 차로 노면: 바퀴가 지나는 두 줄은 닳아 밝고, 차로 가운데는 기름이 떨어져 어둡다
+    const TRACK = [0, 0.24, 0.5, 0.76];
+    const SHADE = [0.97, 1.07, 0.86, 1.07];
+    const maxLanes = Math.max(...rows.map((r) => r.lanes));
+    const laned = (base: THREE.Color, sideSign: 1 | -1) => {
+      let prev: number[] | null = null;
+      const col = new THREE.Color();
+      for (const row of rows) {
+        const L = layout(row.w);
+        const lw = row.w / Math.max(1, row.lanes);
+        const ids: number[] = [];
+        for (let j = 0; j <= maxLanes * 4; j++) {
+          const li = Math.floor(j / 4);
+          const f = li >= row.lanes ? row.lanes : li + TRACK[j % 4];
+          // sideSign 1 = 우리 쪽(왼쪽 끝에서 오른쪽으로), -1 = 반대쪽(중앙에서 바깥으로)
+          const d = sideSign > 0 ? L.ourL + f * lw : L.oppInner - f * lw;
+          col.copy(base).multiplyScalar(li >= row.lanes ? 0.97 : SHADE[j % 4]);
+          P(row, d, 0, a);
+          ids.push(surface.vertex(a.x, a.y, a.z, 0, 1, 0, col, d / 4, row.s / 4));
+        }
+        if (prev) {
+          for (let j = 0; j < ids.length - 1; j++) {
+            if (sideSign > 0) surface.quad(prev[j], prev[j + 1], ids[j + 1], ids[j]);
+            else surface.quad(prev[j + 1], prev[j], ids[j], ids[j + 1]);
+          }
+        }
+        prev = ids;
+      }
+    };
+    laned(asphaltOur, 1);
     strip(surface, (_, L) => L.ourR, (_, L) => L.shoulderR, 0, shoulderCol);
     strip(surface, (_, L) => L.oppInner, (_, L) => L.ourL, 0, medianCol, inTunnel);
     strip(surface, (_, L) => L.shoulderL - 0.4, (_, L) => L.ourL, 0.001, shoulderCol, (r) => !inTunnel(r));
-    strip(surface, (_, L) => L.oppOuter, (_, L) => L.oppInner, 0, asphaltOpp);
+    laned(asphaltOpp, -1);
     strip(surface, (_, L) => L.oppShoulder, (_, L) => L.oppOuter, 0, shoulderCol);
     strip(surface, (_, L) => L.oppInner, (_, L) => L.oppInner + 1.4, 0.001, shoulderCol, (r) => !inTunnel(r));
 
@@ -315,7 +442,8 @@ export class RoadChunks {
     ];
     const concreteCol = new THREE.Color(0xb9b7ae);
     this.sweep(concrete, rows, P, (r) => layout(r.w).barrier, nj, concreteCol, inTunnel);
-    this.panel(metal, rows, P, (r) => layout(r.w).barrier, 0.82, 1.5, new THREE.Color(0x3f7d4f), inTunnel);
+    const glare = new Geo();
+    this.panel(glare, rows, P, (r) => layout(r.w).barrier, 0.82, 1.5, new THREE.Color(0x3f7d4f), inTunnel, 0.5);
 
     // ---- 오른쪽: 가드레일 / 교량 난간 / 방음벽 ----
     const isBridge = (r: Row) => r.structure === Structure.Bridge;
@@ -386,6 +514,7 @@ export class RoadChunks {
     add(marks, this.mats.marks, { cast: false, receive: true });
     add(concrete, this.mats.concrete, { cast: true, receive: true });
     add(metal, this.mats.metal, { cast: true, receive: true });
+    add(glare, this.mats.glare, { cast: false, receive: true });
     add(postGeo, this.mats.concrete, { cast: true, receive: true });
     add(tunnel, this.mats.tunnel, { cast: false, receive: false });
     add(lamps, this.mats.lamp, { cast: false, receive: false });
@@ -449,6 +578,7 @@ export class RoadChunks {
     h1: number,
     color: THREE.Color,
     skip: (r: Row) => boolean,
+    repeat = 0, // 텍스처를 몇 m마다 반복할지 (0이면 텍스처 없음)
   ) {
     let prev: [number, number] | null = null;
     const v = new THREE.Vector3();
@@ -461,9 +591,10 @@ export class RoadChunks {
       const nx = row.tn;
       const nz = row.te;
       P(row, dd, h0, v);
-      const i0 = geo.vertex(v.x, v.y, v.z, nx, 0, nz, color);
+      const u = repeat > 0 ? row.s / repeat : 0;
+      const i0 = geo.vertex(v.x, v.y, v.z, nx, 0, nz, color, u, 0);
       P(row, dd, h1, v);
-      const i1 = geo.vertex(v.x, v.y, v.z, nx, 0, nz, color);
+      const i1 = geo.vertex(v.x, v.y, v.z, nx, 0, nz, color, u, 1);
       if (prev) geo.quad(prev[0], prev[1], i1, i0);
       prev = [i0, i1];
     }
@@ -594,8 +725,11 @@ export class RoadChunks {
     const left = offsets.map((o, i) => [o, i] as const).filter(([o]) => o < 0).reverse();
     const grass = new THREE.Color(0x5d7440);
     const forest = new THREE.Color(0x3f5a33);
+    const forestLight = new THREE.Color(0x4f6a38);
     const cut = new THREE.Color(0x8d8674);
+    const cutGreen = new THREE.Color(0x6f7a4e); // 풀씨를 뿌려 덮은 깎기 비탈
     const field = new THREE.Color(0x7f8a52);
+    const paddy = new THREE.Color(0x8e9448);
     const v = new THREE.Vector3();
 
     // 굽은 길 안쪽에서 지형 줄이 서로 겹치지 않게 d를 줄인다
@@ -634,7 +768,12 @@ export class RoadChunks {
           if (tunnelRow) h = Math.max(h, 9);
           const slope = Math.abs(h - lastH) / Math.max(1, d - lastD);
           const far = Math.abs(off) > 150;
-          const c = slope > 0.45 && Math.abs(off) < 120 ? cut : far ? (hash(Math.round(row.s) * 7 + col) < 0.25 ? field : forest) : grass;
+          // 논·밭·숲은 약 160m 덩어리로 정해 점점이 흩어지지 않게 한다. 평평한 곳에만 논밭
+          const patch = hash(Math.floor(row.s / 160) * 977 + col * 61 + sign * 7);
+          let c = grass;
+          if (slope > 0.45 && Math.abs(off) < 120) c = patch < 0.55 ? cutGreen : cut;
+          else if (far && slope < 0.1 && patch < 0.3) c = patch < 0.14 ? paddy : field;
+          else if (far) c = patch > 0.72 ? forestLight : forest;
           tmpColor.copy(c).multiplyScalar(0.9 + hash(Math.round(row.s / 20) * 131 + col) * 0.2);
           P(row, sign * d, h, v);
           ids.push(geo.vertex(v.x, v.y, v.z, 0, 1, 0, tmpColor, v.x / 30, v.z / 30));
@@ -684,14 +823,18 @@ export class RoadChunks {
     mesh.receiveShadow = true;
     g.add(mesh);
 
-    // 나무: 도로에서 35~450m 사이, 가까울수록 촘촘하게
-    const count = 170;
-    const inst = new THREE.InstancedMesh(this.treeGeo, this.mats.tree, count);
+    // 나무: 도로에서 35~450m 사이, 가까울수록 촘촘하게. 소나무와 활엽수(참나무 등)를 섞고
+    // 섞는 비율은 약 600m마다 달라진다 (소나무 숲, 활엽수 숲, 섞인 숲)
+    const count = 230;
+    const pines = new THREE.InstancedMesh(this.pineGeo, this.mats.tree, count);
+    const broads = new THREE.InstancedMesh(this.broadGeo, this.mats.tree, count);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const sc = new THREE.Vector3();
-    let n = 0;
-    for (let i = 0; i < count * 2 && n < count; i++) {
+    const tint = new THREE.Color();
+    let np = 0;
+    let nb = 0;
+    for (let i = 0; i < count * 2 && np + nb < count; i++) {
       const r1 = hash(k * 7919 + i * 13);
       const r2 = hash(k * 104729 + i * 17);
       const r3 = hash(k * 1299709 + i * 19);
@@ -717,16 +860,36 @@ export class RoadChunks {
       if (Math.abs(absD) < 45) h = road.terrainRel(s, sign > 0 ? offs.findIndex((o) => o > 0) : offs.findIndex((o) => o > 0) - 1);
       if (row.structure === Structure.Bridge && Math.abs(d) < 60) continue;
       P(row, d, h - 0.3, sc);
+      // 지형에서 논·밭으로 칠한 덩어리에는 심지 않는다 (지형 색과 같은 해시)
+      if (dist > 150) {
+        const col = offs.reduce((best, o, c) => (Math.abs(o - absD) < Math.abs(offs[best] - absD) ? c : best), 0);
+        if (hash(Math.floor(s / 160) * 977 + col * 61 + sign * 7) < 0.3) continue;
+      }
       const size = 0.7 + hash(i * 31 + k) * 0.8;
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash(i + k * 3) * 6.28);
       m.compose(sc, q, new THREE.Vector3(size, size * (0.8 + hash(i * 7) * 0.5), size));
-      inst.setMatrixAt(n++, m);
+      const pineShare = 0.2 + 0.6 * hash(Math.floor(s / 600) * 7 + (sign > 0 ? 1 : 2));
+      const pine = hash(i * 53 + k * 11) < pineShare;
+      // 나무마다 조금씩 다른 초록 (활엽수는 가끔 누르스름하게)
+      const shade = 0.78 + hash(i * 97 + k) * 0.38;
+      const warm = pine ? 0 : Math.max(0, hash(i * 71 + k * 5) - 0.75) * 1.2;
+      tint.setRGB(shade * (1 + warm * 0.9), shade * (1 + warm * 0.45), shade * (1 - warm * 0.3));
+      const target = pine ? pines : broads;
+      const idx = pine ? np++ : nb++;
+      target.setMatrixAt(idx, m);
+      target.setColorAt(idx, tint);
     }
-    inst.count = n;
-    inst.castShadow = true;
-    inst.receiveShadow = false;
-    inst.computeBoundingSphere();
-    g.add(inst);
+    for (const [inst, n] of [
+      [pines, np],
+      [broads, nb],
+    ] as const) {
+      inst.count = n;
+      inst.castShadow = true;
+      inst.receiveShadow = false;
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+      inst.computeBoundingSphere();
+      g.add(inst);
+    }
     return g;
   }
 
@@ -846,27 +1009,72 @@ function disposeGroup(g: THREE.Object3D) {
   });
 }
 
-function makeTreeGeometry(): THREE.BufferGeometry {
-  // 한국 산에 많은 침엽수·활엽수 느낌의 저폴리 나무 (원뿔 두 층 + 줄기)
-  const parts: THREE.BufferGeometry[] = [];
-  const paint = (g: THREE.BufferGeometry, hex: number) => {
-    const n = g.getAttribute("position").count;
-    const c = new THREE.Color(hex);
-    const arr = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) arr.set([c.r, c.g, c.b], i * 3);
-    g.setAttribute("color", new THREE.BufferAttribute(arr, 3));
-    g.deleteAttribute("uv");
-    return g.index ? g.toNonIndexed() : g;
-  };
-  const trunk = new THREE.CylinderGeometry(0.18, 0.28, 3, 5);
-  trunk.translate(0, 1.5, 0);
-  parts.push(paint(trunk, 0x5a4633));
-  const low = new THREE.ConeGeometry(2.6, 5.5, 7);
-  low.translate(0, 4.6, 0);
-  parts.push(paint(low, 0x355a2c));
-  const high = new THREE.ConeGeometry(1.8, 4.2, 7);
-  high.translate(0, 7.4, 0);
-  parts.push(paint(high, 0x3d6532));
+function paintPart(g: THREE.BufferGeometry, hex: number, jitter = 0, seed = 0): THREE.BufferGeometry {
+  const flat = g.index ? g.toNonIndexed() : g;
+  flat.deleteAttribute("uv");
+  flat.deleteAttribute("normal");
+  const pos = flat.getAttribute("position");
+  const c = new THREE.Color(hex);
+  const arr = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    // 면마다 밝기를 조금씩 달리해 잎 뭉치 느낌을 낸다
+    const f = 1 + (hash(Math.floor(i / 3) * 131 + seed) - 0.5) * jitter;
+    arr.set([c.r * f, c.g * f, c.b * f], i * 3);
+  }
+  flat.setAttribute("color", new THREE.BufferAttribute(arr, 3));
+  return flat;
+}
+
+/** 크기를 흔들어 둥근 도형을 덜 매끈하게 만든다 */
+function lumpy(g: THREE.BufferGeometry, amount: number, seed: number): THREE.BufferGeometry {
+  const pos = g.getAttribute("position");
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const key = Math.round(v.x * 10) * 73 + Math.round(v.y * 10) * 151 + Math.round(v.z * 10) * 283 + seed;
+    v.multiplyScalar(1 + (hash(key) - 0.5) * amount);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  return g;
+}
+
+function makePineGeometry(): THREE.BufferGeometry {
+  // 잣나무·낙엽송 조림지 같은 원뿔형 침엽수: 줄기 + 세 층
+  const trunk = new THREE.CylinderGeometry(0.16, 0.3, 4, 5);
+  trunk.translate(0, 2, 0);
+  const tiers = [
+    { r: 2.7, h: 4.6, y: 4.4, c: 0x2f5129 },
+    { r: 2.1, h: 3.9, y: 6.6, c: 0x355a2c },
+    { r: 1.3, h: 3.2, y: 8.7, c: 0x3d6532 },
+  ];
+  const parts = [paintPart(trunk, 0x5c4432)];
+  tiers.forEach((tr, i) => {
+    const cone = lumpy(new THREE.ConeGeometry(tr.r, tr.h, 8, 1), 0.16, i * 17);
+    cone.translate(0, tr.y, 0);
+    parts.push(paintPart(cone, tr.c, 0.22, i));
+  });
+  const merged = mergeSimple(parts);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+function makeBroadleafGeometry(): THREE.BufferGeometry {
+  // 참나무 같은 활엽수: 줄기 + 둥근 잎 뭉치 네 개
+  const trunk = new THREE.CylinderGeometry(0.2, 0.34, 4.2, 5);
+  trunk.translate(0, 2.1, 0);
+  const blobs = [
+    { x: 0, y: 6.2, z: 0, r: 2.9, c: 0x4a6b31 },
+    { x: 1.5, y: 5.2, z: 0.7, r: 2.0, c: 0x44652e },
+    { x: -1.3, y: 5.4, z: -0.9, r: 2.1, c: 0x4f7234 },
+    { x: 0.2, y: 7.9, z: -0.4, r: 1.8, c: 0x557838 },
+  ];
+  const parts = [paintPart(trunk, 0x5a4a3a)];
+  blobs.forEach((b, i) => {
+    const s = lumpy(new THREE.IcosahedronGeometry(b.r, 1), 0.28, i * 29);
+    s.scale(1, 0.85, 1);
+    s.translate(b.x, b.y, b.z);
+    parts.push(paintPart(s, b.c, 0.3, i + 10));
+  });
   const merged = mergeSimple(parts);
   merged.computeVertexNormals();
   return merged;
