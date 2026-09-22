@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
+import type { Enforcement } from "../sim/cameras";
 
 export const SIGN_GREEN = "#0b6a3b";
 const FONT = `"Pretendard Variable", Pretendard, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif`;
@@ -212,6 +213,68 @@ export function plateTexture(text: string, sub = ""): THREE.CanvasTexture {
   });
 }
 
+/** 카메라 그림 (몸통, 렌즈, 받침) */
+function drawCamera(g: CanvasRenderingContext2D, cx: number, cy: number, size: number, color: string) {
+  const s = size;
+  g.fillStyle = color;
+  roundRect(g, cx - s * 0.5, cy - s * 0.28, s * 0.78, s * 0.5, s * 0.06);
+  g.fill();
+  g.beginPath();
+  g.moveTo(cx + s * 0.28, cy - s * 0.12);
+  g.lineTo(cx + s * 0.5, cy - s * 0.26);
+  g.lineTo(cx + s * 0.5, cy + s * 0.2);
+  g.lineTo(cx + s * 0.28, cy + s * 0.06);
+  g.closePath();
+  g.fill();
+  g.fillRect(cx - s * 0.16, cy + s * 0.22, s * 0.1, s * 0.3);
+  g.fillStyle = "#ffffff";
+  g.beginPath();
+  g.arc(cx - s * 0.12, cy - s * 0.03, s * 0.13, 0, Math.PI * 2);
+  g.fill();
+}
+
+/** 제한속도 아래 붙는 "과속단속" 보조표지 */
+export function cameraPlateTexture(): THREE.CanvasTexture {
+  return canvasTexture("camplate", 256, 320, (g) => {
+    g.fillStyle = "#ffffff";
+    g.fillRect(0, 0, 256, 320);
+    g.strokeStyle = "#111";
+    g.lineWidth = 10;
+    g.strokeRect(5, 5, 246, 310);
+    drawCamera(g, 128, 120, 150, "#111");
+    g.fillStyle = "#111";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    fitText(g, "과속단속", 220, 58);
+    g.fillText("과속단속", 128, 262);
+  });
+}
+
+/** 구간단속 시작·끝 표지: 파란 띠에 "구간단속", 아래에 시작/끝과 구간 길이 */
+export function sectionSignTexture(kind: "start" | "end", lengthKm: number, limit: number): THREE.CanvasTexture {
+  return canvasTexture(`section|${kind}|${lengthKm}|${limit}`, 512, 600, (g) => {
+    g.fillStyle = "#ffffff";
+    roundRect(g, 0, 0, 512, 600, 26);
+    g.fill();
+    g.fillStyle = "#1a4fa8";
+    roundRect(g, 14, 14, 484, 150, 16);
+    g.fill();
+    g.fillStyle = "#ffffff";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    fitText(g, "구간단속", 440, 104);
+    g.fillText("구간단속", 256, 92);
+    g.fillStyle = "#111";
+    g.font = `800 150px ${FONT}`;
+    g.fillText(kind === "start" ? "시작" : "끝", 256, 290);
+    drawCamera(g, 110, 470, 120, "#1a4fa8");
+    g.fillStyle = "#111";
+    g.textAlign = "left";
+    fitText(g, kind === "start" ? `${lengthKm}km` : `${limit}`, 250, 92);
+    g.fillText(kind === "start" ? `${lengthKm}km` : `${limit}`, 200, 470);
+  });
+}
+
 export function sloganTexture(text: string): THREE.CanvasTexture {
   return canvasTexture(`slogan|${text}`, 1536, 192, (g) => {
     g.fillStyle = "#123c7a";
@@ -327,5 +390,23 @@ export function planSigns(road: Road): SignSpec[] {
     }
   }
   out.sort((a, b) => a.s - b.s);
+  return out;
+}
+
+/** 단속 카메라 표지: 고정식 500m 앞 제한속도 + "과속단속", 구간단속 시점 300m 앞과 종점 뒤 */
+export function enforcementSigns(e: Enforcement, road: Road): SignSpec[] {
+  const out: SignSpec[] = [];
+  const ok = (s: number) => s > 30 && s < road.length - 30;
+  for (const cam of e.fixed) {
+    const s = cam.s - 500;
+    const limit = cam.limit || road.speedAt(cam.s);
+    if (ok(s)) out.push({ s, kind: "speed", w: 1.2, h: 1.2, texture: () => speedTexture(limit, "max"), extra: cameraPlateTexture });
+  }
+  for (const sec of e.sections) {
+    const km = Math.round((sec.s1 - sec.s0) / 100) / 10;
+    const limit = sec.limit || road.speedAt(sec.s0);
+    if (ok(sec.s0 - 300)) out.push({ s: sec.s0 - 300, kind: "guide", w: 1.7, h: 2.0, texture: () => sectionSignTexture("start", km, limit) });
+    if (ok(sec.s1 + 60)) out.push({ s: sec.s1 + 60, kind: "guide", w: 1.7, h: 2.0, texture: () => sectionSignTexture("end", km, limit) });
+  }
   return out;
 }

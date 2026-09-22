@@ -108,7 +108,7 @@ export class Game {
     this.chunks = new RoadChunks(road, this.world);
     this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
     this.enforcement = enforcementFor(road, cfg.cameras);
-    this.chunks.enforcement = this.enforcement;
+    this.chunks.setEnforcement(this.enforcement);
 
     const type = setup.vehicle;
     this.spec = specFor(type);

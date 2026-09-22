@@ -3,7 +3,7 @@
 
 import * as THREE from "three";
 import { LANE_WIDTH, LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from "../road/road";
-import { planSigns, type SignSpec } from "./signs";
+import { enforcementSigns, planSigns, type SignSpec } from "./signs";
 import type { Enforcement } from "../sim/cameras";
 import type { World } from "./world";
 
@@ -203,7 +203,13 @@ export class RoadChunks {
   private noiseWallBlocks = new Set<number>();
   overrides: LaneOverride[] = [];
   /** 단속 카메라: 고정식은 오른쪽 기둥과 팔, 구간단속 시점·종점은 도로를 건너는 문형 구조물 */
-  enforcement: Enforcement = { fixed: [], sections: [] };
+  private enforcement: Enforcement = { fixed: [], sections: [] };
+
+  /** 단속 카메라와 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
+  setEnforcement(e: Enforcement) {
+    this.enforcement = e;
+    this.signs = [...this.signs, ...enforcementSigns(e, this.road)].sort((a, b) => a.s - b.s);
+  }
 
   constructor(
     private road: Road,
@@ -946,6 +952,8 @@ export class RoadChunks {
     const row = this.rows(sign.s, sign.s, 1)[0];
     const L = layout(row.w);
     const face = Math.atan2(-row.te, row.tn); // 판 앞면(+Z)이 다가오는 차 쪽(-진행방향)을 보게
+    // 방음벽 구간: 큰 판은 벽 위에 달고, 기둥 표지는 벽 앞으로
+    const wall = this.noiseWallBlocks.has(Math.floor(row.s / 400)) && row.structure === Structure.Normal;
     const obj = new THREE.Group();
     const tex = sign.texture();
     const board = (w: number, h: number, t: THREE.Texture, round = false) => {
@@ -970,10 +978,11 @@ export class RoadChunks {
     switch (sign.kind) {
       case "guide":
       case "distance": {
-        pos = P(row, L.shoulderR + 3.2, 0);
+        pos = P(row, L.shoulderR + (wall ? 1.8 : 3.2), 0);
+        const lift = wall ? 5.0 : 2.6;
         const bd = board(sign.w, sign.h, tex);
-        bd.position.set(0, 2.6 + sign.h / 2, 0);
-        obj.add(bd, post(-sign.w * 0.3, 2.6 + sign.h * 0.8, 0.12), post(sign.w * 0.3, 2.6 + sign.h * 0.8, 0.12));
+        bd.position.set(0, lift + sign.h / 2, wall ? 0.15 : 0);
+        obj.add(bd, post(-sign.w * 0.3, lift + sign.h * 0.8, 0.12), post(sign.w * 0.3, lift + sign.h * 0.8, 0.12));
         break;
       }
       case "gantry":
@@ -996,7 +1005,7 @@ export class RoadChunks {
         break;
       }
       case "speed": {
-        pos = P(row, L.shoulderR + 1.6, 0);
+        pos = P(row, L.shoulderR + (wall ? 1.1 : 1.6), 0);
         const bd = board(sign.w, sign.h, tex, true);
         bd.position.set(0, 2.4 + sign.h / 2 + (sign.extra ? 0.5 : 0), 0);
         obj.add(bd, post(0, 2.4 + sign.h + (sign.extra ? 0.5 : 0), 0.06));
