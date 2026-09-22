@@ -1,5 +1,6 @@
 // 합성음: 엔진(가솔린·디젤·대형 디젤·전기 모터), 타이어 노면음, 바람, 터널 울림, 방향지시등 딸깍 소리,
 // 충돌, 경적, 대형차 에어브레이크. 파일 없이 Web Audio로 만든다.
+// 내비 음성 안내는 브라우저 음성 합성(ko-KR)을 쓰고, 한국어 음성이 없는 브라우저에서는 말하지 않는다.
 
 export type SoundPowertrain = "gasoline" | "diesel_light" | "diesel_heavy" | "electric";
 
@@ -28,7 +29,11 @@ export class Sound {
   private lastTick = -1;
   private pt: SoundPowertrain = "gasoline";
   private lastBrake = 0;
+  private voice: SpeechSynthesisVoice | null = null;
+  private paused = false;
   enabled = true;
+  /** 내비 음성 안내 */
+  voiceOn = true;
 
   /** 사용자 입력(시작 버튼) 뒤에 불러야 소리가 난다 */
   start() {
@@ -68,6 +73,9 @@ export class Sound {
     this.engineOsc2.start();
     this.setPowertrain(this.pt);
 
+    this.pickVoice();
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.addEventListener("voiceschanged", () => this.pickVoice());
+
     const len = ctx.sampleRate * 2;
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = this.noise.getChannelData(0);
@@ -97,6 +105,24 @@ export class Sound {
     this.tireGain = ctx.createGain();
     this.tireGain.gain.value = 0;
     noiseSrc().connect(this.tireFilter).connect(this.tireGain).connect(this.bus);
+  }
+
+  private pickVoice() {
+    if (typeof speechSynthesis === "undefined") return;
+    const ko = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith("ko"));
+    // 자연스러운 음성(Edge Natural, Google)을 먼저
+    this.voice = ko.find((v) => /natural|online/i.test(v.name)) ?? ko.find((v) => /google/i.test(v.name)) ?? ko[0] ?? null;
+  }
+
+  /** 내비 음성 한 마디. force는 일시정지·끝난 뒤에도 말한다 (도착 안내) */
+  say(text: string, force = false) {
+    if (!this.enabled || !this.voiceOn || !this.voice || (this.paused && !force)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.voice = this.voice;
+    u.lang = this.voice.lang;
+    u.rate = 1.08;
+    u.volume = 0.9;
+    speechSynthesis.speak(u);
   }
 
   setPowertrain(pt: SoundPowertrain) {
@@ -206,9 +232,12 @@ export class Sound {
 
   suspend() {
     void this.ctx?.suspend();
+    this.paused = true;
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
   }
 
   resume() {
     void this.ctx?.resume();
+    this.paused = false;
   }
 }

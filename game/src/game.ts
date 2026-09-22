@@ -145,6 +145,11 @@ export class Game {
       idleRpm: this.spec.idleRpm,
       heavy: heavySpeed,
       net: setup.net,
+      say: (text) => {
+        if (this.state !== "run") return false;
+        this.sound.say(text);
+        return true;
+      },
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
@@ -172,6 +177,7 @@ export class Game {
     });
 
     this.sound.enabled = settings.sound;
+    this.sound.voiceOn = settings.voice;
     this.sound.setPowertrain(this.spec.powertrain);
     this.world.origin.e = 0;
     this.updateOrigin();
@@ -237,6 +243,7 @@ export class Game {
           onClick: () => {
             this.state = "run";
             this.sound.resume();
+            this.sound.say(`경로 안내를 시작합니다. ${this.setup.destName}까지 ${Math.round(remain)}킬로미터입니다.`);
             onStart?.();
           },
         },
@@ -479,6 +486,7 @@ export class Game {
     if (this.state === "end") return;
     this.state = "end";
     this.sound.suspend();
+    if (reason === "arrived") this.sound.say("목적지에 도착했습니다. 경로 안내를 종료합니다.", true);
     this.hud.visible = false;
     if (this.view.mirrorsOn) this.view.toggleMirrors();
     const f = this.frameInfo(0);

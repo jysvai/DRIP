@@ -41,6 +41,44 @@ export interface HudOptions {
   /** 법규상 이 차의 제한속도를 화물차 기준으로 보여 줄지 */
   heavy: boolean;
   net?: Network | null;
+  /** 음성 안내. 지금 말할 수 없으면(출발 전·일시정지) false를 돌려주고, 그러면 나중에 다시 말한다 */
+  say?: (text: string) => boolean;
+}
+
+type Turn = "left" | "right" | "straight";
+
+interface Maneuver {
+  s: number;
+  kind: Turn | "dest";
+  text: string;
+  lanes: "left" | "right" | "all";
+  /** 음성 안내용: 분기점 이름, 갈아탈 노선 이름, 방향 */
+  voice?: { via: string; road: string; to: string };
+}
+
+/** 음성 안내 거리 (m): 분기점, 목적지 */
+const VOICE_AT = { turn: [2000, 1000, 300], dest: [2000, 500] };
+
+/** 소리 내어 읽을 이름 (신갈JC → 신갈분기점) */
+function spoken(name: string): string {
+  return name.replace(/JC$/, "분기점").replace(/IC$/, "나들목").replace(/TG$/, "요금소");
+}
+
+/** 읽을 거리: 1km 넘으면 0.1km 단위, 아래는 100m 단위 */
+function spokenDist(m: number): string {
+  return m >= 950 ? `${Math.round(m / 100) / 10}킬로미터` : `${Math.round(m / 100) * 100}미터`;
+}
+
+/** 분기점 안내 문장 (한국 내비 말투). dist는 남은 거리(m) */
+export function turnPhrase(dist: number, kind: Turn, voice: { via: string; road: string; to: string }): string {
+  const v = { ...voice, via: spoken(voice.via) };
+  const side = kind === "left" ? "왼쪽 방향" : kind === "right" ? "오른쪽 방향" : "직진";
+  if (dist <= 300) return kind === "straight" ? `잠시 후 ${v.to} 방향으로 직진입니다.` : `잠시 후 ${v.via}에서 ${side}입니다.`;
+  return `${spokenDist(dist)} 앞, ${v.via}에서 ${v.road} ${v.to} 방향, ${side}입니다.`;
+}
+
+export function destPhrase(dist: number): string {
+  return dist <= 500 ? "잠시 후 목적지 부근입니다." : `목적지까지 ${spokenDist(dist)} 남았습니다.`;
 }
 
 const NS = "http://www.w3.org/2000/svg";
@@ -141,6 +179,8 @@ export class Hud {
   private miniTimer = 0;
   private hintTime = 14;
   private lastLanesKey = "";
+  private spoken = new Set<string>();
+  private lastLimit = 0;
   /** 남은 경로를 제한속도로 달리는 데 걸리는 시간 (1km 간격, 끝에서부터 누적) */
   private etaTable: Float32Array;
   private netLines: { pts: Float32Array; box: [number, number, number, number] }[] = [];
@@ -288,7 +328,7 @@ export class Hud {
   }
 
   /** 다음 안내: 경로의 다음 조각으로 넘어가는 곳, 또는 목적지 */
-  private maneuver(s: number): { s: number; kind: "left" | "right" | "straight" | "dest"; text: string; lanes: "left" | "right" | "all" } | null {
+  private maneuver(s: number): Maneuver | null {
     const road = this.road;
     if (road.isRoute) {
       for (let k = 0; k + 1 < road.legs.length; k++) {
@@ -305,10 +345,31 @@ export class Hud {
         const side = turn === "left" ? "왼쪽 " : turn === "right" ? "오른쪽 " : "";
         // 이름 없는 연결은 길이 그대로 이어진다
         if (!b.via) return { s: a.s1, kind: turn, text: `${b.name}(으)로 이어집니다 · ${b.to} 방향`, lanes: "all" };
-        return { s: a.s1, kind: turn, text: `<b>${b.via}</b>에서 ${side}${dir}`, lanes: turn === "straight" ? "all" : turn };
+        return {
+          s: a.s1,
+          kind: turn,
+          text: `<b>${b.via}</b>에서 ${side}${dir}`,
+          lanes: turn === "straight" ? "all" : turn,
+          voice: { via: b.via, road: b.name, to: b.to },
+        };
       }
     }
     return { s: this.opts.finishS, kind: "dest", text: `목적지 <b>${this.opts.destName}</b>`, lanes: "all" };
+  }
+
+  /** 안내 지점을 지날 때 한 번씩 말한다. 처음 볼 때 이미 가까우면 가장 가까운 안내만 */
+  private announce(m: Maneuver, dist: number) {
+    const say = this.opts.say;
+    if (!say || dist < 0) return;
+    if (m.kind !== "dest" && !m.voice) return;
+    const at = m.kind === "dest" ? VOICE_AT.dest : VOICE_AT.turn;
+    const hit = at.filter((d) => dist <= d);
+    if (!hit.length) return;
+    const nearest = hit[hit.length - 1];
+    const key = (d: number) => `${Math.round(m.s)}|${d}`;
+    if (this.spoken.has(key(nearest))) return;
+    if (!say(m.kind === "dest" ? destPhrase(dist) : turnPhrase(dist, m.kind, m.voice!))) return;
+    for (const d of hit) this.spoken.add(key(d));
   }
 
   update(f: HudFrame, dt: number) {
@@ -350,6 +411,9 @@ export class Hud {
     this.slowTimer = 0.2;
     const limit = road.speedAt(s, this.opts.heavy);
     this.limit.textContent = String(limit);
+    // 제한속도가 바뀌면 알린다 (속도가 굽기에 따라 바뀌는 연결로는 빼고)
+    if (this.lastLimit && limit !== this.lastLimit && !road.onConnector(s)) this.opts.say?.(`제한속도 ${limit}킬로미터 구간입니다.`);
+    if (!road.onConnector(s)) this.lastLimit = limit;
     this.limit.classList.toggle("over", kmh > limit + 10);
     this.icons.limit.classList.toggle("on", false);
     this.title.innerHTML = `<span class="shield">${road.refAt(s)}</span>${road.sectionNameAt(s)}`;
@@ -394,6 +458,8 @@ export class Hud {
         this.navLanes.innerHTML = html;
       }
     }
+
+    if (m) this.announce(m, m.s - s);
 
     // 다음 나들목 셋
     const next = road.junctions.filter((j) => j.s > s && j.s < this.opts.finishS && j.kind !== "기타").slice(0, 3);

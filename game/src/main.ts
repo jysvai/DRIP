@@ -2,7 +2,7 @@
 // 검수용 주소 (메뉴 없이 바로 시작, 기록은 서버에 올리지 않음):
 //   ?road=r1-1&km=20              한 주행선을 20km 지점부터
 //   ?from=서울&to=강릉&km=0        출발지·도착지 경로
-//   preset=한산|보통|혼잡|정체|자동|실제, hour=0~23, weekend=1, cam=cockpit|hood|chase, auto=1(자동 운전), sound=0,
+//   preset=한산|보통|혼잡|정체|자동|실제, hour=0~23, weekend=1, cam=cockpit|hood|chase, auto=1(자동 운전), sound=0, voice=0(음성 안내 끄기),
 //   car=차종 id, color=#rrggbb, quality=low|medium|high, go=1(출발 안내 없이)
 
 import "./ui/style.css";
@@ -66,6 +66,7 @@ function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSet
     camera: (p.get("cam") as CameraMode) ?? "cockpit",
     consent: false,
     sound: p.get("sound") !== "0",
+    voice: p.get("voice") !== "0",
     quality: (p.get("quality") as Quality) ?? "high",
     seed: Number(p.get("seed") ?? 12345),
   };

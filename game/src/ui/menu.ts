@@ -33,6 +33,8 @@ export interface DriveSettings {
   camera: CameraMode;
   consent: boolean;
   sound: boolean;
+  /** 내비 음성 안내 */
+  voice: boolean;
   quality: Quality;
   seed: number;
 }
@@ -106,6 +108,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let weekend = now.getDay() === 0 || now.getDay() === 6;
     let camera: CameraMode = saved.camera ?? "cockpit";
     let sound = saved.sound ?? true;
+    let voice = saved.voice ?? true;
     let quality: Quality = saved.quality ?? (matchMedia("(pointer: coarse)").matches ? "low" : "high");
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
@@ -447,6 +450,13 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       body.appendChild(field("시점", seg<CameraMode>([["cockpit", "운전석"], ["hood", "보닛"], ["chase", "차 뒤"]], camera, (v) => (camera = v))));
       body.appendChild(field("그래픽", seg<Quality>([["low", "낮음"], ["medium", "보통"], ["high", "높음"]], quality, (v) => (quality = v)), "끊기면 낮춰 보세요."));
       body.appendChild(field("소리", seg<string>([["on", "켜기"], ["off", "끄기"]], sound ? "on" : "off", (v) => (sound = v === "on"))));
+      body.appendChild(
+        field(
+          "음성 안내",
+          seg<string>([["on", "켜기"], ["off", "끄기"]], voice ? "on" : "off", (v) => (voice = v === "on")),
+          "분기점 2km·1km 앞과 직전, 제한속도가 바뀔 때 말로 알려 줍니다. 브라우저에 한국어 음성이 있어야 합니다.",
+        ),
+      );
       const consentBox = el("label", "consent");
       const cb = el("input");
       cb.type = "checkbox";
@@ -483,6 +493,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         camera,
         consent,
         sound,
+        voice,
         quality,
         seed: Math.floor(Math.random() * 2 ** 31),
       };
