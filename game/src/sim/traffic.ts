@@ -56,6 +56,8 @@ export interface Agent {
   compliant: boolean;
   busCompliant: boolean;
   passingStay: number;
+  /** 1차로를 달리는 차로로 쓰는 운전자 (앞지르기 뒤에도 돌아가지 않는다) */
+  cruiser: boolean;
   /** 플레이어 때문에 급제동했는지 (아차사고 판정용) */
   brakedByPlayer: number;
 }
@@ -187,6 +189,7 @@ export class Traffic {
       compliant: this.rng.next() < pr.designatedLaneCompliance,
       busCompliant: this.rng.next() < pr.busLaneCompliance,
       passingStay: this.draw(pr.passingLaneStay, 2),
+      cruiser: this.rng.next() < (pr.passingLaneCruise ?? 0),
       brakedByPlayer: 0,
     };
     return a;
@@ -474,8 +477,13 @@ export class Traffic {
       }
       let score = aNew - aCur + a.p * followerLoss;
       // 오른쪽으로 돌아가려는 성향, 1차로는 앞지르기 뒤 비운다
-      score += dir === 1 ? a.keepRight : -a.keepRight;
-      if (a.lane === 1 && dir === 1 && a.lane1Time > a.passingStay) score += 0.6;
+      if (a.cruiser) {
+        // 1차로 정속 주행: 오른쪽으로 돌아가려 하지 않고, 1차로 쪽으로 옮기려 한다
+        score += dir === -1 ? 0.5 : -0.5;
+      } else {
+        score += dir === 1 ? a.keepRight : -a.keepRight;
+        if (a.lane === 1 && dir === 1 && a.lane1Time > a.passingStay) score += 0.6;
+      }
       // 대형차가 앞지르기 차로(지정차로 바로 왼쪽)에 있으면 앞지르기 뒤 돌아간다
       if (a.heavy && a.compliant && dir === 1 && !this.laneAllowed(a, a.lane, s)) score += 1.2;
       // 차로가 곧 끝나면 무조건 왼쪽으로
