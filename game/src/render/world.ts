@@ -79,6 +79,7 @@ export class World {
   /** 후처리 (high에서만) */
   readonly post: PostFx;
   private qualityListeners: ((q: Quality, s: QualitySettings) => void)[] = [];
+  private mirrorListeners: ((on: boolean) => void)[] = [];
   private pmrem: THREE.PMREMGenerator;
   private env: { day: THREE.WebGLRenderTarget | null; night: THREE.WebGLRenderTarget | null; tunnel: THREE.WebGLRenderTarget | null } = { day: null, night: null, tunnel: null };
   private envDirty = true;
@@ -183,6 +184,15 @@ export class World {
   onQuality(cb: (q: Quality, s: QualitySettings) => void) {
     this.qualityListeners.push(cb);
     cb(this.quality, this.settings);
+  }
+
+  /** 거울(뒤를 보는 카메라)을 그리기 전(true)·후(false)에 부른다. 앞쪽에만 있는 것을 잠시 뺄 때 쓴다 */
+  onMirrorPass(cb: (on: boolean) => void) {
+    this.mirrorListeners.push(cb);
+  }
+
+  mirrorPass(on: boolean) {
+    for (const cb of this.mirrorListeners) cb(on);
   }
 
   private applyShadow() {

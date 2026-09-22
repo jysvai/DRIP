@@ -406,9 +406,15 @@ export class PlayerView {
       m.cam.updateMatrixWorld(true);
       const vis = this.car.visible;
       this.car.visible = false;
+      // 그림자 지도는 본 화면에서만 새로 그린다 (거울은 앞 프레임 것을 쓴다)
+      const au = r.shadowMap.autoUpdate;
+      r.shadowMap.autoUpdate = false;
+      this.world.mirrorPass(true);
       r.setRenderTarget(m.rt);
       r.clear();
       r.render(scene, m.cam);
+      this.world.mirrorPass(false);
+      r.shadowMap.autoUpdate = au;
       this.car.visible = vis;
     }
     r.setRenderTarget(null);

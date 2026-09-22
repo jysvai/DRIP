@@ -49,6 +49,8 @@ interface Inst {
   mesh: THREE.InstancedMesh;
   lamp: THREE.InstancedBufferAttribute;
   n: number;
+  /** 앞쪽 n개 중 카메라 뒤에 있는 차 수 (뒤차를 먼저 채운다) */
+  nb: number;
   cap: number;
 }
 
@@ -61,6 +63,17 @@ interface Pool {
   /** 앞뒤 축 거리 */
   wb: number;
   pivotY: number;
+}
+
+/** 한 프레임에 그릴 차 (가까운 순으로 정렬해 앞에서부터 그린다) */
+interface Slot {
+  a: Agent;
+  pool: Pool;
+  d2: number;
+  m: THREE.Matrix4;
+  kappa: number;
+  /** 카메라보다 뒤 (거울에 비칠 수 있다) */
+  back: boolean;
 }
 
 /** 차마다 기억하는 움직임 */
@@ -76,6 +89,9 @@ interface Vis {
   color: THREE.Color;
   colorKey: string;
 }
+
+// 뒤차 먼저 (거울은 그 앞부분만 그린다), 그 안에서는 가까운 차부터
+const byDist = (x: Slot, y: Slot) => (x.back === y.back ? x.d2 - y.d2 : x.back ? -1 : 1);
 
 export class TrafficView {
   private pools: (Pool | null)[] = [];
@@ -104,6 +120,12 @@ export class TrafficView {
   private lp = new THREE.Vector3();
   private lastTime = -1;
   private dt = 0;
+  private slots: Slot[] = [];
+  private list: Slot[] = [];
+  private kappa = 0;
+  private back = false;
+  private fwd = new THREE.Vector3();
+  private insts: Inst[] = [];
 
   constructor(
     private world: World,
@@ -116,12 +138,12 @@ export class TrafficView {
     world.registerVehicleMaterial(this.wheelMat, 0.8);
     this.pools = catalog.types.map(() => null);
     this.wheels = {
-      car: this.inst(wheelGeometry("car"), WHEEL_CAP, true, this.wheelMat, false),
-      heavy: this.inst(wheelGeometry("heavy"), WHEEL_CAP, true, this.wheelMat, false),
+      car: this.inst(wheelGeometry("car"), WHEEL_CAP, true, this.wheelMat, false, -0.7),
+      heavy: this.inst(wheelGeometry("heavy"), WHEEL_CAP, true, this.wheelMat, false, -0.7),
     };
     this.far = {
-      car: this.inst(farCar(), FAR_CAP, false, this.bodyMat, true),
-      tall: this.inst(farTall(), FAR_CAP, false, this.bodyMat, true),
+      car: this.inst(farCar(), FAR_CAP, false, this.bodyMat, true, -0.5),
+      tall: this.inst(farTall(), FAR_CAP, false, this.bodyMat, true, -0.5),
     };
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(this.glowPos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -132,10 +154,14 @@ export class TrafficView {
     this.glow.frustumCulled = false;
     this.glow.renderOrder = 10;
     world.scene.add(this.glow);
+    // 거울에는 뒤차만 넘긴다 (앞차까지 꼭짓점 계산을 하지 않게)
+    world.onMirrorPass((on) => {
+      for (const i of this.insts) if (i.n > 0) i.mesh.count = on ? i.nb : i.n;
+    });
   }
 
   /** 인스턴스 메시 하나 (등화 상태 속성·도색 색 포함) */
-  private inst(geo: THREE.BufferGeometry, cap: number, shadow: boolean, mat: THREE.Material, color: boolean): Inst {
+  private inst(geo: THREE.BufferGeometry, cap: number, shadow: boolean, mat: THREE.Material, color: boolean, order = -0.6): Inst {
     const g = new THREE.BufferGeometry();
     for (const name of ["position", "normal", "color", "surf"]) g.setAttribute(name, geo.getAttribute(name));
     const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
@@ -147,10 +173,14 @@ export class TrafficView {
     mesh.castShadow = shadow;
     mesh.receiveShadow = true;
     mesh.frustumCulled = false;
+    // 도로·지형보다 먼저 그려 가려지는 화소를 덜 칠한다 (가까운 것일수록 먼저)
+    mesh.renderOrder = order;
     mesh.count = 0;
     mesh.visible = false;
     this.world.scene.add(mesh);
-    return { mesh, lamp, n: 0, cap };
+    const inst = { mesh, lamp, n: 0, nb: 0, cap };
+    this.insts.push(inst);
+    return inst;
   }
 
   /** 차종 모델은 처음 나올 때 만든다 */
@@ -242,7 +272,7 @@ export class TrafficView {
     const speed = Math.max(a.v, 0.5);
     const yawRate = (a.yaw - v.yaw) / dt;
     v.yaw = a.yaw;
-    const kPath = this.rs.kappa * (a.opposite ? -1 : 1) + yawRate / speed;
+    const kPath = this.kappa * (a.opposite ? -1 : 1) + yawRate / speed;
     const heavy = a.heavy ? 0.55 : 1;
     const pitchT = Math.max(-0.03, Math.min(0.025, a.acc * 0.0042 * heavy));
     const rollT = Math.max(-0.04, Math.min(0.04, a.v * a.v * kPath * 0.009 * (a.heavy ? 1.3 : 1)));
@@ -265,25 +295,44 @@ export class TrafficView {
     const mid2 = set.lodMid * set.lodMid;
     this.dt = this.lastTime < 0 ? 0 : Math.max(0, Math.min(0.1, time - this.lastTime));
     this.lastTime = time;
-    for (const p of this.pools) {
-      if (!p) continue;
-      if (p.near) p.near.n = 0;
-      if (p.mid) p.mid.n = 0;
-    }
-    this.wheels.car.n = this.wheels.heavy.n = 0;
-    this.far.car.n = this.far.tall.n = 0;
+    for (const i of this.insts) i.n = i.nb = 0;
+    const fwd = this.world.camera.getWorldDirection(this.fwd);
     const night = this.world.night > 0.05 ? this.world.night : 0;
     setLampLevels(this.bodyMat, Math.max(night, this.world.tunnel * 0.6), (time * 1.4) % 1);
     this.ng = 0;
     const blink = Math.floor(time * 1.6) % 2 === 0;
 
-    const add = (a: Agent) => {
+    // 1) 자리와 거리
+    const list = this.list;
+    list.length = 0;
+    const measure = (a: Agent) => {
       const pool = this.pool(a.typeIndex);
       if (!pool) return;
       this.place(a);
       this.tmp.setFromMatrixPosition(this.m);
       const d2 = this.tmp.distanceToSquared(camera);
       if (d2 > draw * draw) return;
+      let sl = this.slots[list.length];
+      if (!sl) this.slots.push((sl = { a, pool, d2, m: new THREE.Matrix4(), kappa: 0, back: false }));
+      sl.a = a;
+      sl.pool = pool;
+      sl.d2 = d2;
+      sl.m.copy(this.m);
+      sl.kappa = this.rs.kappa;
+      // 차 뒤끝이 카메라보다 1m 앞까지는 뒤차로 친다
+      sl.back = this.tmp.sub(camera).dot(fwd) - a.len / 2 < 1;
+      list.push(sl);
+    };
+    for (const a of agents) measure(a);
+    for (const a of opposite) measure(a);
+    // 2) 가까운 차부터 (먼저 그린 차가 뒤차 화소를 가린다)
+    list.sort(byDist);
+
+    const add = (sl: Slot) => {
+      const { a, pool, d2 } = sl;
+      this.m.copy(sl.m);
+      this.kappa = sl.kappa;
+      this.back = sl.back;
       if (night) this.nightLights(a, pool.model, camera, night);
       const sigL = (a.hazard || a.signal < 0) && blink ? 1 : 0;
       const sigR = (a.hazard || a.signal > 0) && blink ? 1 : 0;
@@ -304,7 +353,7 @@ export class TrafficView {
       this.tm.compose(this.sv.set(0, pool.pivotY, 0), this.q, this.tmp.set(1, 1, 1));
       this.bm.makeTranslation(0, -pool.pivotY, 0).premultiply(this.tm).premultiply(this.m);
       if (d2 < near2) {
-        const inst = (pool.near ??= this.inst(pool.model.body, NEAR_CAP, true, this.bodyMat, true));
+        const inst = (pool.near ??= this.inst(pool.model.body, NEAR_CAP, true, this.bodyMat, true, -0.7));
         if (inst.n < inst.cap) {
           this.put(inst, this.bm, vis.color, brake, sigL, sigR);
           this.putWheels(pool, vis);
@@ -324,8 +373,7 @@ export class TrafficView {
       this.bm.copy(this.m).scale(this.sv.set(a.len, t.height, a.width));
       this.put(far, this.bm, t.category === "화물" ? this.color.set(0x9aa0a6) : vis.color, brake, sigL, sigR);
     };
-    for (const a of agents) add(a);
-    for (const a of opposite) add(a);
+    for (const sl of list) add(sl);
 
     const finish = (inst: Inst | null) => {
       if (!inst) return;
@@ -375,6 +423,7 @@ export class TrafficView {
 
   private put(inst: Inst, m: THREE.Matrix4, color: THREE.Color, brake: number, sigL: number, sigR: number) {
     const i = inst.n++;
+    if (this.back) inst.nb = inst.n;
     inst.mesh.setMatrixAt(i, m);
     if (inst.mesh.instanceColor) inst.mesh.setColorAt(i, color);
     inst.lamp.setXYZW(i, brake, sigL, sigR, 0);
@@ -392,6 +441,7 @@ export class TrafficView {
       this.q.setFromEuler(this.e);
       this.wm.compose(this.p.set(w.x, w.r, w.z), this.q, this.sv.set(w.r, w.r, w.w)).premultiply(this.m);
       const i = inst.n++;
+      if (this.back) inst.nb = inst.n;
       inst.mesh.setMatrixAt(i, this.wm);
     }
   }
