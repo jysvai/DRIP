@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { makeConfig, makeRoad } from "../testing/fixtures";
 import { designatedLanes } from "./config";
 import { busLaneZones, trafficFor } from "./scenario";
+import type { Incident } from "./incidents";
 import { Traffic, type PlayerState } from "./traffic";
 
 describe("지정차로 (도로교통법 시행규칙 별표9)", () => {
@@ -152,4 +153,48 @@ describe("공사 구간 합류", () => {
       expect(passed.size).toBeGreaterThan(15);
     });
   }
+});
+
+describe("돌발상황", () => {
+  const cfg = makeConfig();
+
+  it("차로에 선 사고 차 두 대를 피해 옆 차로로 지나가고, 아무도 들이받지 않는다", () => {
+    const road = makeRoad({ length: 12000, lanes: 3 });
+    const t = new Traffic(road, cfg, 5);
+    t.density = 18;
+    const inc: Incident = { s: 4000, lane: 2, kind: "crash", vehicles: 2, triangleS: 3880, evacuated: true };
+    t.incidents = [inc];
+    const player: PlayerState = { s: 2500, d: road.laneCenter(1, 2500), v: 22, len: 4.9, width: 1.86 };
+    t.fill(player);
+    const passed = new Set<number>();
+    let parkedSeen = 0;
+    let overlap = 0;
+    for (let i = 0; i < 150 * 20; i++) {
+      player.s = Math.min(player.s + player.v * 0.05, 6000);
+      t.update(0.05, player, i * 0.05);
+      const parked = t.agents.filter((a) => a.parked);
+      parkedSeen = Math.max(parkedSeen, parked.length);
+      for (const a of t.agents) {
+        if (a.parked) continue;
+        if (a.s > inc.s + 50) passed.add(a.id);
+        for (const p of parked) if (Math.abs(a.s - p.s) < (a.len + p.len) / 2 && Math.abs(a.d - p.d) < (a.width + p.width) / 2) overlap++;
+      }
+    }
+    expect(parkedSeen).toBe(2);
+    expect(overlap).toBe(0);
+    expect(passed.size).toBeGreaterThan(15);
+  });
+
+  it("갓길 고장 차는 차로 흐름을 막지 않는다", () => {
+    const road = makeRoad({ length: 12000, lanes: 3 });
+    const t = new Traffic(road, cfg, 6);
+    t.density = 14;
+    t.incidents = [{ s: 4000, lane: 0, kind: "breakdown", vehicles: 1, triangleS: null, evacuated: false }];
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 25, len: 4.9, width: 1.86 };
+    t.fill(player);
+    t.update(0.05, player, 0);
+    const car = t.agents.find((a) => a.parked)!;
+    expect(car.d).toBeGreaterThan(road.widthAt(4000) / 2);
+    expect(car.hazard).toBe(true);
+  });
 });

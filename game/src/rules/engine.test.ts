@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { makeConfig, makeRoad } from "../testing/fixtures";
 import type { Agent } from "../sim/traffic";
 import { TAPER_M, type WorkZone } from "../sim/workzones";
+import type { Incident } from "../sim/incidents";
 import { RuleEngine, type PlayerFrame } from "./engine";
 
 const DT = 0.05;
@@ -207,5 +208,25 @@ describe("악천후 감속", () => {
     drive(e, (t) => ({ s: 1000 + t * v, speed: t < 15 ? v : 20 / 3.6, d: road.laneCenter(2, 1000) }), 20);
     expect(e.events.filter((x) => x.type === "min_speed")).toHaveLength(0);
     expect(e.events.filter((x) => x.type === "speeding")).toHaveLength(0);
+  });
+});
+
+describe("돌발상황", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ lanes: 3, speed: 100 });
+
+  it("선 차 옆을 지나면 속도·옆 간격·미리 빠져나온 거리를 남긴다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    const inc: Incident = { s: 2500, lane: 3, kind: "breakdown", vehicles: 1, triangleS: 2400, evacuated: true };
+    e.incidents = [inc];
+    const v = 25;
+    // 3차로로 달리다 약 500m 앞에서 2차로로
+    drive(e, (t) => ({ s: 1000 + t * v, speed: v, d: t < 40 ? road.laneCenter(3, 1000) : road.laneCenter(2, 1000), signal: t > 34 && t < 41 ? -1 : 0 }), 70);
+    const ev = e.events.filter((x) => x.type === "incident_pass");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].detail.blockedLane).toBe(3);
+    expect(ev[0].detail.leftLaneBeforeM).toBeGreaterThan(400);
+    expect(ev[0].detail.sideGapM).toBeGreaterThan(1);
+    expect(ev[0].detail.sideGapM).toBeLessThan(2.5);
   });
 });

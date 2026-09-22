@@ -7,6 +7,7 @@ import type { Network } from "../road/route";
 import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
 import { zoneLimit, type WorkZone } from "../sim/workzones";
+import { incidentBlockS, type Incident } from "../sim/incidents";
 
 export interface HudFrame {
   kmh: number;
@@ -53,11 +54,14 @@ export interface HudOptions {
   chime?: () => void;
   /** 공사 구간 (planWorkZones) */
   workZones?: WorkZone[];
+  /** 돌발상황 (고장·사고로 선 차). 실제 내비처럼 1km 앞에서 알린다 */
+  incidents?: Incident[];
   /** 악천후 감속: 날씨 이름과 법정 감속 배율 (weather.legalFactor) */
   weather?: { label: string; factorAt: (s: number) => number };
 }
 
 const CONE_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 3h4l5 16H5z"/><path fill="#fff" d="M8.6 9h6.8l.8 2.6H7.8zM7.2 13.6h9.6l.7 2.4H6.5z"/><rect x="3" y="19" width="18" height="2" rx="1" fill="currentColor"/></svg>`;
+const WARN_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 3 2 20h20z"/><path fill="#111" d="M11 9h2v6h-2zM11 16.5h2v2h-2z"/></svg>`;
 const CAM_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 7h11l2-2h3v4l-2 1v5H4z"/><circle cx="9.5" cy="11" r="2.3" fill="#111"/><rect x="8" y="15" width="3" height="5" fill="currentColor"/></svg>`;
 
 type Turn = "left" | "right" | "straight";
@@ -401,7 +405,19 @@ export class Hud {
     }
     this.lastSection = sec;
     const work = (this.opts.workZones ?? []).find((z) => z.s1 > s && z.s0 - s < 2000);
-    if (!sec && work && (!enf || !enf.fixed.some((c) => c.s > s && c.s < work.s0))) {
+    // 돌발상황이 1km 안이면 다른 안내보다 먼저
+    const inc = (this.opts.incidents ?? []).find((i) => i.s + 20 > s && incidentBlockS(i) - s < 1000);
+    if (inc) {
+      const dist = Math.max(0, incidentBlockS(inc) - s);
+      const inLane = inc.lane > 0 && f.lane === inc.lane;
+      cls = inLane ? "incident over" : "incident";
+      icon = WARN_ICON;
+      html = `<b>${inc.kind === "crash" ? "사고 차량" : "고장 차량"}</b> ${inc.lane === 0 ? "갓길" : `${inc.lane}차로`} · ${dist > 0 ? fmtDist(dist) : "옆"}`;
+      const where = inc.lane === 0 ? "갓길에" : `${inc.lane}차로에`;
+      if (dist > 50) this.sayOnce(`inc|${Math.round(inc.s)}`, `${spokenDist(dist)} 앞 ${where} ${inc.kind === "crash" ? "사고 차량" : "고장 차량"}이 서 있습니다. 주의하세요.`);
+      if (dist <= 300 && dist > 0 && inLane) this.sayOnce(`inc-near|${Math.round(inc.s)}`, "앞에 멈춘 차가 있습니다. 옆 차로로 옮기세요.");
+      warn = inLane && dist < 300;
+    } else if (!sec && work && (!enf || !enf.fixed.some((c) => c.s > s && c.s < work.s0))) {
       const dist = work.s0 - s;
       const inLane = f.lane === work.lane;
       cls = inLane ? "work over" : "work";
@@ -534,13 +550,16 @@ export class Hud {
       const guide = near && dist < 2000 && m.lanes !== "all" ? m.lanes : "";
       // 공사로 막힌 차로 (1.5km 앞부터)
       const work = (this.opts.workZones ?? []).find((z) => s > z.s0 - 1500 && s < z.s1);
-      const key = `${lanes}|${f.lane}|${guide}|${bus.join(",")}|${work?.lane ?? 0}`;
+      // 선 차가 막은 차로 (1km 앞부터)
+      const inc = (this.opts.incidents ?? []).find((i) => i.lane > 0 && s > incidentBlockS(i) - 1000 && s < i.s + 10);
+      const shut = [work?.lane ?? 0, inc?.lane ?? 0];
+      const key = `${lanes}|${f.lane}|${guide}|${bus.join(",")}|${shut.join(",")}`;
       if (key !== this.lastLanesKey) {
         this.lastLanesKey = key;
         let html = "";
         for (let l = 1; l <= lanes; l++) {
           const rec = guide === "right" ? l > lanes - 2 : guide === "left" ? l >= Math.min(2, lanes) && l <= Math.min(3, lanes) : false;
-          const closed = work?.lane === l;
+          const closed = shut.includes(l);
           html += `<i class="${l === f.lane ? "me" : ""}${rec && !closed ? " rec" : ""}${bus.includes(l) ? " bus" : ""}${closed ? " closed" : ""}">${closed ? "✕" : rec ? (guide === "right" ? "↗" : "↖") : "↑"}</i>`;
         }
         this.navLanes.innerHTML = html;

@@ -1,5 +1,6 @@
 // 주변 교통. 차마다 운전 습관(driver_profiles.json)을 뽑아 IDM(앞차 따라가기)과 MOBIL(차로 변경)로 움직인다.
 // 한국 규칙: 1차로 앞지르기 후 복귀, 대형차 지정차로, 버스전용차로, 터널 안 차로변경 금지, 차로 감소·공사 구간 합류.
+// 돌발상황(고장·사고로 선 차)은 비상등을 켠 채 서 있는 차로 넣고, 옆을 지나는 차는 구경하느라 속도를 줄인다.
 
 import type { Road } from "../road/road";
 import { LANE_WIDTH, Structure } from "../road/road";
@@ -8,6 +9,7 @@ import { paletteFor } from "../render/vehicleModels";
 import { designatedLanes, type DriverProfile, type GameConfig } from "./config";
 import { Rng } from "./rng";
 import { TAPER_M, zoneLimit, type WorkZone } from "./workzones";
+import { incidentBlockS, incidentVehicleS, type Incident } from "./incidents";
 
 export interface Agent {
   id: number;
@@ -63,6 +65,8 @@ export interface Agent {
   cruiser: boolean;
   /** 플레이어 때문에 급제동했는지 (아차사고 판정용) */
   brakedByPlayer: number;
+  /** 고장·사고로 서 있는 차 (움직이지 않는다) */
+  parked?: boolean;
 }
 
 export interface PlayerState {
@@ -111,6 +115,9 @@ export class Traffic {
   headwayScale = 1;
   /** 날씨에 따른 희망속도 배율 (driver_profiles.json weather). 비에는 거의 안 줄인다 */
   weatherSpeed = 1;
+  /** 돌발상황: 플레이어가 가까이 오면 선 차를 놓는다 */
+  incidents: Incident[] = [];
+  private incidentsPlaced = new Set<Incident>();
   private nextId = 1;
   private rng: Rng;
   private typeWeights: { idx: number; w: number }[] = [];
@@ -223,6 +230,13 @@ export class Traffic {
       const zl = zoneLimit(this.workZones, look);
       if (zl) v0 = Math.min(v0, (zl / 3.6) * a.speedFactor);
     }
+    // 선 차 옆을 지날 때는 구경하며 속도를 줄인다 (사고는 반대편도). 비율은 가정
+    for (const i of this.incidents) {
+      if (s < i.s - 250 || s > i.s + 40) continue;
+      if (a.opposite && i.kind !== "crash") continue;
+      const k = a.opposite ? 0.85 : i.kind === "crash" ? 0.65 : i.lane === 0 ? 0.88 : 0.75;
+      v0 = Math.min(v0, limit * k);
+    }
     return v0;
   }
 
@@ -267,8 +281,9 @@ export class Traffic {
     if (!a.opposite && this.cfg.rules.rules.busLane.enabled && a.busCompliant && !a.bus) {
       if (this.busZones.some((z) => z.lane === lane && s >= z.s0 && s <= z.s1)) return false;
     }
-    // 공사로 막힌 차로와 곧 막힐 차로
+    // 공사로 막힌 차로와 곧 막힐 차로, 선 차가 막은 차로
     if (!a.opposite && this.workZones.some((z) => z.lane === lane && s >= z.s0 - 150 && s <= z.s1)) return false;
+    if (!a.opposite && this.incidents.some((i) => i.lane === lane && s >= incidentBlockS(i) - 150 && s <= i.s + 10)) return false;
     if (a.heavy && a.compliant && lanes >= 3 && !a.bus) {
       const { right } = designatedLanes(lanes);
       const lowest = Math.min(...right);
@@ -355,6 +370,7 @@ export class Traffic {
   }
 
   update(dt: number, player: PlayerState, time: number) {
+    this.placeIncidents(player);
     this.stepList(this.agents, dt, player, time, false);
     this.stepList(this.opposite, dt, null, time, true);
     this.maintain(player);
@@ -364,6 +380,11 @@ export class Traffic {
     const road = this.road;
     this.buildLanes(list, player);
     for (const a of list) {
+      if (a.parked) {
+        a.v = 0;
+        a.acc = 0;
+        continue;
+      }
       const s = opposite ? -a.s : a.s;
       const v0 = this.desiredSpeed(a, s);
       // 가속: 지금 차로와 옮겨 가는 차로 중 더 조심스러운 쪽
@@ -454,6 +475,11 @@ export class Traffic {
       // 라바콘이 차로 절반을 넘게 막는 곳 앞에서 선다
       const block = z.s0 + TAPER_M / 2;
       if (z.lane === lane && s <= z.s1 && block - s <= 600) end = Math.min(end, Math.max(0, block - s));
+    }
+    // 선 차: 비상등이 멀리서 보여 미리 옮긴다
+    for (const i of this.incidents) {
+      const block = incidentBlockS(i);
+      if (i.lane === lane && s <= i.s && block - s <= 600) end = Math.min(end, Math.max(0, block - s));
     }
     return end;
   }
@@ -601,6 +627,30 @@ export class Traffic {
       spawnLane(this.agents, false, lane, sMax - this.rng.next() * 150, true);
       spawnLane(this.agents, false, lane, sMin + this.rng.next() * 80, false);
       if (this.rng.next() < this.cfg.traffic.oppositeDensityFactor) spawnLane(this.opposite, true, lane, sMax - this.rng.next() * 100, true);
+    }
+  }
+
+  /** 플레이어 앞 교통 범위에 들어온 돌발상황에 선 차를 놓는다 (한 번만) */
+  private placeIncidents(player: PlayerState) {
+    const road = this.road;
+    for (const i of this.incidents) {
+      if (this.incidentsPlaced.has(i) || i.s - player.s > REGION_AHEAD - 100 || i.s < player.s + 150) continue;
+      this.incidentsPlaced.add(i);
+      const lanes = road.lanesAt(i.s);
+      incidentVehicleS(i).forEach((s, k) => {
+        // 갓길 차는 바깥 차로 번호(lanes + 1)로 두어 다른 차의 앞차가 되지 않게 한다
+        const lane = i.lane === 0 ? lanes + 1 : i.lane;
+        const a = this.make(this.pickType(), s, lane, 0, false);
+        a.parked = true;
+        a.hazard = true;
+        a.signal = 0;
+        a.brake = false;
+        const w = road.widthAt(s);
+        a.d = i.lane === 0 ? w / 2 + 1.55 : road.laneCenter(lane, s) + (this.rng.next() - 0.5) * 0.6;
+        // 사고 차는 비스듬히, 뒤차는 앞차를 들이받은 모양으로
+        a.yaw = i.kind === "crash" ? (this.rng.next() - 0.5) * (k === 0 ? 0.7 : 0.4) : (this.rng.next() - 0.5) * 0.06;
+        this.agents.push(a);
+      });
     }
   }
 

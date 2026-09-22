@@ -6,6 +6,7 @@ import { LANE_WIDTH, LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from 
 import { arrowBoardTexture, enforcementSigns, planSigns, workZoneSigns, type SignSpec } from "./signs";
 import { coneLine, END_TAPER_M, type WorkZone } from "../sim/workzones";
 import type { Enforcement } from "../sim/cameras";
+import { incidentBlockS, incidentVehicleS, type Incident } from "../sim/incidents";
 import type { World } from "./world";
 
 export const CHUNK = 200;
@@ -208,11 +209,24 @@ export class RoadChunks {
   private workZones: WorkZone[] = [];
   private coneGeo = makeConeGeometry();
   private arrowMats = new Map<string, THREE.MeshBasicMaterial>();
+  /** 돌발상황: 안전삼각대, 밤에는 불꽃신호, 대피했거나 차 옆에 선 사람 */
+  private incidents: Incident[] = [];
+  private incidentNight = false;
+  private triangleGeo = makeTriangleGeometry();
+  private personGeo = makePersonGeometry();
+  private flareMat = new THREE.MeshBasicMaterial({ color: 0xff3b1a, toneMapped: false });
+  private triangleMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
 
   /** 공사 구간과 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setWorkZones(zones: WorkZone[]) {
     this.workZones = zones;
     this.signs = [...this.signs, ...workZoneSigns(zones, this.road)].sort((a, b) => a.s - b.s);
+  }
+
+  /** 돌발상황을 넣는다 (조각을 만들기 전에 부른다). 밤이면 삼각대 옆에 불꽃신호를 더한다 */
+  setIncidents(list: Incident[], night: boolean) {
+    this.incidents = list;
+    this.incidentNight = night;
   }
 
   /** 젖은 노면 (0~1): 아스팔트가 짙어지고 물기에 하늘이 비친다 (멀리 볼수록 번들거린다). 차선도 조금 어두워진다 */
@@ -279,6 +293,9 @@ export class RoadChunks {
     // 화살표 차량 뒤판은 깜빡인다
     const blink = Math.floor(performance.now() / 450) % 2 === 0 ? 1 : 0.18;
     for (const m of this.arrowMats.values()) m.color.setScalar(blink);
+    // 불꽃신호는 일렁인다
+    const t = performance.now() / 1000;
+    this.flareMat.color.setRGB(1, 0.2 + 0.12 * Math.sin(t * 23) + 0.08 * Math.sin(t * 37), 0.08).multiplyScalar(0.8 + 0.4 * Math.abs(Math.sin(t * 13)));
     const k0 = Math.max(0, Math.floor((s - BEHIND) / CHUNK));
     const k1 = Math.min(Math.floor(this.road.length / CHUNK), Math.floor((s + AHEAD) / CHUNK));
     for (const [k, g] of this.chunks) {
@@ -614,6 +631,47 @@ export class RoadChunks {
         group.add(board);
       }
     }
+    // ---- 돌발상황: 삼각대·불꽃신호·사람 ----
+    const people: { p: THREE.Vector3; yaw: number }[] = [];
+    for (const inc of this.incidents) {
+      if (inc.s + 20 < s0 || (inc.triangleS ?? incidentBlockS(inc)) - 20 > s1) continue;
+      const laneD = (at: number) => (inc.lane === 0 ? layout(road.widthAt(at)).ourR + 1.55 : road.laneCenter(inc.lane, at));
+      const ts = inc.triangleS;
+      if (ts !== null && ts >= s0 && ts < s1) {
+        const row = this.rows(ts, ts, 1)[0];
+        const tri = new THREE.Mesh(this.triangleGeo, this.triangleMat);
+        tri.position.copy(P(row, laneD(ts), 0));
+        tri.rotation.y = Math.atan2(-row.te, row.tn);
+        group.add(tri);
+        if (this.incidentNight) {
+          const flare = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), this.flareMat);
+          flare.position.copy(P(row, laneD(ts) + 0.6, 0.1));
+          group.add(flare);
+        }
+      }
+      // 사람: 대피했으면 가드레일 밖, 아니면 앞차 옆(오른쪽)이나 뒤에 서 있다
+      const front = incidentVehicleS(inc)[0];
+      const n = inc.kind === "crash" ? 2 : 1;
+      for (let k = 0; k < n; k++) {
+        const ps = front - 2 - k * 6;
+        if (ps < s0 || ps >= s1) continue;
+        const row = this.rows(ps, ps, 1)[0];
+        const L = layout(row.w);
+        const d = inc.evacuated ? L.shoulderR + 2.2 + k * 0.8 : Math.min(L.shoulderR - 0.3, laneD(ps) + 1.7);
+        people.push({ p: P(row, d, 0), yaw: Math.atan2(-row.te, row.tn) + (k ? 2.2 : -0.6) });
+      }
+    }
+    if (people.length) {
+      const mesh = new THREE.InstancedMesh(this.personGeo, this.mats.cone, people.length);
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const one = new THREE.Vector3(1, 1, 1);
+      people.forEach((h, i) => mesh.setMatrixAt(i, m.compose(h.p, q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), h.yaw), one)));
+      mesh.castShadow = true;
+      mesh.computeBoundingSphere();
+      group.add(mesh);
+    }
+
     if (conePos.length) {
       const cones = new THREE.InstancedMesh(this.coneGeo, this.mats.cone, conePos.length);
       const m = new THREE.Matrix4();
@@ -1222,6 +1280,47 @@ function makeConeGeometry(): THREE.BufferGeometry {
     g.translate(0, (y0 + y1) / 2, 0);
     parts.push(paintPart(g, c));
   }
+  const merged = mergeSimple(parts);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+function makeTriangleGeometry(): THREE.BufferGeometry {
+  // 안전삼각대: 빨간 반사 테두리(바깥 한 변 약 0.45m) + 가운데 형광 주황 + 검은 받침 다리
+  const tri = (r: number, y: number) => {
+    const sh = new THREE.Shape();
+    for (let i = 0; i < 3; i++) {
+      const a = Math.PI / 2 + (i * 2 * Math.PI) / 3;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r + y;
+      if (i === 0) sh.moveTo(x, z);
+      else sh.lineTo(x, z);
+    }
+    return sh;
+  };
+  const outer = tri(0.26, 0.2);
+  outer.holes.push(tri(0.17, 0.2) as unknown as THREE.Path);
+  const parts = [
+    paintPart(new THREE.ShapeGeometry(outer), 0xe01818),
+    paintPart(new THREE.ShapeGeometry(tri(0.17, 0.2)).translate(0, 0, -0.005), 0xff8a2a),
+    paintPart(new THREE.BoxGeometry(0.5, 0.03, 0.2).translate(0, 0.015, -0.05), 0x151515),
+  ];
+  const merged = mergeSimple(parts);
+  merged.computeVertexNormals();
+  return merged;
+}
+
+function makePersonGeometry(): THREE.BufferGeometry {
+  // 사람 (키 약 1.72m): 다리, 몸통, 팔, 머리
+  const parts = [
+    paintPart(new THREE.BoxGeometry(0.14, 0.82, 0.16).translate(-0.1, 0.41, 0), 0x2b3446),
+    paintPart(new THREE.BoxGeometry(0.14, 0.82, 0.16).translate(0.1, 0.41, 0), 0x2b3446),
+    paintPart(new THREE.BoxGeometry(0.42, 0.6, 0.24).translate(0, 1.12, 0), 0xd8d4c8),
+    paintPart(new THREE.BoxGeometry(0.1, 0.58, 0.12).translate(-0.27, 1.1, 0.02), 0xd8d4c8),
+    paintPart(new THREE.BoxGeometry(0.1, 0.58, 0.12).translate(0.27, 1.1, 0.02), 0xd8d4c8),
+    paintPart(new THREE.SphereGeometry(0.12, 10, 8).translate(0, 1.6, 0), 0xc99a78),
+    paintPart(new THREE.SphereGeometry(0.125, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2).translate(0, 1.62, -0.01), 0x1b1b1b),
+  ];
   const merged = mergeSimple(parts);
   merged.computeVertexNormals();
   return merged;

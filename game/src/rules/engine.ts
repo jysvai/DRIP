@@ -6,6 +6,7 @@ import { Structure } from "../road/road";
 import type { Enforcement, EnforcementSection } from "../sim/cameras";
 import { designatedLanes, type Rules } from "../sim/config";
 import { zoneLimit, type WorkZone } from "../sim/workzones";
+import { incidentBlockS, type Incident } from "../sim/incidents";
 import type { Agent, BusLaneZone } from "../sim/traffic";
 
 export type EventType =
@@ -25,6 +26,7 @@ export type EventType =
   | "camera_speeding"
   | "section_speeding"
   | "work_zone_merge"
+  | "incident_pass"
   | "near_miss"
   | "crash";
 
@@ -55,6 +57,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   camera_speeding: "과속 단속 카메라 적발",
   section_speeding: "구간단속 평균속도 초과",
   work_zone_merge: "공사 구간 앞 합류",
+  incident_pass: "고장·사고 차량 옆 통과",
   near_miss: "아차사고",
   crash: "충돌",
 };
@@ -153,6 +156,11 @@ export class RuleEngine {
   /** 공사 구간: 임시 제한속도와 막힌 차로에서 언제 빠져나왔는지 */
   workZones: WorkZone[] = [];
 
+  /** 돌발상황: 선 차 옆을 몇 km/h로, 얼마나 떨어져 지났는지와 막힌 차로에서 언제 빠져나왔는지 */
+  incidents: Incident[] = [];
+  private incidentMerge = new Map<Incident, number>();
+  private lastIncS = NaN;
+
   /** 악천후 감속 배율 (weather.legalFactor): 젖은 노면 0.8, 가시거리 100m 이내 0.5 */
   weatherFactor = 1;
 
@@ -209,6 +217,32 @@ export class RuleEngine {
 
   private sectionLimit(sec: EnforcementSection): number {
     return sec.limit || this.road.speedAt(sec.s0, this.heavySpeed);
+  }
+
+  /** 선 차 옆을 지나는 순간: 속도, 옆 간격, 막힌 차로에서 빠져나온 거리 (2차사고 위험 행동 분석용) */
+  private checkIncidents(f: PlayerFrame, lane: number, kmh: number, limit: number) {
+    const prev = this.lastIncS;
+    this.lastIncS = f.s;
+    if (!(f.s > prev) || f.s - prev > 100) return;
+    for (const i of this.incidents) {
+      if (i.s <= prev || i.s > f.s) continue;
+      const w = this.road.widthAt(i.s);
+      const stopD = i.lane === 0 ? w / 2 + 1.55 : this.road.laneCenter(i.lane, i.s);
+      const gap = Math.abs(f.d - stopD) - (f.width + 1.9) / 2;
+      this.emit(
+        f,
+        "incident_pass",
+        {
+          kind: i.kind,
+          blockedLane: i.lane,
+          sideGapM: Math.round(gap * 10) / 10,
+          overLimitKmh: Math.round(kmh - limit),
+          leftLaneBeforeM: this.incidentMerge.get(i) ?? null,
+          triangle: i.triangleS !== null,
+        },
+        lane,
+      );
+    }
   }
 
   /** 고정식 카메라를 지나는 순간과 구간단속 시점·종점 */
@@ -361,8 +395,11 @@ export class RuleEngine {
       // 공사로 막히는 차로에서 빠져나온 곳: 막히는 지점까지 남은 거리 (미리 합류하는지, 끝에서 끼어드는지)
       const zone = this.workZones.find((z) => z.lane === this.lastLane && f.s > z.s0 - 2000 && f.s < z.sClosed);
       if (zone) this.emit(f, "work_zone_merge", { closedLane: zone.lane, beforeClosedM: Math.round(zone.sClosed - f.s) }, lane);
+      const inc = this.incidents.find((i) => i.lane === this.lastLane && f.s > incidentBlockS(i) - 2000 && f.s < incidentBlockS(i));
+      if (inc) this.incidentMerge.set(inc, Math.round(incidentBlockS(inc) - f.s));
     }
     if (lane >= 1 && lane <= lanes) this.lastLane = lane;
+    this.checkIncidents(f, lane, kmh, limit);
 
     // ---- 갓길 ----
     if (r.shoulder.enabled) {

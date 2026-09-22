@@ -14,6 +14,7 @@ import { Sound } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
 import { gripAt, legalFactor, trafficResponse, weatherOf, type Weather } from "./sim/weather";
+import { planIncidents, type Incident } from "./sim/incidents";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
@@ -66,6 +67,7 @@ export class Game {
   readonly busZones: BusLaneZone[];
   readonly enforcement: Enforcement;
   readonly workZones: WorkZone[];
+  readonly incidents: Incident[];
   readonly weather: Weather;
   readonly weatherView: WeatherView;
   readonly road: Road;
@@ -138,6 +140,11 @@ export class Game {
     // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
     this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
     this.chunks.setWorkZones(this.workZones);
+    // 돌발상황 (고장·사고로 선 차): 같은 시드면 어디서 출발하든 같은 자리라, 피할 공사 구간도 출발 위치로 거르기 전 전체를 쓴다
+    const night = sun.night > 0.5;
+    const allZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: -Infinity, finishS: Infinity });
+    this.incidents = planIncidents(road, { seed: settings.seed, night, startS: s0, finishS: setup.finishS, workZones: allZones });
+    this.chunks.setIncidents(this.incidents, night);
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
     const tr = this.trafficAt(s0);
@@ -152,6 +159,7 @@ export class Game {
     this.traffic.setComposition(tr.composition);
     this.traffic.busZones = this.busZones;
     this.traffic.workZones = this.workZones;
+    this.traffic.incidents = this.incidents;
     this.traffic.fill(this.playerState());
     // 출발 속도는 주변 차 흐름에 맞춘다 (막히는 길에서 바로 급제동하지 않게)
     const near = this.traffic.agents.filter((a) => Math.abs(a.s - s0) < 400);
@@ -178,6 +186,7 @@ export class Game {
       },
       enforcement: this.enforcement,
       workZones: this.workZones,
+      incidents: this.incidents,
       weather: { label: weather.label, factorAt: (s) => this.rules.weatherFactorAt(s) },
       chime: () => this.sound.chime(),
     });
@@ -191,6 +200,7 @@ export class Game {
     this.rules.heavySpeed = heavySpeed;
     this.rules.enforcement = this.enforcement;
     this.rules.workZones = this.workZones;
+    this.rules.incidents = this.incidents;
     this.rules.weatherFactor = legalFactor(weather, cfg.rules);
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);

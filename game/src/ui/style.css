@@ -214,6 +214,8 @@ kbd { display: inline-grid; place-items: center; min-width: 24px; height: 24px; 
 .hud2 .enf b { color: #ffd166; margin-right: 4px; }
 .hud2 .enf em { font-style: normal; font-weight: 800; font-size: 15px; }
 .hud2 .enf.section { border-color: rgba(93, 169, 255, 0.6); }
+.hud2 .enf.incident { border-color: rgba(255, 90, 60, 0.7); }
+.hud2 .enf.incident svg, .hud2 .enf.incident b { color: #ff7a5c; }
 .hud2 .enf.section b, .hud2 .enf.section svg { color: #7cb8ff; }
 .hud2 .enf.work { border-color: rgba(242, 138, 30, 0.8); }
 .hud2 .enf.work b, .hud2 .enf.work svg { color: #ffa24d; }
