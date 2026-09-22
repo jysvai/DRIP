@@ -454,7 +454,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         field(
           "음성 안내",
           seg<string>([["on", "켜기"], ["off", "끄기"]], voice ? "on" : "off", (v) => (voice = v === "on")),
-          "분기점 2km·1km 앞과 직전, 제한속도가 바뀔 때 말로 알려 줍니다. 브라우저에 한국어 음성이 있어야 합니다.",
+          "분기점(2km·1km 앞과 직전), 제한속도 변경, 과속 단속 카메라와 구간단속을 말로 알려 줍니다. 브라우저에 한국어 음성이 있어야 합니다.",
         ),
       );
       const consentBox = el("label", "consent");
