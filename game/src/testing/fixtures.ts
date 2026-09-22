@@ -70,5 +70,6 @@ export function makeConfig(): GameConfig {
     traffic: traffic as unknown as TrafficDefaults,
     rules: rules as unknown as Rules,
     real: null,
+    cameras: null,
   };
 }

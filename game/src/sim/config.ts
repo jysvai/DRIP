@@ -67,6 +67,8 @@ export interface Rules {
     shoulder: { enabled: boolean; minDurationSec: number; source: string };
     busLane: { enabled: boolean; source: string; sections: BusLaneSection[] };
     designatedLanes: { enabled: boolean; source: string };
+    /** 무인 단속 카메라: 고정식은 지나는 순간 속도, 구간단속은 시점~종점 평균 속도 */
+    enforcement?: { enabled: boolean; cameraToleranceKmh: number; sectionToleranceKmh: number; source: string };
     nearMiss: { enabled: boolean; ttcSec: number; lateralGapM: number; inducedBrakeMs2: number; cooldownSec: number };
     crash: { enabled: boolean };
   };
@@ -93,12 +95,20 @@ export interface RealTraffic {
   >;
 }
 
+/** 고속도로 단속 카메라 (pipeline/cameras.py). 주행선 id마다 고정식 [s, 제한속도], 구간단속 [시점 s, 종점 s, 제한속도] */
+export interface CameraData {
+  source: string;
+  referenceDate: string;
+  roads: Record<string, { fixed?: [number, number][]; sections?: [number, number, number][] }>;
+}
+
 export interface GameConfig {
   catalog: VehicleCatalog;
   profiles: DriverProfiles;
   traffic: TrafficDefaults;
   rules: Rules;
   real: RealTraffic | null;
+  cameras: CameraData | null;
 }
 
 async function json<T>(url: string): Promise<T> {
@@ -114,13 +124,10 @@ export async function loadConfig(base = "./data/"): Promise<GameConfig> {
     json<TrafficDefaults>(`${base}traffic_defaults.json`),
     json<Rules>(`${base}rules_kr.json`),
   ]);
-  let real: RealTraffic | null = null;
-  try {
-    real = await json<RealTraffic>("./traffic/latest.json");
-  } catch {
-    real = null;
-  }
-  return { catalog, profiles, traffic, rules, real };
+  // 실제 교통·단속 카메라는 없어도 게임은 돈다
+  const optional = <T>(url: string) => json<T>(url).catch(() => null);
+  const [real, cameras] = await Promise.all([optional<RealTraffic>("./traffic/latest.json"), optional<CameraData>(`${base}cameras.json`)]);
+  return { catalog, profiles, traffic, rules, real, cameras };
 }
 
 /** 편도 차로 수에 따른 지정차로 (도로교통법 시행규칙 별표9). 반환: [왼쪽 차로들, 오른쪽 차로들] */

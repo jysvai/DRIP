@@ -3,6 +3,7 @@
 
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
+import type { Enforcement, EnforcementSection } from "../sim/cameras";
 import { designatedLanes, type Rules } from "../sim/config";
 import type { Agent, BusLaneZone } from "../sim/traffic";
 
@@ -20,6 +21,8 @@ export type EventType =
   | "passing_lane"
   | "bus_lane"
   | "designated_lane"
+  | "camera_speeding"
+  | "section_speeding"
   | "near_miss"
   | "crash";
 
@@ -47,6 +50,8 @@ export const EVENT_LABELS: Record<EventType, string> = {
   passing_lane: "1차로 계속 주행",
   bus_lane: "버스전용차로 통행",
   designated_lane: "지정차로 위반 (화물·대형승합은 오른쪽 차로)",
+  camera_speeding: "과속 단속 카메라 적발",
+  section_speeding: "구간단속 평균속도 초과",
   near_miss: "아차사고",
   crash: "충돌",
 };
@@ -62,6 +67,8 @@ export const VIOLATIONS: EventType[] = [
   "passing_lane",
   "bus_lane",
   "designated_lane",
+  "camera_speeding",
+  "section_speeding",
 ];
 
 export interface PlayerFrame {
@@ -136,6 +143,10 @@ export class RuleEngine {
   /** 1.5톤 넘는 화물차는 화물차 제한속도 */
   heavySpeed = false;
   private designatedSince = -1;
+  /** 이번 주행 도로의 단속 카메라 (enforcementFor) */
+  enforcement: Enforcement = { fixed: [], sections: [] };
+  private lastS = NaN;
+  private inSection: { sec: EnforcementSection; t0: number } | null = null;
 
   constructor(
     private road: Road,
@@ -158,11 +169,57 @@ export class RuleEngine {
     this.onEvent(e);
   }
 
+  /** 지금 구간단속 안이면 평균 속도와 남은 거리 */
+  sectionState(s: number, t: number): { avgKmh: number; limit: number; remainM: number; lengthM: number } | null {
+    const cur = this.inSection;
+    if (!cur) return null;
+    const dt = t - cur.t0;
+    return {
+      avgKmh: dt > 1 ? ((s - cur.sec.s0) / dt) * 3.6 : 0,
+      limit: this.sectionLimit(cur.sec),
+      remainM: Math.max(0, cur.sec.s1 - s),
+      lengthM: cur.sec.s1 - cur.sec.s0,
+    };
+  }
+
+  private sectionLimit(sec: EnforcementSection): number {
+    return sec.limit || this.road.speedAt(sec.s0, this.heavySpeed);
+  }
+
+  /** 고정식 카메라를 지나는 순간과 구간단속 시점·종점 */
+  private checkEnforcement(f: PlayerFrame, kmh: number, limit: number) {
+    const cfg = this.rules.rules.enforcement;
+    const prev = this.lastS;
+    this.lastS = f.s;
+    if (!cfg?.enabled || !(f.s > prev) || f.s - prev > 100) {
+      // 처음이거나 뒤로 가거나 (사고 뒤) 옮겨지면 구간 측정을 버린다
+      if (f.s - prev > 100 || f.s < prev) this.inSection = null;
+      return;
+    }
+    for (const cam of this.enforcement.fixed) {
+      if (cam.s <= prev || cam.s > f.s) continue;
+      const camLimit = cam.limit || limit;
+      if (kmh > camLimit + cfg.cameraToleranceKmh) this.emit(f, "camera_speeding", { cameraS: Math.round(cam.s), limitKmh: camLimit, overKmh: Math.round(kmh - camLimit) });
+    }
+    for (const sec of this.enforcement.sections) {
+      if (sec.s0 > prev && sec.s0 <= f.s) this.inSection = { sec, t0: f.t };
+      if (this.inSection?.sec === sec && sec.s1 > prev && sec.s1 <= f.s) {
+        const dt = f.t - this.inSection.t0;
+        const avg = dt > 0 ? ((sec.s1 - sec.s0) / dt) * 3.6 : 0;
+        const secLimit = this.sectionLimit(sec);
+        if (avg > secLimit + cfg.sectionToleranceKmh)
+          this.emit(f, "section_speeding", { fromS: Math.round(sec.s0), lengthM: Math.round(sec.s1 - sec.s0), avgKmh: Math.round(avg), limitKmh: secLimit });
+        this.inSection = null;
+      }
+    }
+  }
+
   update(f: PlayerFrame, agents: Agent[]) {
     const r = this.rules.rules;
     const road = this.road;
     const kmh = f.speed * 3.6;
     const limit = road.speedAt(f.s, this.heavySpeed);
+    this.checkEnforcement(f, kmh, limit);
     const lane = road.laneOf(f.d, f.s);
     const lanes = road.lanesAt(f.s);
     const sum = this.summary;

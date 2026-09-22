@@ -10,6 +10,7 @@ import { World } from "./render/world";
 import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
+import { enforcementFor, type Enforcement } from "./sim/cameras";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
@@ -60,6 +61,7 @@ export class Game {
   readonly input: Input;
   readonly hud: Hud;
   readonly busZones: BusLaneZone[];
+  readonly enforcement: Enforcement;
   readonly road: Road;
   readonly spec: PlayerSpec;
   state: "ready" | "run" | "pause" | "crash" | "end" = "ready";
@@ -105,6 +107,8 @@ export class Game {
     this.busZones = routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
     this.chunks = new RoadChunks(road, this.world);
     this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
+    this.enforcement = enforcementFor(road, cfg.cameras);
+    this.chunks.enforcement = this.enforcement;
 
     const type = setup.vehicle;
     this.spec = specFor(type);
@@ -150,6 +154,8 @@ export class Game {
         this.sound.say(text);
         return true;
       },
+      enforcement: this.enforcement,
+      chime: () => this.sound.chime(),
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
@@ -159,6 +165,7 @@ export class Game {
     this.rules = new RuleEngine(road, cfg.rules, this.busZones);
     this.rules.vehicleClass = this.spec.vehicleClass;
     this.rules.heavySpeed = heavySpeed;
+    this.rules.enforcement = this.enforcement;
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.recorder.start({
@@ -634,6 +641,7 @@ export class Game {
         recStatus: !this.settings.consent ? "기록 (브라우저에만)" : this.recorder.online ? (this.recorder.status === "error" ? "기록 (서버 오류)" : "기록 중") : "기록 (오프라인)",
         camera: CAMERA_LABELS[this.view.mode],
         inputMode: this.autopilot ? "자동 운전" : INPUT_LABELS[this.input.mode],
+        section: this.rules.sectionState(p.s, this.t),
       },
       dt,
     );

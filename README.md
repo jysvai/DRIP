@@ -34,7 +34,7 @@
 | `pipeline/` | 데이터 수집·가공 스크립트 (Python) |
 | `game/` | 운전 게임 (Vite + TypeScript + three.js). 사이트의 `/play/`로 배포 |
 | `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`)와 도로망 `network.json` (분기점에서 갈아타는 곳 560곳, `pipeline/network.py`) |
-| `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규 (JSON, 코드 수정 없이 바꿀 수 있음. `game/DATA.md` 참고) |
+| `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규, 고속도로 단속 카메라 (JSON, 코드 수정 없이 바꿀 수 있음. `game/DATA.md` 참고) |
 | `game/public/traffic/latest.json` | 전날 실제 교통 (주행선별 시간대 밀도·속도·차종 구성). `pipeline/traffic_ex.py`가 만든다 |
 | `supabase/` | 주행 기록 DB 스키마 (브라우저 키는 넣기만 가능) |
 | `web/` | 소개 페이지. main에 push하면 게임과 함께 GitHub Pages로 자동 배포 |
@@ -49,6 +49,7 @@ python -m venv .venv
 .venv\Scripts\python pipeline\accident_hotspots.py   # 사고 1km 집계
 .venv\Scripts\python pipeline\osm_roads.py           # 전국 고속도로 주행선 (OSM + 지형)
 .venv\Scripts\python pipeline\network.py             # 주행선을 분기점에서 이어 경로 찾기용 도로망으로
+.venv\Scripts\python pipeline\cameras.py             # 고속도로 단속 카메라·구간단속 (경찰청 표준데이터)
 
 cd game
 npm install
@@ -64,6 +65,7 @@ npm run build
 
 메뉴에서 출발지·도착지(도시·나들목·분기점)를 넣으면 전국 고속도로망에서 가장 빠른 경로를 찾고, 경로의 주행선들을 분기점 연결로로 이어 하나의 도로로 만든다.
 배속 없이 실제 시간으로 달리며, 위쪽 내비 안내(분기점 거리·차로 안내), 미니맵, 도착 예정 시각을 보고 분기점에서 갈아탄다. 목적지에 닿으면 주행이 끝나고 결과 화면이 나온다.
+내비는 한국어 음성으로도 안내한다 (분기점 2km·1km·직전, 제한속도 변경, 과속 단속 카메라, 구간단속 시점과 평균 속도). 카메라 위치는 경찰청 표준데이터에서 가져왔다 (`pipeline/cameras.py`).
 차량은 76가지 중에서 고른다. 무게·엔진(가솔린·디젤·대형 디젤·전기)·속도제한장치가 차종마다 다르고, 화물·대형승합은 화물차 제한속도와 지정차로, 버스는 버스전용차로 규칙을 따른다.
 경로 주행 기록의 `s`는 이어 붙인 도로 기준이고, 세션의 `route`(조각별 원래 주행선·위치)로 원래 주행선 위치로 되돌린다 (`compare_hotspots.py`가 자동으로 한다).
 

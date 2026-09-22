@@ -25,6 +25,12 @@
       "enabled": true,
       "source": "도로교통법 시행규칙 별표9: 편도 3차로 이상 고속도로는 1차로(앞지르기)를 뺀 차로를 반으로 나눠 왼쪽은 승용·중소형승합, 오른쪽은 대형승합·화물·특수. 앞지르기 때는 바로 왼쪽 차로 사용 가능"
     },
+    "enforcement": {
+      "enabled": true,
+      "cameraToleranceKmh": 10,
+      "sectionToleranceKmh": 10,
+      "source": "도로교통법 제17조(속도 제한)의 무인 단속. 고정식은 카메라를 지나는 순간 속도, 구간단속은 시점~종점 평균 속도. 카메라 위치는 경찰청 전국무인교통단속카메라표준데이터(data/cameras.json). 단속이 시작되는 초과 폭은 공개되지 않아 10km/h로 가정"
+    },
     "nearMiss": { "enabled": true, "ttcSec": 1.5, "lateralGapM": 0.4, "inducedBrakeMs2": 4.0, "cooldownSec": 3 },
     "crash": { "enabled": true }
   }

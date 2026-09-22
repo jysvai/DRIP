@@ -93,3 +93,52 @@ describe("RuleEngine", () => {
     expect(e.events.map((x) => x.type)).toContain("hard_brake");
   });
 });
+
+describe("무인 단속 카메라", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ lanes: 3, speed: 100 });
+
+  it("고정식 카메라를 제한속도 +10km/h 넘게 지나면 적발, 그 아래면 아니다", () => {
+    for (const [kmh, caught] of [
+      [125, true],
+      [108, false],
+    ] as const) {
+      const e = new RuleEngine(road, cfg.rules, []);
+      e.enforcement = { fixed: [{ s: 1500, limit: 0 }], sections: [] };
+      const v = kmh / 3.6;
+      drive(e, (t) => ({ s: 1000 + t * v, speed: v, d: road.laneCenter(2, 1000) }), 30);
+      expect(e.events.filter((x) => x.type === "camera_speeding")).toHaveLength(caught ? 1 : 0);
+    }
+  });
+
+  it("구간단속은 평균 속도로 본다: 중간에 빨리 달려도 평균이 낮으면 괜찮다", () => {
+    const run = (fast: number, slow: number) => {
+      const e = new RuleEngine(road, cfg.rules, []);
+      e.enforcement = { fixed: [], sections: [{ s0: 2000, s1: 6000, limit: 100 }] };
+      let s = 1000;
+      let avg = 0;
+      for (let t = 0; t < 400 && s < 6500; t += DT) {
+        const v = (s < 4000 ? fast : slow) / 3.6;
+        s += v * DT;
+        e.update({ t, dt: DT, s, d: road.laneCenter(2, s), speed: v, ax: 0, width: 1.86, len: 4.9, signal: 0, hazard: false }, []);
+        if (s > 3000 && s < 3050) avg = e.sectionState(s, t)?.avgKmh ?? 0;
+      }
+      return { e, avg };
+    };
+    const ok = run(130, 80); // 앞 절반 130, 뒤 절반 80 → 평균 약 99
+    expect(ok.e.events.filter((x) => x.type === "section_speeding")).toHaveLength(0);
+    expect(ok.avg).toBeGreaterThan(120);
+    const bad = run(125, 120);
+    const ev = bad.e.events.filter((x) => x.type === "section_speeding");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].detail.avgKmh).toBeGreaterThan(115);
+  });
+
+  it("구간 가운데에서 시작하면 그 구간은 재지 않는다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.enforcement = { fixed: [], sections: [{ s0: 500, s1: 3000, limit: 100 }] };
+    const v = 150 / 3.6;
+    drive(e, (t) => ({ s: 1000 + t * v, speed: v, d: road.laneCenter(2, 1000) }), 60);
+    expect(e.events.filter((x) => x.type === "section_speeding")).toHaveLength(0);
+  });
+});

@@ -4,6 +4,7 @@
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
 import type { Network } from "../road/route";
+import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
 
 export interface HudFrame {
@@ -25,6 +26,8 @@ export interface HudFrame {
   recStatus: string;
   camera: string;
   inputMode: string;
+  /** 구간단속 안이면 평균 속도 (RuleEngine.sectionState) */
+  section?: { avgKmh: number; limit: number; remainM: number; lengthM: number } | null;
 }
 
 export interface HudOptions {
@@ -43,7 +46,13 @@ export interface HudOptions {
   net?: Network | null;
   /** 음성 안내. 지금 말할 수 없으면(출발 전·일시정지) false를 돌려주고, 그러면 나중에 다시 말한다 */
   say?: (text: string) => boolean;
+  /** 단속 카메라·구간단속 (enforcementFor) */
+  enforcement?: Enforcement;
+  /** 단속 카메라 앞에서 과속하면 울리는 경고음 */
+  chime?: () => void;
 }
+
+const CAM_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 7h11l2-2h3v4l-2 1v5H4z"/><circle cx="9.5" cy="11" r="2.3" fill="#111"/><rect x="8" y="15" width="3" height="5" fill="currentColor"/></svg>`;
 
 type Turn = "left" | "right" | "straight";
 
@@ -181,6 +190,9 @@ export class Hud {
   private lastLanesKey = "";
   private spoken = new Set<string>();
   private lastLimit = 0;
+  private enfEl: HTMLDivElement;
+  private lastSection: { avgKmh: number } | null = null;
+  private chimeTimer = 0;
   /** 남은 경로를 제한속도로 달리는 데 걸리는 시간 (1km 간격, 끝에서부터 누적) */
   private etaTable: Float32Array;
   private netLines: { pts: Float32Array; box: [number, number, number, number] }[] = [];
@@ -201,6 +213,7 @@ export class Hud {
     this.title = el("t", info);
     this.meta = el("m", info);
     this.limitNote = el("ln", info);
+    this.enfEl = el("enf", this.root);
 
     // 가운데 위: 내비 안내
     this.nav = el("navbar", this.root);
@@ -357,6 +370,53 @@ export class Hud {
     return { s: this.opts.finishS, kind: "dest", text: `목적지 <b>${this.opts.destName}</b>`, lanes: "all" };
   }
 
+  /** 한 번만 말할 안내 (말하지 못했으면 다음에 다시) */
+  private sayOnce(key: string, text: string) {
+    if (this.spoken.has(key) || !this.opts.say?.(text)) return;
+    this.spoken.add(key);
+  }
+
+  /** 단속 안내: 1km 안의 고정식 카메라와 구간단속 시점, 구간단속 중에는 평균 속도 */
+  private updateEnforcement(f: HudFrame, s: number, kmh: number) {
+    const enf = this.opts.enforcement;
+    const sec = f.section ?? null;
+    let html = "";
+    let cls = "";
+    let warn = false;
+    if (sec) {
+      const over = sec.avgKmh > sec.limit;
+      cls = over ? "section over" : "section";
+      html = `<b>구간단속</b> 평균 <em>${sec.avgKmh > 0 ? Math.round(sec.avgKmh) : "--"}</em>km/h · 제한 ${sec.limit} · 남은 ${fmtDist(sec.remainM)}`;
+      warn = over;
+      if (!this.lastSection) this.opts.say?.(`구간 단속 구간입니다. 구간 길이 ${spokenDist(sec.lengthM)}, 제한속도 ${sec.limit}킬로미터입니다.`);
+    } else if (this.lastSection) {
+      this.opts.say?.(`구간 단속이 끝났습니다. 평균 속도 ${Math.round(this.lastSection.avgKmh)}킬로미터였습니다.`);
+    }
+    this.lastSection = sec;
+    if (!sec && enf) {
+      const cam = enf.fixed.find((c) => c.s > s - 5 && c.s - s < 1000);
+      const start = enf.sections.find((x) => x.s0 > s && x.s0 - s < 1000);
+      if (cam && (!start || cam.s < start.s0)) {
+        const camLimit = cam.limit || this.road.speedAt(cam.s, this.opts.heavy);
+        const dist = cam.s - s;
+        cls = kmh > camLimit ? "over" : "";
+        html = `<b>과속 단속</b> 제한 ${camLimit} · ${fmtDist(dist)}`;
+        warn = kmh > camLimit && dist < 400;
+        if (dist <= 600) this.sayOnce(`cam|${Math.round(cam.s)}`, `전방에 과속 단속 카메라가 있습니다. 제한속도 ${camLimit}킬로미터입니다.`);
+      } else if (start) {
+        html = `<b>구간단속 시작</b> ${fmtDist(start.s0 - s)}`;
+        this.sayOnce(`sec|${Math.round(start.s0)}`, `${spokenDist(start.s0 - s)} 앞 구간 단속 시작 지점입니다.`);
+      }
+    }
+    this.enfEl.className = `enf${html ? " on" : ""}${cls ? ` ${cls}` : ""}`;
+    if (html) this.enfEl.innerHTML = CAM_ICON + `<span>${html}</span>`;
+    this.chimeTimer -= 0.2;
+    if (warn && this.chimeTimer <= 0) {
+      this.opts.chime?.();
+      this.chimeTimer = 1.6;
+    }
+  }
+
   /** 안내 지점을 지날 때 한 번씩 말한다. 처음 볼 때 이미 가까우면 가장 가까운 안내만 */
   private announce(m: Maneuver, dist: number) {
     const say = this.opts.say;
@@ -414,6 +474,7 @@ export class Hud {
     // 제한속도가 바뀌면 알린다 (속도가 굽기에 따라 바뀌는 연결로는 빼고)
     if (this.lastLimit && limit !== this.lastLimit && !road.onConnector(s)) this.opts.say?.(`제한속도 ${limit}킬로미터 구간입니다.`);
     if (!road.onConnector(s)) this.lastLimit = limit;
+    this.updateEnforcement(f, s, kmh);
     this.limit.classList.toggle("over", kmh > limit + 10);
     this.icons.limit.classList.toggle("on", false);
     this.title.innerHTML = `<span class="shield">${road.refAt(s)}</span>${road.sectionNameAt(s)}`;

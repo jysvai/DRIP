@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import { LANE_WIDTH, LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from "../road/road";
 import { planSigns, type SignSpec } from "./signs";
+import type { Enforcement } from "../sim/cameras";
 import type { World } from "./world";
 
 export const CHUNK = 200;
@@ -201,6 +202,8 @@ export class RoadChunks {
   private broadGeo: THREE.BufferGeometry;
   private noiseWallBlocks = new Set<number>();
   overrides: LaneOverride[] = [];
+  /** 단속 카메라: 고정식은 오른쪽 기둥과 팔, 구간단속 시점·종점은 도로를 건너는 문형 구조물 */
+  enforcement: Enforcement = { fixed: [], sections: [] };
 
   constructor(
     private road: Road,
@@ -497,6 +500,43 @@ export class RoadChunks {
       const L = layout(row.w);
       for (const d of [L.ourR - 2, (L.ourL + L.oppInner) / 2, L.oppOuter + 2]) {
         this.box(postGeo, P(row, d, -2.2 - hgt / 2), 1.6, hgt, 1.6, row, bridgeCol);
+      }
+    }
+
+    // ---- 단속 카메라 ----
+    const poleCol = new THREE.Color(0x9a9fa2);
+    const camCol = new THREE.Color(0xe9e9e2);
+    const lensCol = new THREE.Color(0x15181a);
+    // 카메라 몸통과 다가오는 차 쪽을 보는 렌즈
+    const camera = (s: number, d: number, h: number) => {
+      const row = this.rows(s, s, 1)[0];
+      const front = this.rows(s - 0.4, s - 0.4, 1)[0];
+      this.box(postGeo, P(row, d, h), 0.75, 0.42, 0.42, row, camCol);
+      this.box(postGeo, P(front, d, h - 0.02), 0.08, 0.26, 0.26, front, lensCol);
+    };
+    for (const cam of this.enforcement.fixed) {
+      if (cam.s < s0 || cam.s >= s1) continue;
+      const row = this.rows(cam.s, cam.s, 1)[0];
+      if (row.structure === Structure.Tunnel) continue;
+      const L = layout(row.w);
+      const base = L.shoulderR + 1.3;
+      const reach = Math.min(row.w * 0.55, 7);
+      this.box(postGeo, P(row, base, 3.6), 0.32, 7.2, 0.32, row, poleCol);
+      this.box(postGeo, P(row, base - reach / 2, 7), 0.2, 0.22, reach, row, poleCol);
+      camera(cam.s, base - reach + 0.6, 6.5);
+    }
+    for (const sec of this.enforcement.sections) {
+      for (const s of [sec.s0, sec.s1]) {
+        if (s < s0 || s >= s1) continue;
+        const row = this.rows(s, s, 1)[0];
+        if (row.structure === Structure.Tunnel) continue;
+        const L = layout(row.w);
+        const right = L.shoulderR + 1.3;
+        const left = L.ourL - 0.9;
+        for (const d of [right, left]) this.box(postGeo, P(row, d, 3.8), 0.35, 7.6, 0.35, row, poleCol);
+        this.box(postGeo, P(row, (right + left) / 2, 7.4), 0.5, 0.5, right - left, row, poleCol);
+        const lw = row.w / Math.max(1, row.lanes);
+        for (let i = 0; i < row.lanes; i++) camera(s - 0.3, L.ourL + lw * (i + 0.5), 6.85);
       }
     }
 

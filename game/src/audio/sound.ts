@@ -172,6 +172,25 @@ export class Sound {
     src.stop(ctx.currentTime + 0.55);
   }
 
+  /** 단속 카메라 앞 과속 경고음 (띵동) */
+  chime() {
+    const ctx = this.ctx;
+    if (!ctx || !this.enabled || this.paused) return;
+    [1318, 1046].forEach((freq, i) => {
+      const t0 = ctx.currentTime + i * 0.22;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.18, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.45);
+      o.connect(g).connect(this.master);
+      o.start(t0);
+      o.stop(t0 + 0.5);
+    });
+  }
+
   /** 방향지시등이 켜져 있는 동안 매 프레임 호출 */
   signal(on: boolean, time: number) {
     if (!this.ctx || !this.enabled) return;
