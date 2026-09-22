@@ -58,7 +58,7 @@ export interface Agent {
   compliant: boolean;
   busCompliant: boolean;
   passingStay: number;
-  /** 1차로를 달리는 차로로 쓰는 운전자 (앞지르기 뒤에도 돌아가지 않는다) */
+  /** 왼쪽 차로(승용은 1차로, 대형차는 앞지르기 차로)를 달리는 차로로 쓰는 운전자 (앞지르기 뒤에도 돌아가지 않는다) */
   cruiser: boolean;
   /** 플레이어 때문에 급제동했는지 (아차사고 판정용) */
   brakedByPlayer: number;
@@ -484,7 +484,8 @@ export class Traffic {
       let score = aNew - aCur + a.p * followerLoss;
       // 오른쪽으로 돌아가려는 성향, 1차로는 앞지르기 뒤 비운다
       if (a.cruiser) {
-        // 1차로 정속 주행: 오른쪽으로 돌아가려 하지 않고, 1차로 쪽으로 옮기려 한다
+        // 정속 주행 차로를 왼쪽에 두는 운전자: 오른쪽으로 돌아가려 하지 않고 왼쪽으로 옮기려 한다.
+        // 승용은 1차로, 지정차로를 지키는 대형차는 앞지르기 차로(편도 3차로의 2차로)까지 (laneAllowed가 막는다)
         score += dir === -1 ? 0.5 : -0.5;
       } else {
         // 대형차는 앞지르기 차로에 들어가면 passingLaneStay 동안은 오른쪽으로 돌아가려 하지 않는다
@@ -494,7 +495,8 @@ export class Traffic {
       }
       // 대형차가 앞지르기 차로(지정차로 바로 왼쪽)에 있으면 앞지르기 뒤 돌아간다
       // (앞지르기 차로에 머무는 시간은 passingLaneStay: 실측에서 편도 3차로 대형화물의 42%가 2차로)
-      if (a.heavy && a.compliant && dir === 1 && !this.laneAllowed(a, a.lane, s) && a.laneTime > a.passingStay) score += 1.2;
+      // 2차로 정속 대형차(cruiser)는 돌아가지 않는다
+      if (a.heavy && a.compliant && !a.cruiser && dir === 1 && !this.laneAllowed(a, a.lane, s) && a.laneTime > a.passingStay) score += 1.2;
       // 차로가 곧 끝나면 무조건 왼쪽으로
       if (dir === -1 && endAhead < 500) score += 3;
       if (dir === 1 && endAhead < 500) score -= 5;

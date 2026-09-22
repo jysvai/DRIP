@@ -17,7 +17,7 @@
     "designatedLaneCompliance": "지정차로(대형차 오른쪽 차로)를 지키는 비율 (0~1)",
     "busLaneCompliance": "버스전용차로를 비워 두는 비율 (0~1)",
     "passingLaneStay": "1차로에서 앞지르기 뒤 오른쪽으로 돌아가기까지 머무는 시간 (초)",
-    "passingLaneCruise": "앞지르기가 아니어도 1차로로 가서 계속 달리는 운전자 비율 (0~1, 한국 고속도로의 1차로 정속 주행)"
+    "passingLaneCruise": "앞지르기가 아니어도 왼쪽 차로로 가서 계속 달리는 운전자 비율 (0~1). 승용은 1차로, 지정차로를 지키는 대형차는 앞지르기 차로(편도 3차로의 2차로)"
   },
   "profiles": {
     "standard": {
@@ -403,7 +403,7 @@
         12,
         6
       ],
-      "passingLaneCruise": 0
+      "passingLaneCruise": 0.6
     },
     "light_commercial": {
       "name": "소형 화물·승합",
@@ -605,7 +605,7 @@
     "light_commercial": "speedFactor R(AVC 소형화물 0.914에 1.5톤 초과 화물이 섞인 것으로 보고 올림), keepRightBias R(2005 관측: 1.5톤 이하 화물 1차로 12.0%, 승용 29.9%)",
     "van_family": "standard와 같고 busLaneCompliance만 0.5 (전용차로 승합차 약 99%가 탑승 기준 미달, 비율 자체는 가정)",
     "assignment": "승용 성향 비율(보통 0.6·여유 0.17·공격적 0.15·초보 0.08)은 직접 근거를 못 찾은 가정값. validationTargets로 거꾸로 맞춘다",
-    "passingLaneCruise": "standard 0.35 R(추월 목적 없이 1차로 계속 주행 자기보고: 편도 3차로 35%, 2차로 40% 이상 — SBS 2023), 나머지 A. 게임에서 승용 1차로 점유가 AVC 0.44(3차로)·0.34(4차로)에 가깝게 되는지로 확인"
+    "passingLaneCruise": "standard 0.35 R(추월 목적 없이 1차로 계속 주행 자기보고: 편도 3차로 35%, 2차로 40% 이상 — SBS 2023), 나머지 A. 게임에서 승용 1차로 점유가 AVC 0.44(3차로)·0.34(4차로)에 가깝게 되는지로 확인. truck_heavy 0.6 R: 지정차로를 지키는 대형화물이 앞지르기 차로(편도 3차로의 2차로)를 달리는 차로로 쓰는 비율. AVC 대형화물 2차로 점유 0.42에 맞춰 게임 측정 0.36~0.38"
   },
   "validationTargets": {
     "car_lane1_share": {

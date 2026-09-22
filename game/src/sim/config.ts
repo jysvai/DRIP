@@ -22,7 +22,7 @@ export interface DriverProfile {
   designatedLaneCompliance: number;
   busLaneCompliance: number;
   passingLaneStay: Dist;
-  /** 앞지르기가 아니어도 1차로로 가서 계속 달리는 운전자 비율 (0~1). 한국 고속도로의 "1차로 정속 주행" */
+  /** 앞지르기가 아니어도 왼쪽 차로로 가서 계속 달리는 운전자 비율 (0~1). 승용은 1차로("1차로 정속 주행"), 지정차로를 지키는 대형차는 앞지르기 차로까지 */
   passingLaneCruise?: number;
 }
 
