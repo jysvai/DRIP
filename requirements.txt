@@ -1,2 +1,4 @@
 pandas>=3.0
 python-dotenv>=1.0
+psycopg[binary]>=3.2
+boto3>=1.35
