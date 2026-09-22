@@ -12,6 +12,7 @@ import {
   TAG,
   box,
   cbox,
+  cyl,
   decalPoly,
   decalPolyPair,
   decalStrip,
@@ -78,8 +79,8 @@ export interface CabinSpec {
   hoodEye: THREE.Vector3;
   /** 운전대 가운데, 기울기(rad, 운전자 쪽으로 누운 정도), 반지름 */
   wheel: { pos: THREE.Vector3; tilt: number; r: number };
-  /** 대시보드: 앞끝 x0(앞유리 아래), 뒤끝 x1, 윗면 높이 y, 실내 폭 w */
-  dash: { x0: number; x1: number; y: number; w: number };
+  /** 대시보드: 앞끝 x0(앞유리 아래), 뒤끝 x1, 윗면 높이 y, 폭 w, 가운데 z (없으면 0) */
+  dash: { x0: number; x1: number; y: number; w: number; z?: number };
   /** 앞유리 아래·위 (x, y) */
   wsBase: [number, number];
   wsTop: [number, number];
@@ -90,6 +91,16 @@ export interface CabinSpec {
   mirrorL: THREE.Vector3;
   mirrorR: THREE.Vector3;
   mirrorC: THREE.Vector3;
+  /** 거울 유리 (뒤를 보는 면의 가운데, 폭(z), 높이(y)): 룸미러, 왼쪽, 오른쪽 순서 */
+  glass: MirrorGlass[];
+  /** 밝은 천장 (아니면 검은 천장) */
+  light: boolean;
+}
+
+export interface MirrorGlass {
+  c: THREE.Vector3;
+  w: number;
+  h: number;
 }
 
 export interface VehicleModel {
@@ -131,8 +142,9 @@ const S = {
   under: { color: 0x151617, r: 0.95, m: 0, c: 0, tag: 0 } as Surf,
   well: { color: 0x0b0b0c, r: 0.95, m: 0, c: 0, tag: 0 } as Surf,
   seam: { color: 0x0e0f10, r: 0.85, m: 0, c: 0, tag: 0 } as Surf,
-  headHousing: { color: 0x3a4148, r: 0.08, m: 0.9, c: 1, tag: TAG.HEAD } as Surf,
-  headLens: { color: 0xd5dde6, r: 0.06, m: 0.95, c: 1, tag: TAG.HEAD } as Surf,
+  headHousing: { color: 0x8c96a1, r: 0.12, m: 1, c: 1, tag: TAG.HEAD } as Surf,
+  headLens: { color: 0x2a3036, r: 0.05, m: 0.6, c: 1, tag: TAG.HEAD } as Surf,
+  lampBand: { color: 0x0c0d0f, r: 0.08, m: 0.3, c: 1, tag: 0 } as Surf,
   drl: { color: 0xf2f6ff, r: 0.15, m: 0.1, c: 1, tag: TAG.DRL } as Surf,
   tail: { color: 0x8e0d14, r: 0.12, m: 0.1, c: 1, tag: TAG.TAIL } as Surf,
   tailSmoke: { color: 0x44070b, r: 0.1, m: 0.2, c: 1, tag: TAG.TAIL } as Surf,
@@ -150,8 +162,13 @@ const S = {
   chassis: { color: 0x26272a, r: 0.7, m: 0.3, c: 0, tag: 0 } as Surf,
   alu: { color: 0xd0d4d8, r: 0.35, m: 0.8, c: 0, tag: 0 } as Surf,
   bed: { color: 0x17181a, r: 0.85, m: 0, c: 0, tag: 0 } as Surf,
+  tapeRed: { color: 0xc8161e, r: 0.3, m: 0.2, c: 0.6, tag: 0 } as Surf,
+  tapeWhite: { color: 0xe8e8e2, r: 0.3, m: 0.2, c: 0.6, tag: 0 } as Surf,
+  bumperGrey: { color: 0x3b3e42, r: 0.6, m: 0.1, c: 0.2, tag: 0 } as Surf,
+  marker: { color: 0xf09a20, r: 0.3, m: 0.1, c: 1, tag: TAG.GLOW } as Surf,
+  destLed: { color: 0xffa21a, r: 0.4, m: 0, c: 0, tag: TAG.GLOW } as Surf,
   // 실내
-  inHead: { color: 0x9c988e, r: 0.95, m: 0, c: 0, tag: 0 } as Surf,
+  inHead: { color: 0xb3afa6, r: 0.95, m: 0, c: 0, tag: 0 } as Surf,
   inHeadDark: { color: 0x2b2c2f, r: 0.95, m: 0, c: 0, tag: 0 } as Surf,
   inPillar: { color: 0x3a3b3e, r: 0.9, m: 0, c: 0, tag: 0 } as Surf,
   inDoor: { color: 0x222326, r: 0.75, m: 0, c: 0.2, tag: 0 } as Surf,
@@ -202,23 +219,41 @@ function plateColor(t: VehicleType): number {
   return t.plate === "yellow" ? 0xf2c21b : t.plate === "ev" ? 0x4c9fe0 : 0xf2f2ee;
 }
 
-/** 번호판: 판 + 글자 자리 (12가 3456) */
-function plate(m: Mesher, body: Loft | null, proj: "front" | "rear", t: VehicleType, y: number, x?: number, w = 0.52, h = 0.11) {
-  const P = (u: number, v: number, du: number, dv: number): Pt[] => [
-    [u - du, v - dv],
-    [u + du, v - dv],
-    [u + du, v + dv],
-    [u - du, v + dv],
-  ];
-  const text = S.plateText;
-  const glyphs = [-0.2, -0.155, -0.085, -0.005, 0.045, 0.095, 0.145, 0.195].map((g) => g * (w / 0.52));
+/** 번호판: 판 + 글자 (12가 3456). 글자는 획 테두리로 (멀리서 막대처럼 보이지 않게). text: 글자를 넣을 곳 (없으면 m) */
+function plate(m: Mesher, body: Loft | null, proj: "front" | "rear", t: VehicleType, y: number, x?: number, w = 0.52, h = 0.11, text: Mesher = m) {
+  const k = w / 0.52;
+  const ink = S.plateText;
+  // 글자 가운데 (u), 반폭 a: 숫자 둘, 한글 하나, 숫자 넷
+  const glyphs: [number, number][] = [
+    [-0.205, 0.018],
+    [-0.162, 0.018],
+    [-0.1, 0.024],
+    [-0.02, 0.018],
+    [0.023, 0.018],
+    [0.066, 0.018],
+    [0.109, 0.018],
+  ].map(([u, a]) => [u * k + 0.045 * k, a * k] as [number, number]);
+  const c = h * 0.31;
+  const st = 0.0065 * k;
+  const strokes: [number, number, number, number][] = [];
+  glyphs.forEach(([u, a], i) => {
+    if (i === 2) {
+      // 한글: ㄱ + ㅏ
+      strokes.push([u - a, y + c - st, u + a * 0.2, y + c], [u + a * 0.2 - st, y - c, u + a * 0.2, y + c], [u + a - st, y - c, u + a, y + c], [u + a * 0.45, y - st / 2, u + a - st, y + st / 2]);
+    } else {
+      strokes.push([u - a, y - c, u - a + st, y + c], [u + a - st, y - c, u + a, y + c], [u - a, y + c - st, u + a, y + c], [u - a, y - c, u + a, y - c + st]);
+    }
+  });
   if (body) {
-    decalPoly(m, body, proj, P(0, y, w / 2, h / 2), plateSurf(t), 0.012, 0);
-    for (let i = 0; i < glyphs.length; i++) decalPoly(m, body, proj, P(glyphs[i], y - 0.004, i === 2 ? 0.024 : 0.017, h * 0.3), text, 0.015, 0);
+    decalPoly(m, body, proj, rect(-w / 2, y - h / 2, w / 2, y + h / 2), plateSurf(t), 0.012, 0);
+    // 앞에서 보면 +z가 왼쪽이다
+    const f = proj === "front" ? -1 : 1;
+    for (const [u0, v0, u1, v1] of strokes) decalPoly(text, body, proj, rect(Math.min(f * u0, f * u1), v0, Math.max(f * u0, f * u1), v1), ink, 0.015, 0);
   } else if (x !== undefined) {
     const s = proj === "front" ? 1 : -1;
     box(m, 0.012, h, w, x, y, 0, plateSurf(t));
-    for (let i = 0; i < glyphs.length; i++) box(m, 0.006, h * 0.6, i === 2 ? 0.048 : 0.034, x + s * 0.008, y - 0.004, glyphs[i], text);
+    // 뒤쪽 번호판은 보는 쪽에서 좌우가 바뀐다
+    for (const [u0, v0, u1, v1] of strokes) box(text, 0.006, v1 - v0, u1 - u0, x + s * 0.008, (v0 + v1) / 2, -s * (u0 + u1) / 2, ink);
   }
 }
 
@@ -246,6 +281,13 @@ function closeLoop(p: Pt[]): Pt[] {
 
 // ---------- 몸체 윤곽 ----------
 
+/** 둥근 모서리가 끝면에서 들어간 깊이 (초타원). d: 끝에서 잰 거리, len: 둥근 길이, depth: 깊이 */
+function corner(d: number, len: number, depth: number, p = 2.2): number {
+  if (d >= len || len <= 0) return 0;
+  const u = 1 - d / len;
+  return depth * (1 - (1 - u ** p) ** (1 / p));
+}
+
 /** 몸체 윤곽. f = 앞끝에서 잰 길이 비율 (0 앞 … 1 뒤) */
 interface Profile {
   xF: number;
@@ -263,8 +305,8 @@ interface Profile {
   /** 벨트라인 턱 (옆면에서 유리까지 들어온 폭) */
   shelf: number;
   rail: number;
-  /** 지붕 모서리 둥근 폭 */
-  round: number;
+  /** 지붕 모서리 둥근 폭 (앞유리 옆에서는 좁게: A필러) */
+  round: (f: number) => number;
   /** 유리 옆면 중간 점 높이 비율 */
   gA: [number, number];
   arches: { x: number; r: number; yc: number }[];
@@ -301,15 +343,15 @@ function makeSection(P: Profile) {
     const tb = P.tumble * be;
     const cr = P.crown(f);
     const gB = hw - P.shelf;
-    const zs = [gB, gB - tb * 0.45, gB - tb * 0.85, gB - tb - P.rail * be, Math.max(0.05, gB - tb - P.round), 0];
+    const zs = [gB, gB - tb * 0.45, gB - tb * 0.85, gB - tb - P.rail * be, Math.max(0.05, gB - tb - P.round(f)), 0];
     const ys = [yT + 0.004 * be, yT + gh * P.gA[0], yT + gh * P.gA[1], yT + gh - 0.018 * be, yT + gh, yT + gh];
     const pts: YZ[] = [
       [yB, 0],
       [yB, wIn],
       [yW, wIn],
-      [yW, hw - 0.035],
-      [y4, hw - 0.02],
-      [y5, hw - 0.006],
+      [yW, hw - 0.06],
+      [y4, hw - 0.038],
+      [y5, hw - 0.011],
       [y6, hw],
       [yS, hw - 0.01],
       [y8, hw - 0.045],
@@ -345,6 +387,8 @@ interface CarShape {
   /** 뒷유리 곡선 (클수록 완만하게 내려오다 끝에서 꺾인다) */
   rearP?: number;
   noseC?: number;
+  /** 승합·미니버스: 옆 창 기둥 수 (B필러 뒤로 고르게) */
+  pillars?: number;
 }
 
 const SHAPES: Record<string, CarShape> = {
@@ -369,6 +413,8 @@ const SHAPES: Record<string, CarShape> = {
   ev_hatch_suv: { hood: 0.24, roofF: 0.37, roofR: 0.93, glassR: 0.975, belt: 0.6, nose: 0.47, tail: 0.64, ground: 0.12, wheelR: 0.36, grille: false, tumble: 0.12 },
   ev_crossover: { hood: 0.26, roofF: 0.4, roofR: 0.76, glassR: 0.94, belt: 0.61, nose: 0.47, tail: 0.66, ground: 0.12, wheelR: 0.36, grille: false, tumble: 0.15, rearP: 1.4 },
   ev_suv: { hood: 0.23, roofF: 0.35, roofR: 0.94, glassR: 0.975, belt: 0.58, nose: 0.55, tail: 0.66, ground: 0.13, wheelR: 0.38, grille: false, tumble: 0.1 },
+  van_tall: { hood: 0.11, roofF: 0.22, roofR: 0.975, glassR: 0.99, belt: 0.44, nose: 0.37, tail: 0.5, ground: 0.07, wheelR: 0.37, grille: true, tumble: 0.06, noseC: 0.12, pillars: 3 },
+  minibus: { hood: 0.075, roofF: 0.15, roofR: 0.975, glassR: 0.99, belt: 0.47, nose: 0.36, tail: 0.5, ground: 0.08, wheelR: 0.4, grille: true, tumble: 0.06, noseC: 0.1, pillars: 4 },
 };
 
 type Front = "slim" | "bar" | "twin" | "pixel" | "round" | "split";
@@ -416,6 +462,8 @@ const BODY_STYLE: Record<string, CarStyle> = {
   ev_hatch_suv: { front: "pixel", grille: "none", rear: "pixel", six: true, clad: true, roof: "glass" },
   ev_crossover: { front: "slim", grille: "none", rear: "bar", clad: true },
   ev_suv: { front: "split", grille: "none", rear: "vertical", six: true, clad: true },
+  van_tall: { front: "slim", grille: "wide", rear: "vertical", privacy: true },
+  minibus: { front: "bar", grille: "wide", rear: "vertical", privacy: true },
 };
 
 const TYPE_STYLE: Record<string, Partial<CarStyle>> = {
@@ -485,20 +533,22 @@ function buildCar(t: VehicleType, b: VB) {
       y = yBeltR + (yDeck - yBeltR) * smooth(u * 2.2);
     }
     const dF = f * L;
-    if (dF < 0.22) y -= 0.07 * (1 - dF / 0.22) ** 2;
+    // 보닛 앞끝이 둥글게 앞면으로 넘어간다
+    y -= corner(dF, 0.2, 0.075);
     const dR = (1 - f) * L;
     if (dR < 0.3) y = lerp(y, yTail, smooth(1 - dR / 0.3) ** 1.5);
-    if (dR < 0.09) y -= 0.035 * (1 - dR / 0.09) ** 2;
+    y -= corner(dR, 0.12, 0.04);
     return y;
   };
   const bottom = (f: number) => yb + 0.1 * (1 - clamp((f * L) / 0.45, 0, 1)) ** 2 + 0.11 * (1 - clamp(((1 - f) * L) / 0.5, 0, 1)) ** 2;
   const noseC = sh.noseC ?? 0.17;
+  // 위에서 보면: 앞뒤 모서리가 둥글고 (초타원) 앞쪽이 조금 좁아진다
   const hwAt = (f: number) => {
     const dF = f * L;
     const dR = (1 - f) * L;
-    let w = W2;
-    if (dF < 0.55) w -= noseC * (1 - dF / 0.55) ** 2.2;
-    if (dR < 0.5) w -= 0.12 * (1 - dR / 0.5) ** 2.2;
+    let w = W2 - corner(dF, noseC * 1.2, noseC * 1.2) - corner(dR, 0.2, 0.18);
+    if (dF < 0.9) w -= noseC * 0.5 * (1 - dF / 0.9) ** 2;
+    if (dR < 0.7) w -= 0.05 * (1 - dR / 0.7) ** 2;
     return w;
   };
   const yRoofAt = (u: number) => H - 0.01 - 0.035 * u * u;
@@ -526,9 +576,10 @@ function buildCar(t: VehicleType, b: VB) {
     roof,
     crown,
     tumble: sh.tumble ?? 0.15,
-    shelf: 0.1,
+    shelf: 0.06,
     rail: 0.025,
-    round: 0.16,
+    // A필러는 가늘게, 지붕 옆은 둥글게
+    round: (f) => lerp(0.085, 0.15, smooth((f - fRF) / 0.08)),
     gA: [0.5, 0.9],
     arches,
     tireW,
@@ -537,7 +588,11 @@ function buildCar(t: VehicleType, b: VB) {
   const section = makeSection(P);
 
   // 창 배치
-  const xB = X(lerp(fRF, fRR, sh.bed ? 0.9 : 0.42));
+  const vanLike = !!sh.pillars;
+  const xB = vanLike ? X(fRF) - 0.85 : X(lerp(fRF, fRR, sh.bed ? 0.9 : 0.42));
+  // 승합·미니버스: B필러 뒤 창 기둥
+  const pillarXs: number[] = [];
+  for (let i = 1; i <= (sh.pillars ?? 0); i++) pillarXs.push(lerp(xB, X(fGR) + 0.35, i / ((sh.pillars ?? 0) + 1)));
   const six = !!st.six && !sh.bed;
   const xCb = X(lerp(fRF, fRR, 0.76));
   const xC = (j: number) => X(fRR + (fGR - fRR) * 0.12) + (j - J.G1) * 0.1;
@@ -546,6 +601,7 @@ function buildCar(t: VehicleType, b: VB) {
   const sideWin = (xm: number, j: number): Surf => {
     const f = F(xm);
     if (Math.abs(xm - xB) < 0.045) return S.gloss;
+    if (pillarXs.some((p) => Math.abs(xm - p) < 0.04)) return S.gloss;
     if (sh.bed && f > fRR) return S.paint;
     if (six) {
       if (Math.abs(xm - xCb) < 0.035) return S.gloss;
@@ -568,8 +624,6 @@ function buildCar(t: VehicleType, b: VB) {
         return inArch(xm) ? S.well : S.under;
       case J.LIP:
         return st.clad || ends ? S.clad : S.paint;
-      case J.LOW:
-        return st.clad ? S.clad : S.paint;
       case J.SHELF:
         return zone === "body" ? S.paint : st.chrome ? S.chrome : S.gloss;
       case J.G1:
@@ -585,16 +639,17 @@ function buildCar(t: VehicleType, b: VB) {
         return S.paint;
     }
   };
-  const cap = (j: number) => (j <= J.WELL_TOP ? S.under : j <= J.LOW ? S.clad : S.paint);
+  const cap = (j: number) => (j <= J.WELL_TOP ? S.under : j === J.LIP ? S.clad : S.paint);
 
   // 마디
   const stations: number[] = [];
-  for (const d of [0, 0.025, 0.065, 0.12, 0.2, 0.3]) stations.push(xF - d, -xF + d);
+  for (const d of [0, 0.004, 0.015, 0.035, 0.065, 0.1, 0.15, 0.21, 0.3, 0.45]) stations.push(xF - d, -xF + d);
   for (const f of [fh * 0.55, fh * 0.8, fh]) stations.push(X(f));
   for (const u of [0.2, 0.45, 0.72, 1]) stations.push(X(fh + (fRF - fh) * u));
   stations.push(X(lerp(fRF, fRR, 0.2)), X(lerp(fRF, fRR, 0.62)), X(fRR), xB + 0.045, xB - 0.045);
   if (six) stations.push(xCb + 0.035, xCb - 0.035);
   else for (let j = J.G1; j <= J.G3; j++) stations.push(xC(j));
+  for (const p of pillarXs) stations.push(p + 0.04, p - 0.04);
   for (const u of [0.33, 0.66, 1]) stations.push(X(fRR + (fGR - fRR) * u));
   stations.push(X(lerp(fGR, 1, 0.45)));
   const archSt = (list: number[], angles: number[]) => {
@@ -604,21 +659,23 @@ function buildCar(t: VehicleType, b: VB) {
     }
   };
   archSt(stations, [30, 60, 90, 120, 150]);
-  const body = new Loft({ stations, section, surf: surfAt, capFront: cap, capRear: cap });
+  // 모서리: 차체 아래끝, 어깨선, 창틀, 유리 아래·위 (법선을 나눠 선이 또렷하다)
+  const body = new Loft({ stations, section, surf: surfAt, capFront: cap, capRear: cap, creases: [J.LIP, J.SHOULDER, J.SHELF, J.G1, J.RAIL] });
 
-  // 실내 안쪽 면
+  // 실내 안쪽 면: 천장·기둥은 밝은 천 (스포츠카·경찰차는 검정)
+  const light = !sporty && !t.id.startsWith("police");
   const innerSurf = (_xa: number, _xb: number, j: number, outer: Surf | null): Surf | null => {
     if (!outer || outer.tag === TAG.GLASS) return null;
     if (j <= J.WELL_TOP) return S.inFloor;
     if (j <= J.SHOULDER2) return S.inDoor;
-    if (j <= J.G3) return S.inPillar;
-    return st.chrome ? S.inHead : S.inHeadDark;
+    if (j === J.SHELF) return S.inPillar;
+    return light ? S.inHead : S.inHeadDark;
   };
   body.build(b.m, { m: b.inner, x0: X(fh) + 0.05, x1: X(fGR) - 0.02, surf: innerSurf });
 
   // 중간 거리 몸체
   const midSt: number[] = [];
-  for (const d of [0, 0.06, 0.18]) midSt.push(xF - d, -xF + d);
+  for (const d of [0, 0.012, 0.05, 0.12, 0.25]) midSt.push(xF - d, -xF + d);
   midSt.push(X(fh * 0.6), X(fh), X((fh + fRF) / 2), X(fRF), X(fRR), xB + 0.045, xB - 0.045, X((fRR + fGR) / 2), X(fGR), X(lerp(fGR, 1, 0.45)));
   if (six) midSt.push(xCb + 0.035, xCb - 0.035);
   else midSt.push(xC(J.G2));
@@ -641,20 +698,21 @@ function buildCar(t: VehicleType, b: VB) {
   const plateY = st.grille === "crest" ? yb + 0.17 : yb + 0.24;
   const sigR = S.sigR;
   const sigL = S.sigL;
-  const lampPair = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPolyPair(core, body, "front", pts, s, off, lv);
+  const lampPair = (pts: Pt[], s: Surf, off = 0.014, lv = 2) => decalPolyPair(core, body, "front", pts, s, off, lv);
   const stripPair = (line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.016) => decalStripPair(core, body, "front", line, w, s, off);
   switch (st.front) {
     case "slim":
       lampPair([[0.4 * W2, yL - 0.035], [0.93 * W2, yL - 0.022], [1.0 * W2, yL + 0.035], [0.44 * W2, yL + 0.03]], S.headHousing);
       stripPair([[0.46 * W2, yL + 0.021], [0.97 * W2, yL + 0.029]], 0.014, S.drl);
       stripPair([[0.84 * W2, yL - 0.012], [0.97 * W2, yL - 0.006]], 0.014, [sigR, sigL]);
-      for (const c of [0.58, 0.72]) lampPair(circle(c * W2, yL - 0.002, 0.024, 0.02, 8), S.headLens, 0.016, 0);
+      for (const c of [0.56, 0.67, 0.78]) lampPair(rect(c * W2 - 0.03, yL - 0.022, c * W2 + 0.03, yL + 0.008), S.headLens, 0.018, 1);
       break;
     case "bar":
-      stripPair([[0, yF0 - 0.012], [0.985 * W2, yF0 - 0.02]], 0.018, S.drl, 0.014);
-      lampPair([[0.52 * W2, yL - 0.1], [0.94 * W2, yL - 0.085], [0.97 * W2, yL - 0.02], [0.55 * W2, yL - 0.035]], S.headHousing);
-      for (const c of [0.64, 0.8]) lampPair(circle(c * W2, yL - 0.058, 0.026, 0.022, 8), S.headLens, 0.016, 0);
-      stripPair([[0.8 * W2, yL - 0.115], [0.95 * W2, yL - 0.105]], 0.016, [sigR, sigL]);
+      stripPair([[0, yF0 - 0.012], [0.93 * W2, yF0 - 0.02]], 0.04, S.lampBand, 0.012);
+      stripPair([[0, yF0 - 0.012], [0.92 * W2, yF0 - 0.02]], 0.014, S.drl, 0.016);
+      lampPair([[0.5 * W2, yL - 0.1], [0.95 * W2, yL - 0.08], [0.99 * W2, yL - 0.005], [0.52 * W2, yL - 0.03]], S.headHousing);
+      for (const c of [0.62, 0.74, 0.86]) lampPair(rect(c * W2 - 0.032, yL - 0.072 + (c - 0.62) * 0.08, c * W2 + 0.032, yL - 0.04 + (c - 0.62) * 0.08), S.headLens, 0.018, 1);
+      stripPair([[0.72 * W2, yL - 0.125], [0.88 * W2, yL - 0.115]], 0.016, [sigR, sigL]);
       break;
     case "twin":
       lampPair([[0.44 * W2, yL - 0.05], [1.0 * W2, yL - 0.035], [1.02 * W2, yL + 0.07], [0.44 * W2, yL + 0.058]], S.headHousing);
@@ -663,12 +721,12 @@ function buildCar(t: VehicleType, b: VB) {
       stripPair([[0.9 * W2, yL + 0.012], [1.0 * W2, yL + 0.018]], 0.014, [sigR, sigL]);
       break;
     case "pixel":
-      lampPair(rect(0.56 * W2, yL - 0.05, 0.96 * W2, yL + 0.04), S.gloss, 0.012, 0);
-      for (let r = 0; r < 2; r++) for (let c = 0; c < 5; c++) lampPair(rect((0.6 + c * 0.075) * W2, yL - 0.03 + r * 0.04, (0.6 + c * 0.075) * W2 + 0.028, yL - 0.03 + r * 0.04 + 0.024), c === 4 && r === 0 ? S.headLens : S.drl, 0.016, 0);
+      lampPair(rect(0.56 * W2, yL - 0.05, 0.96 * W2, yL + 0.04), S.gloss, 0.013, 2);
+      for (let r = 0; r < 2; r++) for (let c = 0; c < 5; c++) lampPair(rect((0.6 + c * 0.075) * W2, yL - 0.03 + r * 0.04, (0.6 + c * 0.075) * W2 + 0.028, yL - 0.03 + r * 0.04 + 0.024), c === 4 && r === 0 ? S.headLens : S.drl, 0.017, 1);
       stripPair([[0.6 * W2, yL - 0.075], [0.9 * W2, yL - 0.075]], 0.012, [sigR, sigL]);
       break;
     case "round":
-      lampPair(circle(0.7 * W2, yL, 0.085, 0.085, 14), S.headHousing, 0.012, 1);
+      lampPair(circle(0.7 * W2, yL, 0.085, 0.085, 14), S.headHousing, 0.014, 2);
       decalStripPair(core, body, "front", closeLoop(circle(0.7 * W2, yL, 0.088, 0.088, 14)), 0.014, S.chrome, 0.016, 0.04);
       decalStripPair(core, body, "front", closeLoop(circle(0.7 * W2, yL, 0.055, 0.055, 12)), 0.012, S.drl, 0.018, 0.04);
       stripPair([[0.6 * W2, yL - 0.12], [0.8 * W2, yL - 0.12]], 0.018, [sigR, sigL]);
@@ -677,7 +735,7 @@ function buildCar(t: VehicleType, b: VB) {
       if (st.bar) stripPair([[0, yF0 - 0.008], [0.99 * W2, yF0 - 0.012]], 0.016, S.drl, 0.014);
       else stripPair([[0.36 * W2, yF0 - 0.02], [0.99 * W2, yF0 - 0.012]], 0.02, S.drl, 0.014);
       lampPair([[0.62 * W2, yL - 0.2], [0.95 * W2, yL - 0.18], [0.96 * W2, yL - 0.1], [0.64 * W2, yL - 0.11]], S.headHousing);
-      for (const c of [0.72, 0.85]) lampPair(circle(c * W2, yL - 0.15, 0.024, 0.021, 8), S.headLens, 0.016, 0);
+      for (const c of [0.72, 0.85]) lampPair(rect(c * W2 - 0.03, yL - 0.17, c * W2 + 0.03, yL - 0.13), S.headLens, 0.018, 1);
       stripPair([[0.88 * W2, yF0 - 0.04], [0.99 * W2, yF0 - 0.036]], 0.014, [sigR, sigL]);
       break;
   }
@@ -748,7 +806,7 @@ function buildCar(t: VehicleType, b: VB) {
       break;
   }
   if (st.grille !== "none") frontPoly(circle(0, st.grille === "crest" ? yL + 0.075 : yL + 0.045, 0.05, 0.024, 10), S.chrome, 0.018, 0);
-  plate(core, body, "front", t, plateY);
+  plate(core, body, "front", t, plateY, undefined, 0.52, 0.11, b.m);
 
   // 전조등·방향지시등 위치
   b.at(body, "front", 0.7 * W2, yL, b.head);
@@ -801,7 +859,7 @@ function buildCar(t: VehicleType, b: VB) {
   decalPoly(core, body, "rear", [[-0.7 * W2, yb + 0.05], [0.7 * W2, yb + 0.05], [0.66 * W2, yb + 0.13], [-0.66 * W2, yb + 0.13]], S.trim, 0.01, 1);
   if (!t.ev) for (const s of [-1, 1]) decalPoly(core, body, "rear", circle(s * 0.55 * W2, yb + 0.09, 0.045, 0.03, 10), S.chrome, 0.016, 0);
   const plateYR = hasDeck ? yR0 - 0.3 : lerp(yb, yR0, 0.5);
-  plate(core, body, "rear", t, plateYR);
+  plate(core, body, "rear", t, plateYR, undefined, 0.52, 0.11, b.m);
   decalPoly(core, body, "rear", circle(0, yRL + 0.07, 0.045, 0.022, 10), S.chrome, 0.018, 0);
   // 보조 제동등: 뒷유리 위
   const yCH = roof(fRR + (fGR - fRR) * 0.1) - 0.04;
@@ -852,17 +910,24 @@ function buildCar(t: VehicleType, b: VB) {
     }
   }
 
-  // ---- 사이드미러 ----
-  const xm = X(fh) - 0.17;
-  const ym = top(fh) + 0.1;
-  const zm = hwAt(fh) + 0.07;
+  // ---- 사이드미러: 문 앞 모서리 벨트라인 위, 뒤를 보는 유리 ----
+  const xm = X(fh) - 0.2;
+  const ym = yBelt + 0.1;
+  const zm = hwAt(fh) + 0.08;
   const mirrorSurf = st.roof === "black" ? S.gloss : S.paint;
+  const glassW = 0.2;
+  const glassH = 0.095;
   for (const s of [-1, 1]) {
-    ellipsoid(m, 0.095, 0.068, 0.12, xm, ym, s * zm, mirrorSurf, 10, 6);
-    box(m, 0.012, 0.1, 0.18, xm - 0.085, ym, s * zm, S.mirrorGlass);
-    box(m, 0.07, 0.03, 0.14, xm + 0.01, ym - 0.045, s * (zm - 0.1), S.trim);
-    box(m, 0.03, 0.018, 0.08, xm + 0.07, ym - 0.03, s * (zm + 0.05), s < 0 ? sigL : sigR, 0.5);
-    cbox(b.mid, 0.16, 0.12, 0.22, 0.04, xm, ym, s * zm, mirrorSurf);
+    const z = s * zm;
+    ellipsoid(m, 0.075, 0.064, 0.118, xm + 0.005, ym, z, mirrorSurf, 10, 6);
+    cbox(m, 0.07, 0.128, 0.236, 0.028, xm - 0.03, ym, z, mirrorSurf);
+    box(m, 0.006, glassH + 0.012, glassW + 0.014, xm - 0.066, ym, z, S.trim);
+    box(m, 0.004, glassH, glassW, xm - 0.07, ym, z, S.mirrorGlass);
+    // 받침 (문에 붙는 부분)
+    cbox(m, 0.1, 0.03, 0.1, 0.01, xm - 0.02, ym - 0.045, s * (zm - 0.13), S.trim);
+    // 옆 방향지시등
+    box(m, 0.03, 0.016, 0.09, xm + 0.06, ym - 0.03, s * (zm + 0.06), s < 0 ? sigL : sigR, 0.5);
+    cbox(b.mid, 0.14, 0.12, 0.23, 0.04, xm - 0.01, ym, z, mirrorSurf);
   }
 
   // ---- 브레이크 캘리퍼 ----
@@ -892,6 +957,10 @@ function buildCar(t: VehicleType, b: VB) {
     decalStripPair(m, body, "right", [[xF - 0.35, yBelt - 0.24], [-xF + 0.35, yBelt - 0.22]], 0.17, surf(0x1f3f8f, 0.35, 0.2, 1), 0.006, 0.15);
     decalStripPair(m, body, "right", [[xF - 0.35, yBelt - 0.12], [-xF + 0.35, yBelt - 0.1]], 0.04, surf(0xf2c230, 0.35, 0.2, 1), 0.007, 0.15);
   }
+  if (t.livery === "ambulance") {
+    decalStripPair(m, body, "right", [[xF - 0.5, yBelt - 0.18], [-xF + 0.3, yBelt - 0.18]], 0.16, surf(0xd42a2a, 0.35, 0.2, 1), 0.006, 0.15);
+    decalStripPair(m, body, "right", [[xF - 0.5, yBelt - 0.32], [-xF + 0.3, yBelt - 0.32]], 0.05, surf(0xf2c230, 0.35, 0.2, 1), 0.007, 0.15);
+  }
   if (t.livery === "expatrol") decalStripPair(m, body, "right", [[xF - 0.4, yBelt - 0.18], [-xF + 0.4, yBelt - 0.17]], 0.12, surf(0x1f5fb0, 0.35, 0.2, 1), 0.006, 0.15);
   if (sh.bed) {
     // 적재함: 위에서 보면 검은 바닥
@@ -907,9 +976,9 @@ function buildCar(t: VehicleType, b: VB) {
 
   // ---- 운전석 ----
   const eyeY = yBelt + (H - yBelt) * 0.42;
-  const eye = new THREE.Vector3(X(fRF) - 0.6 - (H - 1.45) * 0.4, eyeY, -W2 * 0.42);
+  const eye = new THREE.Vector3(vanLike ? X(fRF) - 0.5 : X(fRF) - 0.6 - (H - 1.45) * 0.4, eyeY, vanLike ? -W2 + 0.45 : -W2 * 0.42);
   b.cabin = {
-    kind: t.body === "van" || t.body === "mpv" ? "van" : "car",
+    kind: t.body === "van" || t.body === "mpv" || vanLike ? "van" : "car",
     eye,
     hoodEye: new THREE.Vector3(X(fh) + 0.1, top(fh) + 0.3, 0),
     wheel: { pos: new THREE.Vector3(eye.x + 0.47, eyeY - 0.36, eye.z), tilt: 0.42, r: 0.18 },
@@ -921,183 +990,594 @@ function buildCar(t: VehicleType, b: VB) {
     floorY: yb + 0.12,
     mirrorL: new THREE.Vector3(xm, ym, -zm - 0.05),
     mirrorR: new THREE.Vector3(xm, ym, zm + 0.05),
-    mirrorC: new THREE.Vector3(X(fRF) - 0.12, H - 0.13, 0),
+    mirrorC: new THREE.Vector3(X(fRF) - 0.03, H - 0.145, 0),
+    glass: [
+      { c: new THREE.Vector3(X(fRF) - 0.031, H - 0.145, 0), w: 0.21, h: 0.066 },
+      { c: new THREE.Vector3(xm - 0.0725, ym, -zm), w: glassW, h: glassH },
+      { c: new THREE.Vector3(xm - 0.0725, ym, zm), w: glassW, h: glassH },
+    ],
+    light,
   };
 }
 
-// ---------- 버스 ----------
+/** 캠핑카: 승합차 앞부분 + 뒤 거주 상자 (운전실 위로 튀어나온 침실) */
+function buildCamper(t: VehicleType, b: VB) {
+  const cabH = 2.45;
+  buildCar({ ...t, height: cabH, body: "van_tall" }, b);
+  const L = t.length;
+  const W = t.width;
+  const H = t.height;
+  const xF = L / 2;
+  const x0 = xF - 1.75;
+  const x1 = -xF;
+  const y0 = 0.5;
+  const wall = paintSurf(0.97);
+  const core = b.core;
+  cbox(core, x0 - x1, H - y0, W, 0.08, (x0 + x1) / 2, (H + y0) / 2, 0, wall);
+  profile(core, [[x0 + 0.02, H - 0.02], [x0 + 0.02, cabH - 0.02], [x0 + 1.05, cabH + 0.1], [x0 + 0.95, H - 0.22]], W - 0.06, wall, 0, 0.08);
+  box(core, 0.03, 0.32, W - 0.4, x0 + 1.02, cabH + 0.32, 0, S.glassPriv, 0, -0.35);
+  for (const s of [-1, 1]) {
+    for (const x of [x0 - 0.9, x1 + 1.3]) box(core, 0.9, 0.55, 0.012, x, 1.75, s * (W / 2 + 0.004), S.glassPriv);
+    box(core, L * 0.62, 0.08, 0.012, (x0 + x1) / 2, 1.15, s * (W / 2 + 0.005), surf(0x7a8c8f, 0.4, 0.2, 0.5));
+    box(core, L * 0.62, 0.035, 0.013, (x0 + x1) / 2, 1.28, s * (W / 2 + 0.006), surf(0xc8702a, 0.4, 0.2, 0.5));
+  }
+  box(core, 0.75, 1.75, 0.012, x0 - 2.1, y0 + 0.95, W / 2 + 0.005, surf(0xe2e3e1, 0.4, 0, 0.3));
+  box(core, 0.35, 0.5, 0.012, x0 - 2.1, 1.75, W / 2 + 0.008, S.glassPriv);
+  // 뒤: 등·번호판·사다리
+  b.brake.length = 0;
+  for (const list of [b.sigL, b.sigR]) for (let i = list.length - 1; i >= 0; i--) if (list[i].x < 0) list.splice(i, 1);
+  for (const s of [-1, 1]) {
+    box(core, 0.04, 0.4, 0.14, x1 - 0.01, 0.95, s * (W / 2 - 0.12), S.tail);
+    box(core, 0.04, 0.12, 0.14, x1 - 0.015, 0.68, s * (W / 2 - 0.12), s < 0 ? S.sigL : S.sigR);
+    b.brake.push(new THREE.Vector3(x1 - 0.04, 1.0, s * (W / 2 - 0.12)));
+    (s < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(x1 - 0.04, 0.68, s * (W / 2 - 0.12)));
+  }
+  plate(core, null, "rear", t, 0.62, x1 - 0.02, 0.52, 0.11);
+  box(core, 0.012, 1.6, 0.9, x1 - 0.006, 1.45, 0.2, S.seam);
+  for (const z of [-0.5, -0.3]) box(core, 0.04, 2.2, 0.03, x1 - 0.04, 1.6, z, S.steel);
+}
+
+// ---------- 큰 차 공통 ----------
+
+/** 두 점을 잇는 둥근 막대 */
+function rod(m: Mesher, a: THREE.Vector3, b: THREE.Vector3, r: number, s: Surf, seg = 8) {
+  const d = b.clone().sub(a);
+  const g = new THREE.CylinderGeometry(r, r, d.length(), seg);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()));
+  g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+  m.geo(g, s);
+}
+
+/** 큰 차 사이드미러: 큰 거울 + 아래 보조 거울 + 팔. 뒤를 보는 유리 명세를 돌려준다 */
+function bigMirror(m: Mesher, x: number, y: number, z: number, side: number, from: THREE.Vector3[]): MirrorGlass {
+  const w = 0.2;
+  const h = 0.32;
+  cbox(m, 0.07, h + 0.03, w + 0.03, 0.025, x + 0.035, y, z, S.trim);
+  box(m, 0.004, h, w, x - 0.001, y, z, S.mirrorGlass);
+  const y2 = y - h / 2 - 0.11;
+  cbox(m, 0.06, 0.15, w, 0.025, x + 0.03, y2, z, S.trim);
+  box(m, 0.004, 0.12, w - 0.03, x - 0.001, y2, z, S.mirrorGlass);
+  const inner = z - side * (w / 2 - 0.02);
+  for (const [i, p] of from.entries()) rod(m, p, new THREE.Vector3(x + 0.04, i === 0 ? y + h / 2 - 0.03 : y2, inner), 0.016, S.trim);
+  return { c: new THREE.Vector3(x - 0.004, y, z), w, h };
+}
+
+/** 뒤 반사띠 (빨강·흰색 번갈아) */
+function reflectTape(m: Mesher, x: number, y: number, W: number, s: number) {
+  const n = Math.max(4, Math.round(W / 0.25));
+  const seg = W / n;
+  for (let i = 0; i < n; i++) {
+    const z = -W / 2 + seg * (i + 0.5);
+    box(m, 0.008, 0.05, seg - 0.004, x + s * 0.004, y, z, i % 2 ? S.tapeWhite : S.tapeRed);
+  }
+}
+
+/** 차체 틀·연료탱크·공기탱크·옆 보호대·흙받이 (프레임 트럭 공통) */
+function chassis(b: VB, x0: number, x1: number, frameY: number, W: number, gaps: [number, number][], tank = true) {
+  const m = b.core;
+  // 프레임 두 줄
+  for (const s of [-1, 1]) box(m, x0 - x1, 0.2, 0.08, (x0 + x1) / 2, frameY, s * 0.42, S.chassis);
+  const free = (xa: number, xb: number) => !gaps.some(([g0, g1]) => xa < g1 && xb > g0);
+  if (tank) {
+    // 연료탱크 (알루미늄, 왼쪽), 배터리 상자 (오른쪽): 운전실 바로 뒤, 바퀴를 피해서
+    let x = x0 - 0.05;
+    while (x - 1.0 > x1 && !free(x - 1.0, x)) x -= 0.2;
+    if (x - 1.0 > x1) {
+      const g = new THREE.CylinderGeometry(0.26, 0.26, 0.95, 14);
+      g.rotateZ(Math.PI / 2);
+      g.translate(x - 0.5, frameY - 0.22, -W / 2 + 0.36);
+      m.geo(g, S.alu);
+      for (const dx of [0.02, 0.98]) box(m, 0.03, 0.54, 0.5, x - dx, frameY - 0.22, -W / 2 + 0.36, S.chassis);
+      cbox(m, 0.8, 0.42, 0.5, 0.03, x - 0.5, frameY - 0.2, W / 2 - 0.36, S.chassis);
+    }
+  }
+  // 옆 보호대: 바퀴 사이 난간 두 줄
+  for (const [a, c] of gapsBetween(x0, x1, gaps)) {
+    if (a - c < 0.6) continue;
+    for (const s of [-1, 1]) {
+      for (const dy of [-0.16, -0.36]) box(m, a - c, 0.05, 0.03, (a + c) / 2, frameY + dy, s * (W / 2 - 0.04), S.steel);
+    }
+  }
+}
+
+/** [x0, x1] 구간에서 gaps(바퀴)를 뺀 빈 구간들 (앞 → 뒤) */
+function gapsBetween(x0: number, x1: number, gaps: [number, number][]): [number, number][] {
+  const g = [...gaps].sort((a, b) => b[1] - a[1]);
+  const out: [number, number][] = [];
+  let cur = x0;
+  for (const [g0, g1] of g) {
+    if (g1 < cur && g1 > x1) out.push([cur, Math.max(x1, g1)]);
+    cur = Math.min(cur, g0);
+  }
+  if (cur > x1) out.push([cur, x1]);
+  return out;
+}
+
+/** 흙받이 (뒷바퀴 뒤) */
+function mudflaps(m: Mesher, x: number, r: number, W: number, tireSpan: number) {
+  for (const s of [-1, 1]) box(m, 0.02, r * 1.1, tireSpan, x, r * 0.62, s * (W / 2 - 0.08 - tireSpan / 2), S.rubber);
+}
+
+/** 큰 차 바퀴 명세 (복륜이면 안쪽 바퀴도) */
+function heavyWheels(b: VB, xs: number[], r: number, W: number, tw: number, steerCount: number, dual: (i: number) => boolean) {
+  xs.forEach((x, i) => {
+    for (const s of [-1, 1]) {
+      b.wheels.push({ x, z: s * (W / 2 - 0.02 - tw / 2), r, w: tw, steer: i < steerCount, heavy: true });
+      if (dual(i)) b.wheels.push({ x, z: s * (W / 2 - 0.04 - tw * 1.5), r, w: tw, steer: false, heavy: true });
+    }
+  });
+}
+
+/** 실내 안쪽 면 재질 (차체 겉면 번호별) */
+function innerSurfOf(light: boolean) {
+  return (_xa: number, _xb: number, j: number, outer: Surf | null): Surf | null => {
+    if (!outer || outer.tag === TAG.GLASS) return null;
+    if (j <= J.WELL_TOP) return S.inFloor;
+    if (j <= J.SHOULDER2) return S.inDoor;
+    if (j === J.SHELF) return S.inPillar;
+    return light ? S.inHead : S.inHeadDark;
+  };
+}
+
+/** 휠아치 마디 */
+function archStations(list: number[], arches: { x: number; r: number }[], angles: number[]) {
+  for (const a of arches) {
+    for (const deg of angles) list.push(a.x + a.r * Math.cos((deg * Math.PI) / 180));
+    list.push(a.x + a.r + 0.006, a.x + a.r - 0.006, a.x - a.r + 0.006, a.x - a.r - 0.006);
+  }
+}
+
+// ---------- 버스 (고속·광역·2층) ----------
 
 function buildBus(t: VehicleType, b: VB) {
   const L = t.length;
   const W = t.width;
   const H = t.height;
-  const front = L / 2;
-  const m = b.core;
-  const y0 = 0.35;
-  const wr = t.body === "minibus" || t.body === "van_tall" || t.body === "camper" ? 0.4 : 0.52;
-  const isVan = t.body === "van_tall" || t.body === "camper";
-  const nose = isVan ? 0.7 : 0;
-  const P = S.paint;
-  const body: Pt[] = isVan
-    ? [
-        [front, y0],
-        [front, H * 0.38],
-        [front - 0.55, H * 0.46],
-        [front - nose - 0.25, H * 0.62],
-        [front - nose - 0.05, H],
-        [-front, H],
-        [-front, y0],
-      ]
-    : [
-        [front, y0],
-        [front, H * 0.35],
-        [front - 0.12, H * 0.96],
-        [front - 0.35, H],
-        [-front + 0.1, H],
-        [-front, H - 0.1],
-        [-front, y0],
-      ];
-  profile(m, body, W, P, 0, 0.05);
-  if (isVan) {
-    profile(
-      m,
-      [
-        [front - 0.58, H * 0.47],
-        [front - nose - 0.22, H * 0.64],
-        [front - nose - 0.05, H * 0.9],
-        [front - 0.62, H * 0.5],
-      ],
-      W - 0.12,
-      S.glass,
-      0,
-      0.02,
-    );
-  } else {
-    box(m, 0.06, H * 0.5, W - 0.16, front - 0.05, H * 0.66, 0, S.glass);
-  }
-  const winY0 = t.body === "double_decker" ? H * 0.18 + 0.4 : isVan ? H * 0.52 : t.body === "city_bus" ? H * 0.42 : H * 0.5;
-  const winY1 = t.body === "double_decker" ? H * 0.48 : H * 0.9;
-  const winFront = front - (isVan ? nose + 0.5 : 0.7);
-  const winBack = -front + 0.35;
-  for (const side of [-1, 1]) {
-    box(m, winFront - winBack, winY1 - winY0, 0.02, (winFront + winBack) / 2, (winY0 + winY1) / 2, side * (W / 2 + 0.005), S.glass);
-    if (t.body === "double_decker") box(m, winFront - winBack, H * 0.3, 0.02, (winFront + winBack) / 2, H * 0.78, side * (W / 2 + 0.005), S.glass);
-    const n = Math.floor((winFront - winBack) / 1.4);
-    for (let i = 1; i < n; i++) {
-      const x = winBack + (i * (winFront - winBack)) / n;
-      box(m, 0.08, winY1 - winY0, 0.03, x, (winY0 + winY1) / 2, side * (W / 2 + 0.008), P);
+  const xF = L / 2;
+  const W2 = W / 2 - 0.005;
+  const X = (f: number) => xF - f * L;
+  const F = (x: number) => (xF - x) / L;
+  const city = t.body === "city_bus";
+  const double = t.body === "double_decker";
+  const coach = !city && !double;
+  const wr = 0.52;
+  const tw = 0.3;
+  const yb = 0.34;
+  // 창 아랫선: 고속버스는 높고(짐칸), 광역버스는 낮다. 2층버스는 윗층 창
+  const yBelt = double ? 2.25 : city ? 1.2 : 1.8;
+  const yWs = double ? 0.95 : city ? 0.85 : 1.0;
+  const yRoof = H - 0.01;
+  // 옆 창 윗선 (그 위는 지붕 띠)
+  const winTop = H - (double ? 0.42 : 0.55);
+  const gTop = (winTop - yBelt) / (yRoof - yBelt);
+  const wsLen = 0.55;
+  const fWs = wsLen / L;
+  const top = (f: number) => {
+    const d = f * L;
+    // 앞에서는 운전석 창이 깊게 내려온다
+    let y = lerp(yWs, yBelt, smooth(clamp((d - 0.1) / 1.4, 0, 1)));
+    y -= corner(d, 0.08, 0.03);
+    return y;
+  };
+  const roof = (f: number) => yRoof - corner(f * L, wsLen, 0.32) - corner((1 - f) * L, 0.3, 0.12);
+  const hwAt = (f: number) => W2 - corner(f * L, 0.16, 0.12) - corner((1 - f) * L, 0.12, 0.08);
+  const xf = xF - (coach ? 2.55 : 2.35);
+  const axles = [xf, xf - t.wheelbase];
+  if (L > 12.4) axles.push(xf - t.wheelbase - 1.3);
+  const arches = axles.map((x) => ({ x, r: wr + 0.07, yc: wr + 0.03 }));
+  const P: Profile = {
+    xF,
+    len: L,
+    top,
+    bottom: () => yb,
+    hw: hwAt,
+    roof,
+    crown: () => 0.05,
+    tumble: 0.06,
+    shelf: 0.02,
+    rail: 0.02,
+    round: () => 0.2,
+    gA: [gTop * 0.5, gTop],
+    arches,
+    tireW: tw * 2 + 0.04,
+    fender: 0.05,
+  };
+  const section = makeSection(P);
+  // 옆 창 기둥 (검정, 유리와 한 면처럼)
+  const winF = X(fWs) - 0.15;
+  const winR = -xF + 0.35;
+  const nWin = Math.max(3, Math.round((winF - winR) / 1.45));
+  const pillars: number[] = [];
+  for (let i = 1; i < nWin; i++) pillars.push(winF - ((winF - winR) * i) / nWin);
+  const inArch = (x: number) => arches.some((a) => Math.abs(x - a.x) < a.r);
+  const surfAt = (xa: number, xb: number, j: number): Surf | null => {
+    const xm = (xa + xb) / 2;
+    const f = F(xm);
+    const ws = f < fWs;
+    const rear = xm < winR;
+    switch (j) {
+      case J.UNDER:
+        return S.under;
+      case J.WELL:
+        return S.well;
+      case J.WELL_TOP:
+        return inArch(xm) ? S.well : S.under;
+      case J.LIP:
+        return S.clad;
+      case J.SHELF:
+        return ws || rear ? S.paint : S.gloss;
+      case J.G1:
+      case J.G2:
+        if (ws) return S.glass;
+        if (rear) return S.paint;
+        return pillars.some((p) => Math.abs(xm - p) < 0.05) ? S.gloss : S.glassPriv;
+      case J.G3:
+        return ws ? S.glass : S.paint;
+      case J.RAIL:
+        return ws ? S.glass : S.paint;
+      case J.ROOF:
+        return ws ? S.glass : S.paint;
+      default:
+        return S.paint;
     }
-  }
-  const stripe = t.livery === "express" ? 0x1f5aa6 : t.livery === "premium" ? 0xc8a24a : t.livery === "airport" ? 0x2aa6c8 : t.livery === "tour" ? 0xf5f5f0 : t.livery === "metro" ? 0xf5f5f0 : null;
-  if (stripe !== null) {
-    for (const side of [-1, 1]) {
-      box(m, L * 0.92, 0.18, 0.012, -0.1, H * 0.34, side * (W / 2 + 0.008), surf(stripe, 0.35, 0.1, 1));
-      if (t.livery === "tour") box(m, L * 0.6, 0.5, 0.013, -L * 0.15, H * 0.25, side * (W / 2 + 0.009), surf(0xf0a51e, 0.35, 0.1, 1));
-    }
-  }
-  if (t.livery === "ambulance") {
-    for (const side of [-1, 1]) {
-      box(m, L * 0.9, 0.2, 0.012, 0, H * 0.4, side * (W / 2 + 0.008), surf(0xd42a2a, 0.35, 0.1, 1));
-      box(m, L * 0.9, 0.08, 0.013, 0, H * 0.3, side * (W / 2 + 0.009), surf(0xf2c230, 0.35, 0.1, 1));
-    }
-  }
-  if (t.body === "camper") {
-    box(m, 1.0, 0.7, W - 0.05, front - nose - 0.4, H - 0.35, 0, paintSurf(0.95));
-    for (const side of [-1, 1]) box(m, L * 0.7, 0.1, 0.012, -0.5, H * 0.45, side * (W / 2 + 0.008), surf(0x7a8c8f));
-  }
-  for (const side of [-1, 1]) {
-    box(m, 0.05, 0.14, 0.34, front + 0.01, H * 0.26, side * (W / 2 - 0.3), S.headHousing);
-    b.head.push(new THREE.Vector3(front + 0.05, H * 0.26, side * (W / 2 - 0.3)));
-    box(m, 0.05, 0.3, 0.2, -front - 0.01, H * 0.3, side * (W / 2 - 0.2), S.tail);
-    b.brake.push(new THREE.Vector3(-front - 0.04, H * 0.3, side * (W / 2 - 0.2)));
-    (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(-front - 0.045, H * 0.3 + 0.2, side * (W / 2 - 0.2)));
-    (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(front + 0.02, H * 0.26 + 0.12, side * (W / 2 - 0.12)));
-    box(m, 0.5, 0.2, 0.06, front - 0.4, H * 0.75, side * (W / 2 + 0.1), S.trim);
-  }
-  box(m, 0.1, 0.3, W, front, y0 + 0.1, 0, S.trim);
-  plate(m, null, "front", t, y0 + 0.25, front + 0.06, 0.6, 0.2);
-  plate(m, null, "rear", t, y0 + 0.5, -front - 0.02, 0.6, 0.2);
-  if (t.extras?.includes("lightBar")) {
-    box(m, 0.3, 0.12, 0.7, front - nose - 0.3, H + 0.06, -0.38, surf(0xd02020, 0.2, 0, 1, TAG.BEACON_A));
-    box(m, 0.3, 0.12, 0.7, front - nose - 0.3, H + 0.06, 0.38, surf(0x1f4fd6, 0.2, 0, 1, TAG.BEACON_B));
-  }
-  const wb = t.wheelbase;
-  const xf = front - (isVan ? 1.0 : 2.4);
-  const axles = [xf, xf - wb];
-  if (L > 12.4) axles.push(xf - wb - 1.3);
-  axles.forEach((x, i) => {
-    for (const side of [-1, 1]) {
-      const dual = i > 0 && !isVan;
-      b.wheels.push({ x, z: side * (W / 2 - 0.2), r: wr, w: 0.3, steer: i === 0, heavy: true });
-      if (dual) b.wheels.push({ x, z: side * (W / 2 - 0.2 - 0.32), r: wr, w: 0.3, steer: false, heavy: true });
-    }
-  });
-  const eye = new THREE.Vector3(front - (isVan ? nose + 0.9 : 1.0), isVan ? 1.75 : 2.15, -W / 2 + 0.55);
-  b.cabin = cabinBox(isVan ? "van" : "bus", eye, front - (isVan ? nose + 0.35 : 0.08), isVan ? H * 0.5 : H * 0.42, H - 0.08, W, y0 + 0.2, 0.2);
-}
+  };
+  const capF = (j: number) => (j <= J.WELL_TOP ? S.under : j === J.LIP ? S.clad : j >= J.G1 ? S.glass : S.paint);
+  const capR = (j: number) => (j <= J.WELL_TOP ? S.under : j === J.LIP ? S.clad : city && j >= J.G1 && j < J.RAIL ? S.glassPriv : S.paint);
+  const stations: number[] = [];
+  for (const d of [0, 0.004, 0.015, 0.035, 0.07, 0.12, 0.2, 0.32, 0.45, 0.6, 0.85, 1.2, 1.6]) stations.push(xF - d);
+  for (const d of [0, 0.004, 0.015, 0.035, 0.07, 0.12, 0.2, 0.3, 0.5]) stations.push(-xF + d);
+  stations.push(winF, winR + 0.05, winR - 0.05);
+  for (const p of pillars) stations.push(p - 0.05, p + 0.05);
+  archStations(stations, arches, [30, 60, 90, 120, 150]);
+  const body = new Loft({ stations, section, surf: surfAt, capFront: capF, capRear: capR, creases: [J.LIP, J.SHELF, J.G1, J.RAIL] });
+  body.build(b.m, { m: b.inner, x0: xF - 0.03, x1: xF - 2.6, surf: innerSurfOf(false) });
+  const midSt = [xF, xF - 0.03, xF - 0.12, xF - 0.35, xF - 0.6, -xF, -xF + 0.05, -xF + 0.2, winF, winR];
+  archStations(midSt, arches, [60, 120]);
+  new Loft({
+    stations: midSt,
+    section: (x) => {
+      const s = section(x);
+      return MID_KEEP.map((k) => s[k]);
+    },
+    surf: (xa, xb, j) => {
+      const s = surfAt(xa, xb, MID_KEEP[j]);
+      return s === S.gloss ? S.glassPriv : s;
+    },
+    capFront: (j) => capF(MID_KEEP[j]),
+    capRear: (j) => capR(MID_KEEP[j]),
+  }).build(b.mid);
 
-/** 상자형 운전석 (버스·트럭) */
-function cabinBox(kind: CabinSpec["kind"], eye: THREE.Vector3, wsX: number, wsY: number, roofY: number, W: number, floorY: number, lean: number): CabinSpec {
-  const big = kind === "bus" || kind === "truck";
-  return {
-    kind,
+  const core = b.core;
+  const m = b.m;
+  const front = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "front", pts, s, off, lv);
+  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "front", pts, s, off, lv);
+  const rearPoly = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "rear", pts, s, off, lv);
+  const rearPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "rear", pts, s, off, lv);
+  // ---- 앞: 행선지 표시(주황 LED), 범퍼, 전조등, 그릴, 번호판, 와이퍼 ----
+  const yDest = yRoof - 0.36;
+  front(rect(-W2 + 0.25, yDest - 0.1, W2 - 0.25, yDest + 0.1), S.gloss, 0.014, 2);
+  for (let i = 0; i < 7; i++) front(rect(-0.62 + i * 0.18, yDest - 0.045, -0.5 + i * 0.18, yDest + 0.045), S.destLed, 0.018, 0);
+  const yLamp = yb + 0.38;
+  front(rect(-W2, yb + 0.02, W2, yb + 0.26), S.trim, 0.01, 2);
+  frontPair([[0.6 * W2, yLamp - 0.07], [0.97 * W2, yLamp - 0.06], [0.99 * W2, yLamp + 0.08], [0.62 * W2, yLamp + 0.07]], S.headHousing, 0.016, 2);
+  for (const c of [0.7, 0.8, 0.9]) frontPair(rect(c * W2 - 0.035, yLamp - 0.035, c * W2 + 0.035, yLamp + 0.035), S.headLens, 0.02, 1);
+  frontPair(rect(0.62 * W2, yLamp + 0.1, 0.96 * W2, yLamp + 0.125), S.drl, 0.02, 1);
+  frontPair(rect(0.86 * W2, yLamp - 0.13, 0.97 * W2, yLamp - 0.09), [S.sigR, S.sigL], 0.018, 1);
+  front(rect(-0.5 * W2, yb + 0.3, 0.5 * W2, yWs - 0.12), S.mesh, 0.012, 2);
+  for (let k = 1; k < 4; k++) decalStrip(core, body, "front", [[-0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)], [0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)]], 0.012, S.satin, 0.016);
+  front(circle(0, yWs - 0.06, 0.07, 0.03, 12), S.chrome, 0.02, 0);
+  plate(core, body, "front", t, yb + 0.16, undefined, 0.52, 0.11, core);
+  for (const z of [-0.45, 0.35]) decalStrip(core, body, "front", [[z - 0.35, yWs + 0.05], [z + 0.35, yWs + 0.09]], 0.016, S.trim, 0.02);
+  b.head.push(new THREE.Vector3(xF + 0.02, yLamp, -0.8 * W2), new THREE.Vector3(xF + 0.02, yLamp, 0.8 * W2));
+  b.sigL.push(new THREE.Vector3(xF + 0.02, yLamp - 0.11, -0.92 * W2));
+  b.sigR.push(new THREE.Vector3(xF + 0.02, yLamp - 0.11, 0.92 * W2));
+  // ---- 뒤: 세로 등, 엔진 그릴, 번호판, 뒷창(고속버스는 작게) ----
+  const yT = yb + 0.75;
+  rearPair([[0.84 * W2, yT - 0.3], [0.98 * W2, yT - 0.3], [0.98 * W2, yT + 0.45], [0.84 * W2, yT + 0.45]], S.tailSmoke, 0.014, 1);
+  rearPair(rect(0.86 * W2, yT + 0.12, 0.97 * W2, yT + 0.4), S.tail, 0.018, 1);
+  rearPair(rect(0.86 * W2, yT - 0.04, 0.97 * W2, yT + 0.1), [S.sigR, S.sigL], 0.018, 1);
+  rearPair(rect(0.86 * W2, yT - 0.26, 0.97 * W2, yT - 0.08), S.reverse, 0.018, 1);
+  rearPoly(rect(-0.62 * W2, yb + 0.35, 0.62 * W2, yb + 0.95), S.mesh, 0.012, 2);
+  for (let k = 1; k < 6; k++) decalStrip(core, body, "rear", [[-0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)], [0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)]], 0.01, S.paint, 0.016);
+  if (coach) rearPoly(rect(-0.62 * W2, yBelt + 0.25, 0.62 * W2, yRoof - 0.45), S.glassPriv, 0.012, 2);
+  rearPoly(rect(-0.18, yRoof - 0.28, 0.18, yRoof - 0.24), S.brake, 0.016, 0);
+  plate(core, body, "rear", t, yb + 0.2, undefined, 0.52, 0.11, core);
+  rearPoly(rect(-W2, yb + 0.02, W2, yb + 0.12), S.trim, 0.01, 2);
+  for (const s of [-1, 1]) {
+    b.brake.push(new THREE.Vector3(-xF - 0.02, yT + 0.26, s * 0.92 * W2));
+    (s < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(-xF - 0.02, yT + 0.03, s * 0.92 * W2));
+  }
+  // ---- 옆: 문(오른쪽), 짐칸 문, 색띠 ----
+  const side = (pts: Pt[], s: Surf, off = 0.008, lv = 1) => decalPoly(m, body, "right", pts, s, off, lv);
+  const sideBoth = (line: Pt[], w: number, s: Surf, off = 0.007) => decalStripPair(m, body, "right", line, w, s, off, 0.2);
+  const doors = city ? [xF - 0.42, 0.4] : [xF - 0.42];
+  for (const d0 of doors) {
+    const d1 = d0 - 0.98;
+    side(rect(d1, yb + 0.12, d0, yBelt + (yRoof - yBelt) * 0.75), S.trim, 0.008, 2);
+    side(rect(d1 + 0.05, yb + 0.5, (d0 + d1) / 2 - 0.02, yBelt + (yRoof - yBelt) * 0.7), S.glassPriv, 0.012, 2);
+    side(rect((d0 + d1) / 2 + 0.02, yb + 0.5, d0 - 0.05, yBelt + (yRoof - yBelt) * 0.7), S.glassPriv, 0.012, 2);
+  }
+  if (coach) {
+    // 짐칸 문 틈
+    const bays = [arches[0].x - arches[0].r - 0.1, arches[1].x + arches[1].r + 0.1];
+    const n = 3;
+    for (let i = 0; i <= n; i++) {
+      const x = lerp(bays[0], bays[1], i / n);
+      sideBoth([[x, yb + 0.2], [x, yBelt - 0.15]], 0.008, S.seam);
+    }
+    sideBoth([[bays[0], yBelt - 0.15], [bays[1], yBelt - 0.15]], 0.008, S.seam);
+    sideBoth([[bays[0], yb + 0.2], [bays[1], yb + 0.2]], 0.008, S.seam);
+  }
+  if (double) {
+    // 아래층 창
+    sideBoth([[xF - 1.4, (yWs + 1.9) / 2], [-xF + 0.5, (yWs + 1.9) / 2]], 1.9 - yWs - 0.25, S.glassPriv, 0.008);
+    for (let x = xF - 2.8; x > -xF + 1; x -= 1.45) sideBoth([[x, yWs + 0.15], [x, 1.8]], 0.08, S.gloss, 0.012);
+  }
+  const stripe = t.livery === "express" ? 0x1f5aa6 : t.livery === "premium" ? 0xc8a24a : t.livery === "airport" ? 0x2aa6c8 : t.livery === "tour" ? 0xf0a51e : null;
+  if (stripe !== null) {
+    sideBoth([[xF - 1.5, yBelt - 0.3], [-xF + 0.3, yBelt - 0.4]], 0.14, surf(stripe, 0.35, 0.2, 1), 0.007);
+    if (t.livery === "tour") sideBoth([[xF - 1.5, yb + 0.5], [-xF + 0.8, yBelt - 0.6]], 0.3, surf(0xd23a6e, 0.35, 0.2, 1), 0.008);
+  }
+  // 옆 표시등 (주황)
+  for (let x = xF - 1.2; x > -xF + 0.5; x -= 2.2) for (const s of [-1, 1]) box(core, 0.08, 0.035, 0.012, x, yb + 0.28, s * (hwAt(F(x)) - 0.03), S.marker);
+  // ---- 토끼귀 거울 (지붕 앞 모서리에서 앞으로 내려온다) ----
+  const glass: MirrorGlass[] = [];
+  for (const s of [-1, 1]) {
+    const root = new THREE.Vector3(xF - 0.25, yRoof - 0.12, s * (W2 - 0.12));
+    const g = bigMirror(core, xF + 0.42, yRoof - 0.95, s * (W2 + 0.02), s, [root, new THREE.Vector3(xF - 0.05, yRoof - 0.35, s * (W2 - 0.05))]);
+    rod(core, root, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), 0.022, S.trim);
+    rod(core, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), new THREE.Vector3(xF + 0.46, yRoof - 0.78, s * (W2 + 0.01)), 0.022, S.trim);
+    glass.push(g);
+  }
+  // ---- 바퀴 ----
+  heavyWheels(b, axles, wr, W, tw, 1, (i) => i === 1);
+  // ---- 운전석 ----
+  const eye = new THREE.Vector3(xF - 1.05, double ? 2.05 : city ? 2.0 : 2.25, -W2 + 0.55);
+  const rm = new THREE.Vector3(xF - 0.35, yRoof - 0.3, 0);
+  b.cabin = {
+    kind: "bus",
     eye,
-    hoodEye: new THREE.Vector3(wsX + 0.25, wsY - 0.05, 0),
-    wheel: { pos: new THREE.Vector3(eye.x + (big ? 0.5 : 0.46), eye.y - (big ? 0.42 : 0.38), eye.z), tilt: big ? 1.0 : 0.6, r: big ? 0.23 : 0.19 },
-    dash: { x0: wsX, x1: eye.x + (big ? 0.72 : 0.62), y: wsY + 0.02, w: W - 0.2 },
-    wsBase: [wsX, wsY],
-    wsTop: [wsX - lean, roofY],
-    roofY,
-    beltY: wsY,
-    floorY,
-    mirrorL: new THREE.Vector3(wsX - 0.2, wsY + 0.35, -W / 2 - 0.25),
-    mirrorR: new THREE.Vector3(wsX - 0.2, wsY + 0.35, W / 2 + 0.25),
-    mirrorC: new THREE.Vector3(wsX - 0.2, roofY - 0.1, 0),
+    hoodEye: new THREE.Vector3(xF + 0.05, yWs + 0.2, 0),
+    wheel: { pos: new THREE.Vector3(eye.x + 0.52, eye.y - 0.45, eye.z), tilt: 1.0, r: 0.24 },
+    dash: { x0: xF - 0.25, x1: eye.x + 0.7, y: eye.y - 0.55, w: 1.15, z: eye.z + 0.2 },
+    wsBase: [xF, yWs],
+    wsTop: [xF - wsLen * 0.6, yRoof - 0.1],
+    roofY: yRoof - 0.15,
+    beltY: yBelt,
+    floorY: eye.y - 1.15,
+    mirrorL: glass[0].c.clone().setZ(glass[0].c.z - 0.05),
+    mirrorR: glass[1].c.clone().setZ(glass[1].c.z + 0.05),
+    mirrorC: rm,
+    glass: [{ c: rm.clone().setX(rm.x - 0.001), w: 0.3, h: 0.09 }, glass[0], glass[1]],
+    light: false,
   };
 }
 
 // ---------- 트럭 ----------
 
-function cab(b: VB, t: VehicleType, x0: number, len: number, W: number, H: number, y0: number) {
-  const m = b.core;
-  const front = x0;
-  const pts: Pt[] = [
-    [front, y0],
-    [front, y0 + H * 0.45],
-    [front - 0.1, y0 + H * 0.97],
-    [front - 0.25, y0 + H],
-    [front - len, y0 + H],
-    [front - len, y0],
-  ];
-  profile(m, pts, W, S.paint, 0, 0.05);
-  const lean = Math.atan2(0.1, H * 0.52);
-  const glass = new THREE.BoxGeometry(0.05, H * 0.42, W - 0.24);
-  glass.rotateZ(lean);
-  glass.translate(front - 0.028, y0 + H * 0.7, 0);
-  m.geo(glass, S.glass);
-  for (const side of [-1, 1]) {
-    box(m, len * 0.55, H * 0.38, 0.02, front - len * 0.4, y0 + H * 0.72, side * (W / 2 + 0.005), S.glass);
-    box(m, 0.05, 0.14, 0.3, front + 0.01, y0 + 0.28, side * (W / 2 - 0.3), S.headHousing);
-    b.head.push(new THREE.Vector3(front + 0.05, y0 + 0.28, side * (W / 2 - 0.3)));
-    (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(front + 0.03, y0 + 0.45, side * (W / 2 - 0.15)));
-    box(m, 0.35, 0.4, 0.05, front - 0.2, y0 + H * 0.75, side * (W / 2 + 0.15), S.trim);
-  }
-  box(m, 0.06, 0.25, W - 0.5, front + 0.005, y0 + H * 0.28, 0, S.mesh);
-  box(m, 0.1, 0.25, W, front - 0.02, y0 - 0.02, 0, S.trim);
-  plate(m, null, "front", t, y0 + 0.05, front + 0.07, 0.55, 0.18);
-  const eye = new THREE.Vector3(front - 0.85, y0 + H * 0.62, -W / 2 + 0.5);
-  b.cabin = cabinBox("truck", eye, front - 0.05, y0 + H * 0.5, y0 + H - 0.08, W, y0 + 0.1, 0.1);
+type CabStyle = "light" | "medium" | "heavy";
+
+interface CabOpts {
+  front: number;
+  len: number;
+  W: number;
+  /** 운전실 바닥 높이 */
+  y0: number;
+  H: number;
+  xAxle: number;
+  wr: number;
+  tireW: number;
+  style: CabStyle;
 }
 
-function rearLights(b: VB, t: VehicleType, x: number, y: number, W: number) {
-  const m = b.core;
-  for (const side of [-1, 1]) {
-    box(m, 0.05, 0.14, 0.3, x - 0.01, y, side * (W / 2 - 0.25), S.tail);
-    b.brake.push(new THREE.Vector3(x - 0.04, y, side * (W / 2 - 0.25)));
-    (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(x - 0.045, y, side * (W / 2 - 0.05)));
+/** 트럭 운전실 (캡오버): 단면을 이어 만든 둥근 상자, 기운 앞유리, 문 창, 앞바퀴 아치. 운전석 배치도 정한다 */
+function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: number; yTop: number } {
+  const { front, len, W, y0, H, xAxle, wr, style } = o;
+  const light = style === "light";
+  const heavy = style === "heavy";
+  const W2 = W / 2 - 0.005;
+  const X = (f: number) => front - f * len;
+  const F = (x: number) => (front - x) / len;
+  const yTop = y0 + H;
+  const yBelt = y0 + H * (light ? 0.47 : heavy ? 0.44 : 0.46);
+  const lean = light ? 0.55 : heavy ? 0.12 : 0.22;
+  const wsLen = (yTop - yBelt) * Math.tan(lean) + 0.1;
+  const fWs = wsLen / len;
+  const rF = light ? 0.24 : 0.14;
+  const top = (f: number) => yBelt - corner(f * len, 0.12, 0.05);
+  const roofY = (f: number) => {
+    const d = f * len;
+    const yr = yTop - 0.02 - corner(len - d, 0.1, 0.05);
+    if (d >= wsLen) return yr;
+    return lerp(top(f), yr, 1 - (1 - d / wsLen) ** 1.35);
+  };
+  const hwAt = (f: number) => W2 - corner(f * len, rF, rF * 0.75) - corner((1 - f) * len, 0.06, 0.04);
+  const ar = wr + 0.07;
+  const arches = [{ x: xAxle, r: ar, yc: wr + 0.02 }];
+  const P: Profile = {
+    xF: front,
+    len,
+    top,
+    bottom: () => y0,
+    hw: hwAt,
+    roof: roofY,
+    crown: () => 0.02,
+    tumble: light ? 0.09 : 0.05,
+    shelf: 0.02,
+    rail: 0.015,
+    round: () => (light ? 0.13 : 0.1),
+    gA: [0.42, 0.78],
+    arches,
+    tireW: o.tireW,
+    fender: 0.05,
+  };
+  const section = makeSection(P);
+  const fDoor0 = fWs + 0.04;
+  const fDoor1 = light ? 0.93 : heavy ? 0.58 : 0.74;
+  const surfAt = (xa: number, xb: number, j: number): Surf | null => {
+    const xm = (xa + xb) / 2;
+    const f = F(xm);
+    const ws = f < fWs;
+    switch (j) {
+      case J.UNDER:
+        return S.under;
+      case J.WELL:
+        return S.well;
+      case J.WELL_TOP:
+        return Math.abs(xm - xAxle) < ar ? S.well : S.under;
+      case J.LIP:
+        return S.clad;
+      case J.G1:
+      case J.G2:
+        return !ws && f > fDoor0 && f < fDoor1 ? S.glass : S.paint;
+      case J.ROOF:
+        return ws ? S.glass : S.paint;
+      default:
+        return S.paint;
+    }
+  };
+  const cap = (j: number) => (j <= J.WELL_TOP ? S.under : j === J.LIP ? S.clad : S.paint);
+  const stations: number[] = [];
+  for (const d of [0, 0.004, 0.015, 0.035, 0.07, 0.12, 0.2, 0.3]) stations.push(front - d);
+  for (const d of [0, 0.015, 0.05, 0.1]) stations.push(front - len + d);
+  for (let k = 1; k <= 4; k++) stations.push(front - (wsLen * k) / 4);
+  stations.push(X(fDoor0), X(fDoor1), X((fDoor0 + fDoor1) / 2));
+  archStations(stations, arches, [30, 60, 90, 120, 150]);
+  const body = new Loft({ stations, section, surf: surfAt, capFront: cap, capRear: cap, creases: [J.LIP, J.G1, J.RAIL] });
+  body.build(b.m, { m: b.inner, x0: front - 0.03, x1: front - len + 0.03, surf: innerSurfOf(false) });
+  const midSt = [front, front - 0.015, front - 0.07, front - 0.2, front - wsLen, X(fDoor0), X(fDoor1), front - len, front - len + 0.05];
+  archStations(midSt, arches, [60, 120]);
+  new Loft({
+    stations: midSt,
+    section: (x) => {
+      const s = section(x);
+      return MID_KEEP.map((k) => s[k]);
+    },
+    surf: (xa, xb, j) => surfAt(xa, xb, MID_KEEP[j]),
+    capFront: (j) => cap(MID_KEEP[j]),
+    capRear: (j) => cap(MID_KEEP[j]),
+  }).build(b.mid);
+
+  const core = b.core;
+  const front1 = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "front", pts, s, off, lv);
+  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "front", pts, s, off, lv);
+  // ---- 범퍼 (앞으로 조금 나온 검은 상자), 전조등, 그릴 ----
+  const bumpH = light ? 0.3 : 0.38;
+  const bumpY = y0 + bumpH / 2 - 0.02;
+  cbox(core, 0.22, bumpH, W - (light ? 0.1 : 0.04), 0.05, front - 0.04, bumpY, 0, light ? S.clad : S.bumperGrey);
+  plate(core, null, "front", t, bumpY - 0.02, front + 0.075, 0.44, 0.18);
+  const lampY = light ? yBelt - 0.2 : bumpY + 0.02;
+  if (light) {
+    // 1톤: 앞면 위 모서리 둥근 전조등, 가운데 작은 그릴
+    frontPair([[0.55 * W2, lampY - 0.08], [0.95 * W2, lampY - 0.06], [0.97 * W2, lampY + 0.08], [0.58 * W2, lampY + 0.1]], S.headHousing, 0.016, 2);
+    for (const c of [0.68, 0.82]) frontPair(rect(c * W2 - 0.04, lampY - 0.03, c * W2 + 0.04, lampY + 0.04), S.headLens, 0.02, 1);
+    frontPair(rect(0.88 * W2, lampY - 0.06, 0.96 * W2, lampY + 0.05), [S.sigR, S.sigL], 0.02, 1);
+    front1(rect(-0.45 * W2, lampY - 0.06, 0.45 * W2, lampY + 0.07), S.mesh, 0.012, 2);
+    for (let k = 1; k < 3; k++) decalStrip(core, body, "front", [[-0.44 * W2, lampY - 0.06 + k * 0.043], [0.44 * W2, lampY - 0.06 + k * 0.043]], 0.012, S.satin, 0.016);
+    front1(circle(0, lampY + 0.13, 0.06, 0.025, 12), S.chrome, 0.018, 0);
+  } else {
+    // 중·대형: 범퍼 안 전조등, 큰 그릴(크롬 가로살), 앞유리 위 햇빛가리개와 표시등
+    for (const s of [-1, 1]) {
+      const z = s * (W / 2 - 0.3);
+      box(core, 0.02, 0.13, 0.36, front + 0.075, lampY, z, S.headHousing);
+      for (const dz of [-0.09, 0.05]) box(core, 0.012, 0.08, 0.1, front + 0.088, lampY, z + dz, S.headLens);
+      box(core, 0.012, 0.03, 0.3, front + 0.088, lampY + 0.075, z, S.drl);
+      box(core, 0.02, 0.1, 0.12, front + 0.075, lampY, s * (W / 2 - 0.08), s < 0 ? S.sigL : S.sigR);
+    }
+    const g0 = y0 + bumpH + 0.06;
+    const g1 = yBelt - 0.14;
+    front1(rect(-0.62 * W2, g0, 0.62 * W2, g1), S.mesh, 0.012, 2);
+    for (let k = 1; k < 5; k++) decalStrip(core, body, "front", [[-0.62 * W2, lerp(g0, g1, k / 5)], [0.62 * W2, lerp(g0, g1, k / 5)]], 0.022, S.chrome, 0.016);
+    decalStrip(core, body, "front", closeLoop(rect(-0.62 * W2, g0, 0.62 * W2, g1)), 0.03, S.chrome, 0.017);
+    front1(rect(-0.2, g1 + 0.03, 0.2, g1 + 0.09), S.chrome, 0.018, 0);
+    if (heavy) {
+      // 햇빛가리개 + 주황 표시등 다섯
+      const vx = front - wsLen + 0.02;
+      cbox(core, 0.34, 0.05, W - 0.3, 0.02, vx + 0.1, yTop - 0.02, 0, S.paint, 0, -0.18);
+      for (let i = -2; i <= 2; i++) box(core, 0.04, 0.035, 0.07, vx + 0.26, yTop - 0.04, i * 0.3, S.marker);
+    }
   }
-  plate(m, null, "rear", t, y - 0.25, x - 0.02, 0.55, 0.18);
-  if (t.heavy) box(m, 0.02, 0.08, W - 0.3, x - 0.02, y - 0.12, 0, surf(0xd8b030, 0.3, 0.2, 0.5));
+  for (const z of [-0.5, 0.45]) decalStrip(core, body, "front", [[z - 0.32, yBelt + 0.05], [z + 0.32, yBelt + 0.09]], 0.018, S.trim, 0.02);
+  b.head.push(new THREE.Vector3(front + 0.1, lampY, -(W / 2 - 0.3)), new THREE.Vector3(front + 0.1, lampY, W / 2 - 0.3));
+  b.sigL.push(new THREE.Vector3(front + 0.09, lampY, -(W / 2 - 0.08)));
+  b.sigR.push(new THREE.Vector3(front + 0.09, lampY, W / 2 - 0.08));
+  // ---- 옆: 문 틈, 손잡이, 발판 ----
+  const seam = (line: Pt[]) => decalStripPair(b.m, body, "right", line, 0.007, S.seam, 0.005, 0.1);
+  const xd0 = X(fDoor0) + 0.04;
+  const xd1 = X(fDoor1) - 0.04;
+  seam([[xd0, y0 + 0.12], [xd0, top(fDoor0) + (roofY(fDoor0) - top(fDoor0)) * 0.9]]);
+  seam([[xd1, y0 + 0.12], [xd1, top(fDoor1) + (roofY(fDoor1) - top(fDoor1)) * 0.9]]);
+  decalPolyPair(b.m, body, "right", rect(xd1 + 0.08, yBelt - 0.14, xd1 + 0.28, yBelt - 0.1), S.trim, 0.008, 0);
+  if (!light) for (const s of [-1, 1]) for (const [k, dy] of [0.25, 0.55].entries()) box(core, 0.4 - k * 0.06, 0.04, 0.2, xAxle - ar - 0.25, y0 - dy + 0.35, s * (W / 2 - 0.12), S.steel);
+  // ---- 사이드미러 (앞유리 옆 기둥에서 팔) ----
+  const mx = front - 0.12;
+  const my = yBelt + (yTop - yBelt) * 0.35;
+  const glass: MirrorGlass[] = [];
+  for (const s of [-1, 1]) {
+    const z = s * (W2 + (light ? 0.14 : 0.2));
+    const from = [new THREE.Vector3(front - wsLen * 0.6, yBelt + (yTop - yBelt) * 0.7, s * (W2 - 0.08)), new THREE.Vector3(front - 0.1, yBelt + 0.05, s * (W2 - 0.06))];
+    glass.push(bigMirror(core, mx, my, z, s, from));
+  }
+  // ---- 운전석 ----
+  const eye = new THREE.Vector3(front - wsLen - (light ? 0.42 : 0.62), yBelt + (yTop - yBelt) * 0.42, -W2 + (light ? 0.45 : 0.58));
+  const rm = new THREE.Vector3(front - wsLen - 0.12, yTop - 0.2, 0);
+  b.cabin = {
+    kind: light ? "van" : "truck",
+    eye,
+    hoodEye: new THREE.Vector3(front + 0.05, yBelt + 0.15, 0),
+    wheel: { pos: new THREE.Vector3(eye.x + (light ? 0.46 : 0.5), eye.y - (light ? 0.38 : 0.44), eye.z), tilt: light ? 0.7 : 1.0, r: light ? 0.19 : 0.23 },
+    dash: { x0: front - 0.06, x1: eye.x + (light ? 0.6 : 0.72), y: yBelt + 0.03, w: W - 0.24 },
+    wsBase: [front - 0.02, yBelt],
+    wsTop: [front - wsLen, yTop - 0.03],
+    roofY: yTop - 0.06,
+    beltY: yBelt,
+    floorY: y0 + 0.06,
+    mirrorL: glass[0].c.clone().setZ(glass[0].c.z - 0.05),
+    mirrorR: glass[1].c.clone().setZ(glass[1].c.z + 0.05),
+    mirrorC: rm,
+    glass: [{ c: rm.clone().setX(rm.x - 0.001), w: 0.24, h: 0.07 }, glass[0], glass[1]],
+    light: false,
+  };
+  return { body, yBelt, yTop };
+}
+
+/** 트럭 뒤: 등 (범퍼 막대 위), 번호판, 반사띠, 뒤 보호대 */
+function truckRear(b: VB, t: VehicleType, x: number, y: number, W: number) {
+  const m = b.core;
+  // 뒤 보호대 (낮은 막대)
+  box(m, 0.1, 0.12, W - 0.2, x + 0.12, 0.5, 0, S.steel);
+  for (const s of [-1, 1]) {
+    box(m, 0.08, 0.3, 0.06, x + 0.2, 0.62, s * 0.7, S.steel);
+    const z = s * (W / 2 - 0.22);
+    box(m, 0.06, 0.16, 0.36, x - 0.02, y, z, S.trim);
+    box(m, 0.012, 0.1, 0.1, x - 0.055, y, z - s * 0.11, S.tail);
+    box(m, 0.012, 0.1, 0.1, x - 0.055, y, z, s < 0 ? S.sigL : S.sigR);
+    box(m, 0.012, 0.1, 0.1, x - 0.055, y, z + s * 0.11, S.reverse);
+    b.brake.push(new THREE.Vector3(x - 0.07, y, z - s * 0.11));
+    (s < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(x - 0.07, y, z));
+  }
+  plate(m, null, "rear", t, y - 0.02, x - 0.04, 0.34, 0.2);
+  reflectTape(m, x - 0.05, y - 0.14, W - 0.3, -1);
 }
 
 const CONTAINER_COLORS = [0x2c5e9e, 0xb52a2a, 0x2f7a4a, 0x8a8f94, 0xd9d9d6, 0x7b3f2a, 0x1f3e6e, 0xc8702a];
@@ -1106,6 +1586,30 @@ const C = {
   cargoBlue: 0x2d5e9e,
   wood: 0x8c6a45,
 };
+
+/** 짐 상자 (탑차·윙바디·냉동): 모서리 기둥, 위아래 테, 뒷문 두 짝과 잠금대 */
+function cargoBox(m: Mesher, x0: number, x1: number, y0: number, h: number, W: number, s: Surf, trimS: Surf, wing: boolean) {
+  const len = x0 - x1;
+  const xc = (x0 + x1) / 2;
+  box(m, len, h, W, xc, y0 + h / 2, 0, s);
+  // 모서리 기둥·테
+  for (const sz of [-1, 1]) {
+    for (const x of [x0, x1]) box(m, 0.07, h + 0.02, 0.07, x - Math.sign(x - xc) * 0.03, y0 + h / 2, sz * (W / 2 - 0.03), trimS);
+    box(m, len, 0.08, 0.02, xc, y0 + 0.04, sz * (W / 2 + 0.006), trimS);
+    box(m, len, 0.06, 0.02, xc, y0 + h - 0.03, sz * (W / 2 + 0.006), trimS);
+    if (wing) {
+      // 윙바디: 옆면 가로 골, 지붕 경첩 선
+      for (let k = 1; k < 5; k++) box(m, len - 0.1, 0.025, 0.012, xc, y0 + (h * k) / 5, sz * (W / 2 + 0.006), surf(0xb8bcc0, 0.35, 0.8));
+    } else {
+      for (let x = x0 - 0.6; x > x1 + 0.3; x -= 0.6) box(m, 0.03, h - 0.1, 0.01, x, y0 + h / 2, sz * (W / 2 + 0.004), surf(0xdadbd8, 0.5, 0, 0.3));
+    }
+  }
+  if (wing) box(m, len, 0.04, 0.06, xc, y0 + h + 0.015, 0, trimS);
+  // 뒷문: 가운데 틈, 잠금대 네 개, 경첩
+  box(m, 0.012, h - 0.12, 0.012, x1 - 0.006, y0 + h / 2, 0, S.seam);
+  for (const z of [-0.55, -0.25, 0.25, 0.55]) box(m, 0.02, h - 0.2, 0.025, x1 - 0.015, y0 + h / 2, z * (W / 2.3), S.chrome);
+  for (const sz of [-1, 1]) for (const k of [0.2, 0.5, 0.8]) box(m, 0.03, 0.08, 0.06, x1 - 0.015, y0 + h * k, sz * (W / 2 - 0.05), trimS);
+}
 
 function buildTruck(t: VehicleType, b: VB) {
   const rand = b.rand;
@@ -1116,33 +1620,60 @@ function buildTruck(t: VehicleType, b: VB) {
   const front = L / 2;
   const light = t.body === "truck_light";
   const medium = t.body === "truck_medium";
-  const wr = light ? 0.36 : medium ? 0.42 : 0.52;
-  const frameY = wr + 0.18;
-  const cabLen = light ? 1.55 : medium ? 1.9 : 2.3;
-  const cabH = light ? 1.55 : medium ? 1.85 : 2.35;
-  cab(b, t, front, cabLen, W - (light ? 0.02 : 0), cabH, frameY - 0.05);
-  box(m, L - 0.3, 0.2, W * 0.55, -0.1, frameY, 0, S.chassis);
-  const bodyX0 = front - cabLen - 0.12;
+  const wr = light ? 0.34 : medium ? 0.42 : 0.52;
+  const tw = light ? 0.2 : medium ? 0.24 : 0.3;
+  const frameY = wr + 0.22;
+  const cabLen = light ? 1.65 : medium ? 1.95 : 2.3;
+  const cabW = light ? Math.min(W, 1.74) : W;
+  const cabY0 = frameY - (light ? 0.12 : 0.02);
+  const cabH = light ? 1.52 : medium ? 1.72 : clamp(H - cabY0, 2.1, 2.42);
+  const axles = t.axles ?? 2;
+  const xf = front - (light ? 0.95 : cabLen * 0.55);
+  const xs: number[] = [xf];
+  if (axles >= 4) xs.push(xf - 1.35);
+  const rearCount = axles - xs.length;
+  const xr = xf - t.wheelbase;
+  for (let i = 0; i < rearCount; i++) xs.push(xr - i * 1.32);
+  const nFront = axles >= 4 ? 2 : 1;
+  const style: CabStyle = light ? "light" : medium ? "medium" : "heavy";
+  truckCab(b, t, { front, len: cabLen, W: cabW, y0: cabY0, H: cabH, xAxle: xf, wr, tireW: tw + 0.04, style });
+  // 둘째 앞축 (4축): 운전실 뒤 바로
+  const gaps: [number, number][] = xs.map((x) => [x - wr - 0.1, x + wr + 0.1]);
+  const bodyX0 = front - cabLen - 0.1;
   const bodyX1 = -front;
+  chassis(b, bodyX0 + 0.1, bodyX1 + 0.1, frameY, W, gaps, !light);
   const bodyLen = bodyX0 - bodyX1;
   const bodyMid = (bodyX0 + bodyX1) / 2;
-  const deckY = frameY + 0.18;
+  const deckY = frameY + 0.16;
   const cargo = t.cargo ?? "open";
   const topH = H - deckY;
-  const gs = (c: number) => surf(c, 0.55, 0.3, 0.2);
+  const gs = (c: number) => surf(c, 0.5, 0.6, 0.2);
+  // 짐칸 바닥 (가로보가 보이게)
+  box(m, bodyLen, 0.08, W - 0.04, bodyMid, deckY - 0.03, 0, S.chassis);
+  for (let x = bodyX0 - 0.2; x > bodyX1; x -= 0.45) box(m, 0.06, 0.1, W - 0.1, x, deckY - 0.1, 0, S.chassis);
   switch (cargo) {
     case "open":
     case "open_high": {
-      const gate = cargo === "open_high" ? 0.9 : 0.5;
-      box(m, bodyLen, 0.12, W, bodyMid, deckY, 0, gs(C.cargoGray));
-      for (const side of [-1, 1]) box(m, bodyLen, gate, 0.05, bodyMid, deckY + gate / 2, side * (W / 2 - 0.025), gs(rand() < 0.5 ? C.cargoGray : C.cargoBlue));
-      box(m, 0.05, gate, W, bodyX1 + 0.025, deckY + gate / 2, 0, gs(C.cargoGray));
-      box(m, 0.05, gate + 0.25, W, bodyX0 - 0.03, deckY + (gate + 0.25) / 2, 0, gs(C.cargoGray));
+      const gate = cargo === "open_high" ? 0.9 : light ? 0.42 : 0.55;
+      const sideC = light ? 0x9ea4aa : rand() < 0.5 ? C.cargoGray : C.cargoBlue;
+      box(m, bodyLen, 0.06, W, bodyMid, deckY + 0.03, 0, gs(0x6d7277));
+      for (const side of [-1, 1]) {
+        box(m, bodyLen, gate, 0.04, bodyMid, deckY + gate / 2 + 0.05, side * (W / 2 - 0.02), gs(sideC));
+        // 옆판 세로 골·경첩
+        for (let x = bodyX0 - 0.3; x > bodyX1 + 0.2; x -= 0.3) box(m, 0.04, gate - 0.04, 0.012, x, deckY + gate / 2 + 0.05, side * (W / 2 + 0.004), gs(sideC));
+        box(m, bodyLen, 0.04, 0.02, bodyMid, deckY + gate + 0.05, side * (W / 2), S.alu);
+      }
+      box(m, 0.04, gate, W, bodyX1 + 0.02, deckY + gate / 2 + 0.05, 0, gs(sideC));
+      box(m, 0.05, gate + 0.35, W, bodyX0 - 0.03, deckY + (gate + 0.35) / 2 + 0.05, 0, gs(sideC));
+      // 짐: 상자·팔레트·덮개
       const n = 1 + Math.floor(rand() * 3);
       for (let i = 0; i < n; i++) {
-        const w = 0.8 + rand() * 0.6;
-        const h = 0.4 + rand() * (cargo === "open_high" ? 1.2 : 0.8);
-        box(m, w, h, W * 0.8, bodyX0 - 0.6 - i * (bodyLen / (n + 0.5)), deckY + h / 2 + 0.06, 0, surf(rand() < 0.5 ? C.wood : 0x3d6e9e, 0.8));
+        const w = 0.7 + rand() * 0.6;
+        const h = 0.35 + rand() * (cargo === "open_high" ? 1.1 : light ? 0.6 : 0.8);
+        const x = bodyX0 - 0.55 - i * (bodyLen / (n + 0.4));
+        const k = rand();
+        const col = k < 0.35 ? C.wood : k < 0.7 ? 0x3d6e9e : 0x4f6b3a;
+        cbox(m, w, h, W * 0.78, k < 0.7 ? 0.02 : 0.12, x, deckY + h / 2 + 0.06, 0, surf(col, k < 0.7 ? 0.8 : 0.6, 0, 0.1));
       }
       break;
     }
@@ -1150,94 +1681,106 @@ function buildTruck(t: VehicleType, b: VB) {
     case "fridge":
     case "parcel":
     case "wing": {
-      const boxH = Math.max(1.4, topH);
-      const col = cargo === "wing" ? S.alu : surf(0xf2f2ef, 0.45, 0, 0.3);
-      box(m, bodyLen, boxH, W, bodyMid, deckY + boxH / 2, 0, col);
-      if (cargo === "wing") {
-        for (const side of [-1, 1]) {
-          for (let k = 1; k < 4; k++) box(m, bodyLen, 0.03, 0.012, bodyMid, deckY + (boxH * k) / 4, side * (W / 2 + 0.006), surf(0xb5b9bd, 0.4, 0.7));
-          box(m, bodyLen, 0.06, 0.02, bodyMid, deckY + boxH - 0.03, side * (W / 2 + 0.01), surf(0x9ea3a8, 0.4, 0.7));
-        }
+      const boxH = Math.max(1.3, topH - 0.02);
+      const wing = cargo === "wing";
+      const col = wing ? S.alu : surf(0xf2f2ef, 0.4, 0, 0.35);
+      cargoBox(m, bodyX0, bodyX1, deckY, boxH, W, col, wing ? surf(0x9ea3a8, 0.35, 0.8) : surf(0xc9ccce, 0.35, 0.7), wing);
+      if (cargo === "fridge") {
+        // 냉동기: 짐칸 앞 위
+        cbox(m, 0.32, 0.5, W * 0.62, 0.04, bodyX0 + 0.16, deckY + boxH - 0.32, 0, surf(0xe4e5e3, 0.5, 0, 0.2));
+        box(m, 0.02, 0.36, W * 0.5, bodyX0 + 0.33, deckY + boxH - 0.32, 0, S.mesh);
       }
-      if (cargo === "fridge") box(m, 0.35, 0.45, W * 0.6, bodyX0 + 0.1, deckY + boxH - 0.3, 0, surf(0xdcdcdc));
       if (cargo === "parcel") {
         const accents = [0x1f5fb0, 0xe3a21a, 0xd1352a, 0x2a8a52];
         const a = accents[Math.floor(rand() * accents.length)];
-        for (const side of [-1, 1]) box(m, bodyLen * 0.9, boxH * 0.3, 0.012, bodyMid, deckY + boxH * 0.3, side * (W / 2 + 0.007), surf(a, 0.4, 0, 0.5));
+        for (const side of [-1, 1]) box(m, bodyLen * 0.9, boxH * 0.28, 0.012, bodyMid, deckY + boxH * 0.3, side * (W / 2 + 0.012), surf(a, 0.4, 0, 0.5));
       }
-      box(m, 0.02, boxH - 0.1, W - 0.1, bodyX1 - 0.005, deckY + boxH / 2, 0, surf(cargo === "wing" ? 0xc3c7cb : 0xe6e6e3));
       break;
     }
     case "dump": {
-      const dh = 1.25;
+      const dh = 1.2;
       const sd = paintSurf(0.85);
+      const x0 = bodyX0;
+      const x1 = bodyX1;
       box(m, bodyLen, 0.1, W, bodyMid, deckY + 0.05, 0, sd);
-      for (const side of [-1, 1]) box(m, bodyLen, dh, 0.08, bodyMid, deckY + dh / 2, side * (W / 2 - 0.04), sd);
-      box(m, 0.1, dh + 0.35, W, bodyX0 - 0.05, deckY + (dh + 0.35) / 2, 0, sd);
-      box(m, 0.08, dh, W, bodyX1 + 0.04, deckY + dh / 2, 0, sd);
-      for (const side of [-1, 1]) for (let k = 1; k < 4; k++) box(m, 0.08, dh, 0.03, bodyX1 + (bodyLen * k) / 4, deckY + dh / 2, side * (W / 2 + 0.01), paintSurf(0.7));
+      for (const side of [-1, 1]) {
+        box(m, bodyLen, dh, 0.08, bodyMid, deckY + dh / 2, side * (W / 2 - 0.04), sd);
+        for (let x = x0 - 0.5; x > x1 + 0.3; x -= 0.7) box(m, 0.1, dh - 0.1, 0.05, x, deckY + dh / 2, side * (W / 2 + 0.01), paintSurf(0.7));
+        box(m, bodyLen, 0.08, 0.06, bodyMid, deckY + dh, side * (W / 2), paintSurf(0.7));
+      }
+      // 앞 가리개 (운전실 위로)
+      box(m, 0.1, dh + 0.35, W, x0 - 0.05, deckY + (dh + 0.35) / 2, 0, sd);
+      box(m, 0.6, 0.06, W, x0 + 0.2, deckY + dh + 0.35, 0, sd);
+      box(m, 0.08, dh, W, x1 + 0.04, deckY + dh / 2, 0, sd);
       box(m, bodyLen - 0.2, 0.05, W - 0.18, bodyMid, deckY + dh * 0.75, 0, surf(0x6e5a42, 1));
-      box(m, bodyLen * 0.5, 0.25, W * 0.6, bodyMid, deckY + dh * 0.75 + 0.12, 0, surf(0x7a6448, 1));
+      cbox(m, bodyLen * 0.5, 0.3, W * 0.6, 0.1, bodyMid, deckY + dh * 0.75 + 0.12, 0, surf(0x7a6448, 1));
       break;
     }
     case "mixer": {
+      // 드럼: 배 모양 회전체 + 나선 띠
       const r = 1.05;
-      const g = new THREE.CylinderGeometry(r * 0.55, r, bodyLen * 0.95, 16);
-      g.rotateZ(Math.PI / 2 - 0.12);
-      g.translate(bodyMid, deckY + r + 0.25, 0);
-      m.geo(g, surf(0xf0f0ee, 0.4, 0.1, 0.5));
-      for (let k = 0; k < 3; k++) {
-        const s = new THREE.TorusGeometry(r * (0.7 + k * 0.1), 0.04, 4, 16);
-        s.rotateY(Math.PI / 2);
-        s.translate(bodyMid + bodyLen * (0.25 - k * 0.25), deckY + r + 0.25 + (k - 1) * 0.1, 0);
-        m.geo(s, surf(rand() < 0.5 ? 0x2d5e9e : 0xd1352a, 0.4, 0.1, 0.5));
+      const pts: THREE.Vector2[] = [];
+      for (let i = 0; i <= 12; i++) {
+        const u = i / 12;
+        pts.push(new THREE.Vector2(0.25 + (r - 0.25) * Math.sin(Math.PI * Math.min(1, u * 1.25)) ** 0.7 * (u > 0.8 ? 1 - (u - 0.8) * 2.2 : 1), (u - 0.5) * bodyLen * 0.9));
       }
+      const g = new THREE.LatheGeometry(pts, 18);
+      g.rotateZ(Math.PI / 2 - 0.12);
+      g.translate(bodyMid, deckY + r + 0.2, 0);
+      m.geo(g, surf(0xf0f0ee, 0.4, 0.1, 0.5));
+      const stripeC = rand() < 0.5 ? 0x2d5e9e : 0xd1352a;
+      for (let k = 0; k < 4; k++) {
+        const s = new THREE.TorusGeometry(r * (0.82 + 0.06 * Math.sin(k)), 0.05, 4, 20);
+        s.rotateY(Math.PI / 2 + 0.35);
+        s.translate(bodyMid + bodyLen * (0.3 - k * 0.2), deckY + r + 0.2 + (k - 1.5) * 0.08, 0);
+        m.geo(s, surf(stripeC, 0.4, 0.1, 0.5));
+      }
+      // 투입구·받침대
+      cyl(m, 0.25, 0.5, bodyX1 + 0.35, deckY + 1.6, 0, "y", S.steel, 10, 0.4);
+      box(m, 0.15, 1.2, 0.2, bodyX1 + 0.6, deckY + 0.6, 0, S.steel);
+      box(m, 0.15, 0.8, 0.2, bodyX0 - 0.2, deckY + 0.4, 0, S.steel);
       break;
     }
     case "tank": {
-      const g = new THREE.CylinderGeometry(1.0, 1.0, bodyLen * 0.97, 20);
+      const g = new THREE.CylinderGeometry(1.0, 1.0, bodyLen * 0.97, 22);
       g.rotateZ(Math.PI / 2);
       g.scale(1, 1, W / 2.1);
       g.translate(bodyMid, deckY + 1.0, 0);
       m.geo(g, S.chrome);
-      box(m, bodyLen * 0.9, 0.06, 0.4, bodyMid, deckY + 2.02, 0, S.steel);
+      for (const x of [bodyX0 - 0.1, bodyX1 + 0.1]) {
+        const e = new THREE.SphereGeometry(1, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+        e.scale(1, 0.25, W / 2.1);
+        e.rotateZ(x > bodyMid ? -Math.PI / 2 : Math.PI / 2);
+        e.translate(x + (x > bodyMid ? 0.05 : -0.05), deckY + 1.0, 0);
+        m.geo(e, S.chrome);
+      }
+      box(m, bodyLen * 0.9, 0.06, 0.45, bodyMid, deckY + 2.03, 0, S.steel);
+      for (let x = bodyX0 - 0.8; x > bodyX1 + 0.5; x -= 1.4) cyl(m, 0.18, 0.1, x, deckY + 2.08, 0, "y", S.steel, 10);
       break;
     }
     case "crane": {
       box(m, bodyLen, 0.12, W, bodyMid, deckY, 0, gs(C.cargoGray));
-      box(m, 0.9, 1.0, 1.2, bodyX0 - 0.5, deckY + 0.5, 0, paintSurf(0.85));
-      box(m, bodyLen * 0.85, 0.4, 0.45, bodyMid + 0.2, deckY + 1.2, 0.3, surf(0xe3b12c, 0.45, 0.1, 0.5));
+      cbox(m, 0.9, 1.0, 1.2, 0.08, bodyX0 - 0.5, deckY + 0.5, 0, paintSurf(0.85));
+      cbox(m, bodyLen * 0.85, 0.4, 0.45, 0.06, bodyMid + 0.2, deckY + 1.2, 0.3, surf(0xe3b12c, 0.45, 0.1, 0.5));
       for (const side of [-1, 1]) box(m, bodyLen, 0.35, 0.05, bodyMid, deckY + 0.24, side * (W / 2 - 0.02), gs(C.cargoGray));
       break;
     }
     case "tow": {
       box(m, bodyLen, 0.15, W - 0.2, bodyMid, deckY, 0, S.steel);
-      box(m, 0.4, 1.4, 0.4, bodyX0 - 0.4, deckY + 0.7, 0, paintSurf(0.9));
-      box(m, bodyLen * 0.8, 0.2, 0.25, bodyMid - 0.3, deckY + 1.25, 0, surf(0xe3b12c, 0.45, 0.1, 0.5));
+      cbox(m, 0.4, 1.4, 0.4, 0.05, bodyX0 - 0.4, deckY + 0.7, 0, paintSurf(0.9));
+      cbox(m, bodyLen * 0.8, 0.2, 0.25, 0.04, bodyMid - 0.3, deckY + 1.25, 0, surf(0xe3b12c, 0.45, 0.1, 0.5));
       box(m, 0.3, 0.2, W * 0.8, bodyX1 + 0.1, deckY + 0.3, 0, S.steel);
       break;
     }
   }
-  rearLights(b, t, bodyX1, frameY + 0.1, W);
+  truckRear(b, t, bodyX1, frameY + 0.1, W);
+  mudflaps(m, xs[xs.length - 1] - wr - 0.15, wr, W, light ? 0.24 : 0.62);
   if (t.extras?.includes("lightBar")) {
-    box(m, 0.3, 0.12, 0.7, front - 0.5, frameY + cabH + 0.02, -0.38, surf(0xf0a51e, 0.2, 0, 1, TAG.BEACON_A));
-    box(m, 0.3, 0.12, 0.7, front - 0.5, frameY + cabH + 0.02, 0.38, surf(0xf0a51e, 0.2, 0, 1, TAG.BEACON_B));
+    const cy = cabY0 + cabH;
+    box(m, 0.3, 0.12, 0.7, front - 0.6, cy + 0.06, -0.38, surf(0xf0a51e, 0.2, 0, 1, TAG.BEACON_A));
+    box(m, 0.3, 0.12, 0.7, front - 0.6, cy + 0.06, 0.38, surf(0xf0a51e, 0.2, 0, 1, TAG.BEACON_B));
   }
-  const axles = t.axles ?? 2;
-  const xf = front - cabLen * 0.55;
-  const xs: number[] = [xf];
-  if (axles >= 4) xs.push(xf - 1.35);
-  const rearCount = axles - xs.length;
-  const xr = xf - t.wheelbase;
-  for (let i = 0; i < rearCount; i++) xs.push(xr - i * 1.32);
-  const nFront = axles >= 4 ? 2 : 1;
-  xs.forEach((x, i) => {
-    for (const side of [-1, 1]) {
-      const tw = light ? 0.2 : 0.3;
-      b.wheels.push({ x, z: side * (W / 2 - 0.2), r: wr, w: tw, steer: i < nFront, heavy: true });
-      if (i >= nFront && !light) b.wheels.push({ x, z: side * (W / 2 - 0.2 - tw - 0.02), r: wr, w: tw, steer: false, heavy: true });
-    }
-  });
+  heavyWheels(b, xs, wr, W, tw, nFront, (i) => i >= nFront && !light);
 }
 
 function buildTractor(t: VehicleType, b: VB) {
@@ -1247,75 +1790,109 @@ function buildTractor(t: VehicleType, b: VB) {
   const W = t.width;
   const front = L / 2;
   const wr = 0.52;
-  const frameY = wr + 0.2;
+  const tw = 0.3;
+  const frameY = wr + 0.24;
   const cabLen = 2.3;
-  cab(b, t, front, cabLen, W, 2.55, frameY - 0.05);
-  const tractorLen = 6.2;
-  box(m, tractorLen, 0.22, W * 0.55, front - tractorLen / 2, frameY, 0, S.chassis);
-  box(m, 1.2, 0.1, 1.2, front - 4.6, frameY + 0.16, 0, S.trim);
   const txs = [front - 1.3, front - 4.4, front - 5.7];
-  txs.forEach((x, i) => {
-    for (const side of [-1, 1]) {
-      b.wheels.push({ x, z: side * (W / 2 - 0.2), r: wr, w: 0.3, steer: i === 0, heavy: true });
-      if (i > 0) b.wheels.push({ x, z: side * (W / 2 - 0.52), r: wr, w: 0.3, steer: false, heavy: true });
-    }
-  });
+  const { yTop } = truckCab(b, t, { front, len: cabLen, W, y0: frameY - 0.02, H: 2.5, xAxle: txs[0], wr, tireW: tw + 0.04, style: "heavy" });
+  // 지붕 공기 가리개 (짐 높이까지)
+  const cargo = t.cargo ?? "container40";
+  const fh = cargo.startsWith("container") ? 0.55 : cargo === "carcarrier" ? 0.45 : 0.25;
+  const fx = front - 0.5;
+  profile(m, [[fx, yTop], [fx - 0.2, yTop + 0.08], [fx - 1.55, yTop + fh], [fx - 1.75, yTop + fh], [fx - 1.75, yTop]], W - 0.3, S.paint, 0, 0.1);
+  const tractorLen = 6.3;
+  const gaps: [number, number][] = txs.map((x) => [x - wr - 0.1, x + wr + 0.1]);
+  chassis(b, front - cabLen, front - tractorLen, frameY, W, gaps, true);
+  // 오륜 (트레일러 연결판)
+  cyl(m, 0.6, 0.08, front - 4.6, frameY + 0.18, 0, "y", S.chassis, 16);
+  mudflaps(m, txs[2] - wr - 0.15, wr, W, 0.62);
+  heavyWheels(b, txs, wr, W, tw, 1, (i) => i > 0);
+  // ---- 트레일러 ----
   const tx0 = front - 3.2;
   const tx1 = -front;
   const tLen = tx0 - tx1;
   const tMid = (tx0 + tx1) / 2;
   const deckY = frameY + 0.38;
-  const cargo = t.cargo ?? "container40";
-  box(m, tLen, 0.25, W - 0.05, tMid, deckY - 0.1, 0, S.chassis);
+  box(m, tLen, 0.22, W - 0.05, tMid, deckY - 0.1, 0, S.chassis);
+  for (const s of [-1, 1]) box(m, tLen, 0.3, 0.05, tMid, deckY - 0.28, s * 0.45, S.chassis);
+  // 받침다리
+  for (const s of [-1, 1]) box(m, 0.12, deckY - 0.3, 0.12, tx0 - 1.6, (deckY - 0.3) / 2 + 0.15, s * 0.8, S.steel);
+  const trailerAxles = Math.max(2, (t.axles ?? 5) - 3);
+  const tws: number[] = [];
+  for (let i = 0; i < trailerAxles; i++) tws.push(tx1 + 1.6 + (trailerAxles - 1 - i) * 1.32);
+  const tGaps: [number, number][] = tws.map((x) => [x - wr - 0.1, x + wr + 0.1]);
+  // 트레일러 옆 보호대
+  for (const [a, c] of gapsBetween(tx0 - 1.8, tx1 + 0.3, tGaps)) {
+    if (a - c < 0.6) continue;
+    for (const s of [-1, 1]) box(m, a - c, 0.08, 0.03, (a + c) / 2, deckY - 0.45, s * (W / 2 - 0.04), S.steel);
+  }
   if (cargo === "container40" || cargo === "container20") {
     const cLen = cargo === "container40" ? Math.min(tLen, 12.19) : Math.min(tLen, 6.06);
     const col = CONTAINER_COLORS[Math.floor(rand() * CONTAINER_COLORS.length)];
-    const cH = 2.6;
+    const cH = 2.59;
     const cx = tx1 + cLen / 2 + 0.1;
-    box(m, cLen, cH, 2.44, cx, deckY + cH / 2 + 0.05, 0, surf(col, 0.6, 0.3, 0.1));
-    const rib = new THREE.Color(col).multiplyScalar(0.8).getHex();
-    for (const side of [-1, 1]) {
-      const n = Math.floor(cLen / 0.3);
-      for (let k = 0; k < n; k += 2) box(m, 0.06, cH - 0.2, 0.01, cx - cLen / 2 + 0.15 + k * 0.3, deckY + cH / 2 + 0.05, side * 1.225, surf(rib, 0.6, 0.3, 0.1));
+    const cs = surf(col, 0.6, 0.35, 0.1);
+    const rib = surf(new THREE.Color(col).multiplyScalar(0.78).getHex(), 0.6, 0.35, 0.1);
+    const y0 = deckY + 0.02;
+    box(m, cLen, cH, 2.44, cx, y0 + cH / 2, 0, cs);
+    // 골판: 옆면 세로 골
+    for (const s of [-1, 1]) {
+      for (let x = cx - cLen / 2 + 0.2; x < cx + cLen / 2 - 0.15; x += 0.28) box(m, 0.1, cH - 0.24, 0.014, x, y0 + cH / 2, s * 1.222, rib);
+      box(m, cLen, 0.1, 0.02, cx, y0 + 0.05, s * 1.225, rib);
+      box(m, cLen, 0.1, 0.02, cx, y0 + cH - 0.05, s * 1.225, rib);
     }
+    // 모서리 쇠 (주조 모서리)
+    for (const x of [cx - cLen / 2 + 0.09, cx + cLen / 2 - 0.09]) for (const y of [y0 + 0.06, y0 + cH - 0.06]) for (const s of [-1, 1]) box(m, 0.18, 0.12, 0.16, x, y, s * 1.15, S.chassis);
+    // 뒷문: 잠금대 네 개, 가운데 틈
+    const xb = cx - cLen / 2 - 0.006;
+    box(m, 0.012, cH - 0.2, 0.012, xb, y0 + cH / 2, 0, S.seam);
+    for (const z of [-0.85, -0.3, 0.3, 0.85]) box(m, 0.03, cH - 0.25, 0.04, xb - 0.012, y0 + cH / 2, z, S.steel);
+    for (const s of [-1, 1]) box(m, 0.02, 0.35, 0.4, xb, y0 + 0.2, s * 0.6, rib);
   } else if (cargo === "flatbed") {
     box(m, tLen, 0.12, W, tMid, deckY + 0.06, 0, S.steel);
     const coils = 2 + Math.floor(rand() * 3);
     for (let i = 0; i < coils; i++) {
-      const g = new THREE.CylinderGeometry(0.9, 0.9, 1.5, 18, 1, false);
+      const g = new THREE.CylinderGeometry(0.9, 0.9, 1.5, 20, 1, false);
       g.translate(tx1 + 1.4 + (i * (tLen - 2.6)) / Math.max(1, coils - 1), deckY + 0.9, 0);
       m.geo(g, surf(0x8e959c, 0.3, 0.9));
+      // 받침 나무
+      box(m, 1.0, 0.12, 1.6, tx1 + 1.4 + (i * (tLen - 2.6)) / Math.max(1, coils - 1), deckY + 0.15, 0, surf(C.wood, 0.8));
     }
   } else if (cargo === "tanktrailer") {
-    const g = new THREE.CylinderGeometry(1.15, 1.15, tLen * 0.95, 20);
+    const g = new THREE.CylinderGeometry(1.15, 1.15, tLen * 0.93, 24);
     g.rotateZ(Math.PI / 2);
     g.translate(tMid, deckY + 1.25, 0);
     m.geo(g, S.chrome);
+    for (const x of [tMid + tLen * 0.465, tMid - tLen * 0.465]) {
+      const e = new THREE.SphereGeometry(1.15, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+      e.scale(1, 0.25, 1);
+      e.rotateZ(x > tMid ? -Math.PI / 2 : Math.PI / 2);
+      e.translate(x, deckY + 1.25, 0);
+      m.geo(e, S.chrome);
+    }
+    box(m, tLen * 0.85, 0.05, 0.5, tMid, deckY + 2.42, 0, S.steel);
+    for (let x = tMid + tLen * 0.35; x > tMid - tLen * 0.4; x -= 2.2) cyl(m, 0.22, 0.12, x, deckY + 2.45, 0, "y", S.steel, 10);
   } else if (cargo === "carcarrier") {
     const lower = deckY + 0.1;
     const upper = deckY + 1.95;
     box(m, tLen, 0.08, W, tMid, upper, 0, S.steel);
     for (const side of [-1, 1]) {
       for (let k = 0; k < 6; k++) box(m, 0.1, upper - lower, 0.08, tx1 + 0.3 + (k * (tLen - 0.6)) / 5, (upper + lower) / 2, side * (W / 2 - 0.05), S.steel);
+      box(m, tLen, 0.06, 0.05, tMid, upper + 0.5, side * (W / 2 - 0.05), S.steel);
     }
     for (const deckTop of [lower, upper + 0.04]) {
       for (let k = 0; k < 3; k++) {
         const cx = tx1 + 2.1 + (k * (tLen - 4)) / 2;
         const col = [0xf4f4f1, 0x1d1e20, 0x9ea2a6, 0x2b3a55][Math.floor(rand() * 4)];
-        cbox(m, 3.9, 0.7, 1.8, 0.12, cx, deckTop + 0.55, 0, surf(col, 0.3, 0.4, 1));
-        cbox(m, 2.0, 0.5, 1.6, 0.1, cx - 0.2, deckTop + 1.15, 0, S.glass);
+        cbox(m, 3.9, 0.62, 1.8, 0.14, cx, deckTop + 0.5, 0, surf(col, 0.3, 0.4, 1));
+        cbox(m, 2.0, 0.48, 1.6, 0.14, cx - 0.2, deckTop + 1.02, 0, S.glass);
+        for (const dx of [-1.3, 1.3]) for (const s of [-1, 1]) cyl(m, 0.32, 0.2, cx + dx, deckTop + 0.3, s * 0.78, "z", S.rubber, 10);
       }
     }
   }
-  rearLights(b, t, tx1, deckY + 0.05, W);
-  const trailerAxles = Math.max(2, (t.axles ?? 5) - 3);
-  for (let i = 0; i < trailerAxles; i++) {
-    const x = tx1 + 1.6 + i * 1.32;
-    for (const side of [-1, 1]) {
-      b.wheels.push({ x, z: side * (W / 2 - 0.2), r: wr, w: 0.3, steer: false, heavy: true });
-      b.wheels.push({ x, z: side * (W / 2 - 0.52), r: wr, w: 0.3, steer: false, heavy: true });
-    }
-  }
+  truckRear(b, t, tx1, deckY - 0.2, W);
+  mudflaps(m, tws[tws.length - 1] - wr - 0.15, wr, W, 0.62);
+  heavyWheels(b, tws, wr, W, tw, 0, () => true);
 }
 
 // ---------- 바퀴 ----------
@@ -1471,7 +2048,7 @@ function makeWheel(heavy: boolean, low: boolean): THREE.BufferGeometry {
 
 // ---------- 공개 함수 ----------
 
-const BUS_BODIES = new Set(["coach", "city_bus", "double_decker", "minibus", "van_tall", "camper"]);
+const BUS_BODIES = new Set(["coach", "city_bus", "double_decker"]);
 const TRUCK_BODIES = new Set(["truck_light", "truck_medium", "truck_heavy"]);
 
 /** 바퀴를 행렬에 맞춰 붙인다 (단순 바퀴를 중간 거리 모델에 넣을 때) */
@@ -1542,6 +2119,7 @@ export function buildVehicleModel(t: VehicleType, seed = 1): VehicleModel {
   if (BUS_BODIES.has(t.body)) buildBus(t, b);
   else if (TRUCK_BODIES.has(t.body)) buildTruck(t, b);
   else if (t.body === "tractor_trailer") buildTractor(t, b);
+  else if (t.body === "camper") buildCamper(t, b);
   else buildCar(t, b);
   const big = t.length > 6;
   const body = lazy(() => merge([b.m, b.core]));

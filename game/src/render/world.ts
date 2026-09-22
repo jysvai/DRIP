@@ -239,7 +239,7 @@ export class World {
     const inTunnel = this.tunnel > 0.5;
     const tex = (inTunnel ? this.env.tunnel : this.night > 0.6 ? this.env.night : this.env.day)?.texture ?? null;
     // 해가 낮을수록, 밤일수록 반사가 약하다. 터널 안은 조명 반사
-    const level = inTunnel ? 0.9 : this.night > 0.6 ? 0.8 : 0.35 + 0.65 * Math.min(1, this.daylight);
+    const level = inTunnel ? 0.9 : this.night > 0.6 ? 0.8 : 0.2 + 0.45 * Math.min(1, this.daylight);
     for (const e of this.envMats) {
       const m = e.mat;
       if (force || m.envMap !== tex) m.envMap = tex;

@@ -25,6 +25,7 @@ interface Mirror {
   eye: THREE.Vector3;
   dir: THREE.Vector3;
   size: [number, number];
+  aspect: number;
   rect: { x: number; y: number; w: number; h: number };
 }
 
@@ -85,6 +86,7 @@ export class PlayerView {
   private spinAngle = 0;
   private chase = { yaw: 0, pos: new THREE.Vector3(), look: new THREE.Vector3(), init: false, fov: 60 };
   private mirrors: Mirror[] = [];
+  private mirrorGlass = new THREE.Group();
   private overlay = new THREE.Scene();
   private overlayCam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   private mirrorTurn = 0;
@@ -151,8 +153,9 @@ export class PlayerView {
     this.inner.add(this.interior);
     world.scene.add(this.car);
 
-    // ---- 거울 ----
-    const mk = (eye: THREE.Vector3, dir: THREE.Vector3, fov: number, aspect: number, w: number, h: number): Mirror => {
+    // ---- 거울: 화면 구석 창 + 차 안팎의 거울 유리 (운전석 시점에서만 비친다) ----
+    const mk = (eye: THREE.Vector3, dir: THREE.Vector3, fov: number, aspect: number, w: number): Mirror => {
+      const h = Math.round(w / aspect);
       const cam = new THREE.PerspectiveCamera(fov, aspect, 0.5, 900);
       const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 2 });
       const mat = new THREE.MeshBasicMaterial({ map: rt.texture, side: THREE.DoubleSide });
@@ -161,12 +164,26 @@ export class PlayerView {
       const frame = document.createElement("div");
       frame.className = "mirror";
       hudRoot.appendChild(frame);
-      return { cam, rt, quad, frame, eye, dir: dir.normalize(), size: [w, h], rect: { x: 0, y: 0, w: 0, h: 0 } };
+      return { cam, rt, quad, frame, eye, dir: dir.normalize(), size: [w, h], aspect, rect: { x: 0, y: 0, w: 0, h: 0 } };
     };
     const side = cab.kind === "bus" || cab.kind === "truck" ? 0.16 : 0.11;
-    this.mirrors.push(mk(cab.mirrorC.clone(), new THREE.Vector3(-1, -0.035, 0), 17, 3.2, 512, 160));
-    this.mirrors.push(mk(cab.mirrorL.clone(), new THREE.Vector3(-1, -0.03, -side), 21, 1.45, 320, 220));
-    this.mirrors.push(mk(cab.mirrorR.clone(), new THREE.Vector3(-1, -0.03, side + 0.03), 21, 1.45, 320, 220));
+    const ga = (i: number) => cab.glass[i].w / cab.glass[i].h;
+    this.mirrors.push(mk(cab.mirrorC.clone(), new THREE.Vector3(-1, -0.035, 0), 17, ga(0), 512));
+    this.mirrors.push(mk(cab.mirrorL.clone(), new THREE.Vector3(-1, -0.03, -side), 19, ga(1), 360));
+    this.mirrors.push(mk(cab.mirrorR.clone(), new THREE.Vector3(-1, -0.03, side + 0.03), 19, ga(2), 360));
+    // 거울 유리에 비친 모습 (거울이라 좌우를 뒤집는다)
+    this.mirrors.forEach((mr, i) => {
+      const g = cab.glass[i];
+      const geo = new THREE.PlaneGeometry(g.w, g.h);
+      const uv = geo.getAttribute("uv");
+      for (let k = 0; k < uv.count; k++) uv.setX(k, 1 - uv.getX(k));
+      const mat = new THREE.MeshBasicMaterial({ map: mr.rt.texture, color: 0xd8dde2 });
+      const glass = new THREE.Mesh(geo, mat);
+      glass.position.set(g.c.x - 0.0015, g.c.y, g.c.z);
+      glass.rotation.y = -Math.PI / 2;
+      this.mirrorGlass.add(glass);
+    });
+    this.inner.add(this.mirrorGlass);
     world.onQuality((_, s) => {
       for (const m of this.mirrors) m.rt.setSize(Math.round(m.size[0] * s.mirrorScale), Math.round(m.size[1] * s.mirrorScale));
     });
@@ -179,10 +196,11 @@ export class PlayerView {
     this.mode = mode;
     const cockpit = mode === "cockpit";
     this.interior.visible = cockpit;
+    this.mirrorGlass.visible = cockpit;
     vehicleUniforms(this.bodyMat).uHideGlass.value = cockpit ? 1 : 0;
     this.chase.init = false;
     const big = this.model.cabin.kind === "bus" || this.model.cabin.kind === "truck";
-    this.world.camera.fov = mode === "chase" ? 60 : mode === "hood" ? 60 : big ? 66 : 64;
+    this.world.camera.fov = mode === "chase" ? 60 : mode === "hood" ? 60 : big ? 64 : 60;
     this.world.camera.near = cockpit ? 0.08 : 0.1;
     this.world.camera.updateProjectionMatrix();
     this.layoutMirrors();
@@ -209,11 +227,12 @@ export class PlayerView {
     const H = innerHeight;
     const show = this.showMirrors;
     const rw = Math.min(380, W * 0.28);
-    const sw = Math.min(230, W * 0.16);
+    const sw = Math.min(250, W * 0.17);
+    const [a0, a1, a2] = this.mirrors.map((m) => m.aspect);
     const rects = [
-      { x: (W - rw) / 2, y: 10, w: rw, h: rw / 3.2 },
-      { x: 12, y: H * 0.46, w: sw, h: sw / 1.45 },
-      { x: W - 12 - sw, y: H * 0.46, w: sw, h: sw / 1.45 },
+      { x: (W - rw) / 2, y: 10, w: rw, h: rw / a0 },
+      { x: 12, y: H * 0.46, w: sw, h: sw / a1 },
+      { x: W - 12 - sw, y: H * 0.46, w: sw, h: sw / a2 },
     ];
     this.overlayCam.left = 0;
     this.overlayCam.right = W;
@@ -286,8 +305,15 @@ export class PlayerView {
     vehicleUniforms(this.bodyMat).uLampState.value.set(braking ? 1 : 0, left ? 1 : 0, right ? 1 : 0, car.vx < -0.1 ? 1 : 0);
     setLampLevels(this.bodyMat, Math.max(this.night, this.world.tunnel * 0.6), (time * 1.4) % 1);
     setLampLevels(this.cockpit.material, Math.max(this.night, this.world.tunnel * 0.4), 0);
-    // 실내 화면: 밤에는 눈부시지 않게 어둡게
+    // 실내 화면: 밤에는 눈부시지 않게 어둡게. 계기판에 지금 속도
     this.cockpit.screen.color.setScalar(1 - 0.55 * this.night);
+    if (this.mode === "cockpit") {
+      this.cockpit.display.update(speed * 3.6, car.vx < -0.1 ? "R" : speed < 0.1 ? "P" : "D", time);
+      // 창으로 들어와 실내에 퍼지는 빛 (천장·기둥이 너무 어둡지 않게)
+      const day = Math.min(1, this.world.daylight) * (1 - this.night);
+      const f = Math.max(day * 0.5 * (1 - this.world.tunnel * 0.7), 0.02);
+      vehicleUniforms(this.cockpit.material).uFill.value.setRGB(f, f * 0.98, f * 0.95);
+    }
 
     // ---- 카메라 ----
     const cam = this.world.camera;
@@ -361,7 +387,8 @@ export class PlayerView {
     const scene = this.world.scene;
     this.frameCount++;
     const show = this.showMirrors;
-    if (show && this.frameCount % this.world.settings.mirrorEvery === 0) {
+    // 운전석 시점이면 거울 창을 꺼도 차의 거울 유리에 비치므로 계속 그린다
+    if (this.mode === "cockpit" && this.frameCount % this.world.settings.mirrorEvery === 0) {
       const m = this.mirrors[this.mirrorTurn++ % this.mirrors.length];
       m.cam.position.copy(this.inner.localToWorld(this.v.copy(m.eye)));
       this.v2.copy(m.eye).addScaledVector(m.dir, 20);

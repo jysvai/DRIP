@@ -19,6 +19,8 @@ export interface VehicleUniforms {
   uLampState: { value: THREE.Vector4 };
   /** 1이면 유리를 그리지 않는다 (운전석 시점) */
   uHideGlass: { value: number };
+  /** 실내에 창으로 들어와 퍼지는 빛 (확산광에 더한다) */
+  uFill: { value: THREE.Color };
 }
 
 /** 인스턴스 메시에 붙이는 등화 상태 속성 이름 (vec4: 제동, 왼쪽, 오른쪽, 후진) */
@@ -92,6 +94,7 @@ const FRAG_PARS = /* glsl */ `
 varying vec4 vSurf;
 varying vec3 vEmit;
 uniform float uHideGlass;
+uniform vec3 uFill;
 `;
 
 export function createVehicleMaterial(opts: VehicleMaterialOptions = {}): THREE.MeshPhysicalMaterial {
@@ -107,6 +110,7 @@ export function createVehicleMaterial(opts: VehicleMaterialOptions = {}): THREE.
     uLamp: { value: new THREE.Vector4(1.3, 0, 0, 3.2) },
     uLampState: { value: new THREE.Vector4() },
     uHideGlass: { value: 0 },
+    uFill: { value: new THREE.Color(0, 0, 0) },
   };
   mat.userData.u = u;
   if (opts.lamps) mat.defines = { DRIP_LAMPS: "" };
@@ -119,7 +123,8 @@ export function createVehicleMaterial(opts: VehicleMaterialOptions = {}): THREE.
       .replace("#include <roughnessmap_fragment>", "float roughnessFactor = roughness * vSurf.x;")
       .replace("#include <metalnessmap_fragment>", "float metalnessFactor = metalness * vSurf.y;")
       .replace("#include <lights_physical_fragment>", THREE.ShaderChunk.lights_physical_fragment.replace("material.clearcoat = clearcoat;", "material.clearcoat = clearcoat * vSurf.z;"))
-      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n totalEmissiveRadiance += vEmit;");
+      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n totalEmissiveRadiance += vEmit;")
+      .replace("#include <lights_fragment_maps>", "#include <lights_fragment_maps>\n irradiance += uFill;");
   };
   mat.customProgramCacheKey = () => "drip-vehicle";
   return mat;

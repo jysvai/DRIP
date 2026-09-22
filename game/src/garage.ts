@@ -10,6 +10,13 @@ import { buildVehicleModel, createVehicleObject, loadCatalog, paletteFor, type V
 
 const CATEGORY_ORDER = ["승용", "SUV", "전기차", "택시", "버스", "화물", "특수"];
 
+// 도감에서만 쓰는 모양 (공용 style.css는 건드리지 않는다)
+const GARAGE_CSS = `
+.gswatch{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.gswatch button{width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.22);padding:0;cursor:pointer;box-shadow:inset 0 -3px 6px rgba(0,0,0,.35)}
+.gswatch button.on{border-color:#7fd6a8;box-shadow:0 0 0 2px rgba(127,214,168,.35),inset 0 -3px 6px rgba(0,0,0,.35)}
+`;
+
 interface Entry {
   type: VehicleType;
   model: VehicleModel | null;
@@ -20,6 +27,9 @@ async function main() {
   const catalog = await loadCatalog();
   const app = document.getElementById("app")!;
   const params = new URLSearchParams(location.search);
+  const css = document.createElement("style");
+  css.textContent = GARAGE_CSS;
+  document.head.appendChild(css);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));

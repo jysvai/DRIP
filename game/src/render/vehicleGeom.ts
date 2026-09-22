@@ -40,7 +40,7 @@ export function surfW(s: Surf): number {
 
 export function paintSurf(shade = 1, c = 1): Surf {
   const g = Math.round(Math.max(0, Math.min(1, shade)) * 255);
-  return { color: (g << 16) | (g << 8) | g, r: 0.32, m: 0.5, c, tag: 0, paint: true };
+  return { color: (g << 16) | (g << 8) | g, r: 0.36, m: 0.35, c, tag: 0, paint: true };
 }
 
 type V3 = { x: number; y: number; z: number };
