@@ -1,12 +1,48 @@
 // 렌더러·하늘·조명·안개. 좌표는 매 프레임 플레이어 위치를 원점으로 옮겨서(떠다니는 원점) 먼 곳에서도 떨림이 없게 한다.
 // 화면 좌표: X = 동쪽 - 원점, Y = 고도(m), Z = -(북쪽 - 원점)
+// 차 재질의 반사(환경맵)도 여기서 만든다: 낮 하늘·밤·터널 세 가지를 미리 구워 두고 상황에 맞게 바꿔 끼운다.
 
 import * as THREE from "three";
 import { Sky } from "three/examples/jsm/objects/Sky.js";
+import { PostFx } from "./postfx";
 
 export interface Origin {
   e: number;
   n: number;
+}
+
+/** 그래픽 품질. low: 그림자·반사 코팅·후처리 없이 가볍게, high: 전부 */
+export type Quality = "low" | "medium" | "high";
+
+export interface QualitySettings {
+  /** 화면 해상도 배율 상한 */
+  pixelRatio: number;
+  /** 해 그림자 (0이면 끔) */
+  shadowMap: number;
+  shadowRadius: number;
+  /** 차 도장 클리어코트 */
+  clearcoat: boolean;
+  /** 차를 제 모양으로 그리는 거리 / 단순 모양으로 그리는 거리 / 상자로라도 그리는 거리 (m) */
+  lodNear: number;
+  lodMid: number;
+  drawDistance: number;
+  /** 거울을 몇 프레임에 한 번 다시 그리는지, 거울 해상도 배율 */
+  mirrorEvery: number;
+  mirrorScale: number;
+  /** 후처리 (밤 빛 번짐, 가장자리 다듬기) */
+  post: boolean;
+}
+
+export const QUALITY: Record<Quality, QualitySettings> = {
+  low: { pixelRatio: 1, shadowMap: 0, shadowRadius: 0, clearcoat: false, lodNear: 30, lodMid: 160, drawDistance: 900, mirrorEvery: 3, mirrorScale: 0.6, post: false },
+  medium: { pixelRatio: 1.25, shadowMap: 1024, shadowRadius: 2, clearcoat: true, lodNear: 45, lodMid: 240, drawDistance: 1200, mirrorEvery: 2, mirrorScale: 0.8, post: false },
+  high: { pixelRatio: 1.75, shadowMap: 2048, shadowRadius: 3, clearcoat: true, lodNear: 70, lodMid: 320, drawDistance: 1400, mirrorEvery: 1, mirrorScale: 1, post: true },
+};
+
+/** 기기에 맞는 기본 품질: 휴대기기·터치 화면은 medium, 나머지는 high */
+export function defaultQuality(): Quality {
+  if (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches) return "medium";
+  return "high";
 }
 
 export const FOG_COLOR = new THREE.Color(0xc3ccd3);
@@ -15,6 +51,11 @@ const SUN_COLOR = new THREE.Color(0xfff4e2);
 const MOON_COLOR = new THREE.Color(0x8fa6cc);
 const HEMI_SKY = new THREE.Color(0xdde7f0);
 const HEMI_SKY_NIGHT = new THREE.Color(0x40506c);
+
+interface EnvMat {
+  mat: THREE.MeshStandardMaterial;
+  k: number;
+}
 
 export class World {
   renderer: THREE.WebGLRenderer;
@@ -31,17 +72,29 @@ export class World {
   night = 0;
   /** 터널 안 정도 (0~1). 터널은 밤에도 조명으로 밝다 */
   tunnel = 0;
+  /** 플레이어 차가 향한 방향 (화면 좌표 y축 회전). 터널 반사를 길 방향에 맞춘다 */
+  heading = 0;
+  quality: Quality = defaultQuality();
+  settings: QualitySettings = QUALITY[this.quality];
+  /** 후처리 (high에서만) */
+  readonly post: PostFx;
+  private qualityListeners: ((q: Quality, s: QualitySettings) => void)[] = [];
+  private pmrem: THREE.PMREMGenerator;
+  private env: { day: THREE.WebGLRenderTarget | null; night: THREE.WebGLRenderTarget | null; tunnel: THREE.WebGLRenderTarget | null } = { day: null, night: null, tunnel: null };
+  private envDirty = true;
+  private envMats: EnvMat[] = [];
+  private envSky: Sky;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
     this.renderer.setSize(container.clientWidth || innerWidth, container.clientHeight || innerHeight);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.9;
     this.renderer.autoClear = false;
     container.appendChild(this.renderer.domElement);
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
 
     this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 4200);
     this.scene.fog = new THREE.Fog(FOG_COLOR, 250, 2600);
@@ -54,6 +107,9 @@ export class World {
     u.mieCoefficient.value = 0.006;
     u.mieDirectionalG.value = 0.8;
     this.scene.add(this.sky);
+    // 반사용 하늘: 해 원반은 빼고(반사가 번쩍이지 않게) 같은 하늘
+    this.envSky = new Sky();
+    this.envSky.scale.setScalar(150);
 
     this.hemi = new THREE.HemisphereLight(0xdde7f0, 0x5b5a4c, 1.25);
     this.scene.add(this.hemi);
@@ -71,7 +127,9 @@ export class World {
     this.sun.shadow.normalBias = 0.04;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
+    this.post = new PostFx(this.renderer);
     this.setSun(38, 150);
+    this.setQuality(this.quality);
 
     addEventListener("resize", () => this.resize());
   }
@@ -82,6 +140,7 @@ export class World {
     const theta = THREE.MathUtils.degToRad(azimuth);
     this.sunDir.setFromSphericalCoords(1, phi, theta);
     this.sky.material.uniforms.sunPosition.value.copy(this.sunDir);
+    this.envDirty = true;
   }
 
   /** 시간대에 맞춰 하늘·안개·그림자를 정한다. 첫 화면을 그리기 전에 부른다 (그림자를 켜고 끄면 셰이더를 다시 만든다) */
@@ -95,7 +154,54 @@ export class World {
     // 해가 진 뒤에는 하늘 셰이더 대신 어두운 배경
     this.sky.visible = n < 0.6;
     this.scene.background = this.sky.visible ? null : fog.color;
-    this.sun.castShadow = n < 0.5;
+    this.applyShadow();
+    this.envDirty = true;
+  }
+
+  /**
+   * 그래픽 품질을 바꾼다 (해상도·그림자·도장 코팅·차 그리는 거리·거울·후처리).
+   * 언제 불러도 되지만 그림자를 켜고 끄면 셰이더를 다시 만들어 잠깐 멈출 수 있다.
+   */
+  setQuality(q: Quality) {
+    this.quality = q;
+    const s = (this.settings = QUALITY[q]);
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, s.pixelRatio));
+    this.resize();
+    if (s.shadowMap && this.sun.shadow.mapSize.x !== s.shadowMap) {
+      this.sun.shadow.mapSize.set(s.shadowMap, s.shadowMap);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
+    this.sun.shadow.radius = s.shadowRadius;
+    this.applyShadow();
+    for (const e of this.envMats) this.applyCoat(e.mat);
+    this.post.enabled = s.post;
+    for (const cb of this.qualityListeners) cb(q, s);
+  }
+
+  /** 품질이 바뀌면 부른다 (바로 한 번 부른다) */
+  onQuality(cb: (q: Quality, s: QualitySettings) => void) {
+    this.qualityListeners.push(cb);
+    cb(this.quality, this.settings);
+  }
+
+  private applyShadow() {
+    this.sun.castShadow = this.night < 0.5 && this.settings.shadowMap > 0;
+  }
+
+  private applyCoat(mat: THREE.MeshStandardMaterial) {
+    const pm = mat as THREE.MeshPhysicalMaterial;
+    if (pm.isMeshPhysicalMaterial && pm.userData.coat !== false) pm.clearcoat = this.settings.clearcoat ? 1 : 0;
+  }
+
+  /**
+   * 차 재질을 등록하면 하늘·밤·터널에 맞는 반사를 넣고 품질에 맞춰 클리어코트를 켜고 끈다.
+   * k: 반사 세기 배율
+   */
+  registerVehicleMaterial(mat: THREE.MeshStandardMaterial, k = 1) {
+    this.envMats.push({ mat, k });
+    this.applyCoat(mat);
+    this.applyEnv(true);
   }
 
   resize() {
@@ -104,6 +210,7 @@ export class World {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.post.setSize(w, h, this.renderer.getPixelRatio());
   }
 
   /** 원점을 옮긴 뒤 해·그림자 카메라를 카메라 근처로 맞춘다 */
@@ -119,11 +226,107 @@ export class World {
     this.sun.intensity = 2.4 * k * (1 - n) + 0.3 * n;
     this.hemi.intensity = (0.25 + 1.0 * k) * (1 - n) + (0.013 + 1.79 * k) * n;
     this.renderer.toneMappingExposure = (0.9 + (1 - k) * 0.5) * (1 - n) + 1.15 * n;
+    this.applyEnv(false);
+  }
+
+  /** 지금 상황의 반사 환경맵과 세기 */
+  private applyEnv(force: boolean) {
+    if (this.envDirty) {
+      this.buildEnv();
+      this.envDirty = false;
+      force = true;
+    }
+    const inTunnel = this.tunnel > 0.5;
+    const tex = (inTunnel ? this.env.tunnel : this.night > 0.6 ? this.env.night : this.env.day)?.texture ?? null;
+    // 해가 낮을수록, 밤일수록 반사가 약하다. 터널 안은 조명 반사
+    const level = inTunnel ? 0.9 : this.night > 0.6 ? 0.8 : 0.35 + 0.65 * Math.min(1, this.daylight);
+    for (const e of this.envMats) {
+      const m = e.mat;
+      if (force || m.envMap !== tex) m.envMap = tex;
+      m.envMapIntensity = e.k * level;
+      m.envMapRotation.y = inTunnel ? this.heading : 0;
+    }
+  }
+
+  /** 반사용 환경맵 세 가지를 굽는다 */
+  private buildEnv() {
+    const r = this.renderer;
+    const prev = r.toneMapping;
+    for (const key of ["day", "night", "tunnel"] as const) this.env[key]?.dispose();
+    this.env.day = this.pmrem.fromScene(this.dayEnvScene(), 0.02, 0.1, 400, { size: 256 });
+    this.env.night = this.pmrem.fromScene(this.nightEnvScene(), 0.03, 0.1, 400, { size: 128 });
+    this.env.tunnel = this.pmrem.fromScene(this.tunnelEnvScene(), 0.02, 0.1, 400, { size: 128 });
+    r.toneMapping = prev;
+  }
+
+  private dayEnvScene(): THREE.Scene {
+    const s = new THREE.Scene();
+    const src = this.sky.material.uniforms;
+    const u = this.envSky.material.uniforms;
+    for (const k of Object.keys(src)) {
+      const v = src[k].value;
+      if (v && typeof v === "object" && "copy" in v) (u[k].value as THREE.Vector3).copy(v as THREE.Vector3);
+      else u[k].value = v;
+    }
+    u.showSunDisc.value = 0;
+    s.add(this.envSky);
+    // 땅 (길·풀 평균 색)과 지평선 숲 띠: 차 옆면에 지평선이 비친다
+    const d = Math.min(1, this.daylight);
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(300, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x3e423d).multiplyScalar(0.4 + 0.6 * d), side: THREE.DoubleSide }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1.5;
+    s.add(ground);
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(200, 200, 12, 48, 1, true), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x3a4a3c).multiplyScalar(0.35 + 0.65 * d), side: THREE.BackSide }));
+    band.position.y = 3.5;
+    s.add(band);
+    return s;
+  }
+
+  private nightEnvScene(): THREE.Scene {
+    const s = new THREE.Scene();
+    s.add(gradientDome(0x0b1220, 0x151c28, 0x030405));
+    return s;
+  }
+
+  private tunnelEnvScene(): THREE.Scene {
+    // 길 방향(x) 터널: 벽·천장과 두 줄 조명
+    const s = new THREE.Scene();
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(400, 7, 12), new THREE.MeshBasicMaterial({ color: 0x4a463e, side: THREE.BackSide }));
+    wall.position.y = 2;
+    s.add(wall);
+    const lampMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xfff1cf).multiplyScalar(6) });
+    for (const z of [-3.2, 3.2]) {
+      for (let x = -190; x <= 190; x += 8) {
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(3, 0.2, 0.4), lampMat);
+        lamp.position.set(x, 5.3, z);
+        s.add(lamp);
+      }
+    }
+    return s;
   }
 
   toScene(e: number, n: number, z: number, out: THREE.Vector3): THREE.Vector3 {
     return out.set(e - this.origin.e, z, -(n - this.origin.n));
   }
+}
+
+/** 위·지평선·아래 세 색으로 칠한 큰 공 (밤 반사용) */
+function gradientDome(top: number, horizon: number, bottom: number): THREE.Mesh {
+  const g = new THREE.SphereGeometry(100, 24, 12);
+  const p = g.getAttribute("position");
+  const col = new Float32Array(p.count * 3);
+  const a = new THREE.Color(top);
+  const h = new THREE.Color(horizon);
+  const b = new THREE.Color(bottom);
+  const c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const y = p.getY(i) / 100;
+    if (y >= 0) c.copy(h).lerp(a, Math.pow(y, 0.6));
+    else c.copy(h).lerp(b, Math.min(1, -y * 6));
+    col.set([c.r, c.g, c.b], i * 3);
+  }
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide }));
 }
 
 /** 노면·흙 같은 곳에 쓰는 잔잔한 무늬 텍스처 */

@@ -1,16 +1,19 @@
-// 교통 차량 그리기. 차종마다 인스턴스 메시 두 개(도색·고정)로 그려서 수백 대도 가볍게 그린다.
-// 제동등과 방향지시등은 따로 모아서 켜진 것만 그린다.
+// 교통 차량 그리기. 차종마다 가까이(제 모양)·중간 거리(단순한 모양) 인스턴스 메시로 그리고, 먼 차는 공용 모양 두 가지로 그린다.
+// 바퀴는 모든 차가 함께 쓰는 인스턴스 메시 두 개(승용·대형)라서 굴러가고 앞바퀴가 꺾인다.
+// 제동등·방향지시등은 인스턴스마다 켜짐 상태를 넘겨서 차 재질이 켠다. 차체는 제동·가속·차로 변경에 따라 조금 기울어진다.
 
 import * as THREE from "three";
-import type { Road } from "../road/road";
+import type { Road, RoadSample } from "../road/road";
 import type { Agent } from "../sim/traffic";
-import { buildVehicleModel, type VehicleCatalog, type VehicleModel } from "./vehicleModels";
+import { LAMP_ATTR, createVehicleMaterial, setLampLevels } from "./carMaterials";
+import { Mesher, TAG, box, paintSurf, type Surf } from "./vehicleGeom";
+import { buildVehicleModel, wheelGeometry, type VehicleCatalog, type VehicleModel } from "./vehicleModels";
 import type { World } from "./world";
 
-const CAPACITY = 40;
-/** 이보다 먼 차는 차종 모양 대신 상자로 그린다 (m) */
-const LOD_NEAR = 240;
-const FAR_CAPACITY = 900;
+const NEAR_CAP = 32;
+const MID_CAP = 96;
+const FAR_CAP = 1500;
+const WHEEL_CAP = 700;
 const GLOW_CAPACITY = 8000;
 
 /** 밤의 전조등·미등 빛 번짐. 가까우면 크기가 m 단위로, 멀어도 몇 픽셀은 남는다 */
@@ -42,69 +45,84 @@ function glowMaterial(): THREE.ShaderMaterial {
   });
 }
 
+interface Inst {
+  mesh: THREE.InstancedMesh;
+  lamp: THREE.InstancedBufferAttribute;
+  n: number;
+  cap: number;
+}
+
 interface Pool {
   model: VehicleModel;
-  paint: THREE.InstancedMesh;
-  fixed: THREE.InstancedMesh;
-  n: number;
+  near: Inst | null;
+  mid: Inst | null;
+  /** 바퀴 반지름 (회전 계산 기준) */
+  r0: number;
+  /** 앞뒤 축 거리 */
+  wb: number;
+  pivotY: number;
+}
+
+/** 차마다 기억하는 움직임 */
+interface Vis {
+  t: number;
+  spin: number;
+  pitch: number;
+  pv: number;
+  roll: number;
+  rv: number;
+  yaw: number;
+  steer: number;
+  color: THREE.Color;
+  colorKey: string;
 }
 
 export class TrafficView {
-  private pools: Pool[] = [];
-  private brake: THREE.InstancedMesh;
-  private signal: THREE.InstancedMesh;
-  private hazardBar: THREE.InstancedMesh;
-  private far: THREE.InstancedMesh;
-  private scale = new THREE.Vector3();
+  private pools: (Pool | null)[] = [];
+  private bodyMat: THREE.MeshPhysicalMaterial;
+  private wheelMat: THREE.MeshPhysicalMaterial;
+  private wheels: { car: Inst; heavy: Inst };
+  private far: { car: Inst; tall: Inst };
+  private vis = new WeakMap<Agent, Vis>();
   private m = new THREE.Matrix4();
+  private bm = new THREE.Matrix4();
+  private wm = new THREE.Matrix4();
+  private tm = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private e = new THREE.Euler(0, 0, 0, "YZX");
   private p = new THREE.Vector3();
-  private one = new THREE.Vector3(1, 1, 1);
+  private sv = new THREE.Vector3();
   private color = new THREE.Color();
   private tmp = new THREE.Vector3();
   private world3 = { e: 0, n: 0, z: 0, heading: 0 };
+  private rs = {} as RoadSample;
   private glow: THREE.Points;
   private glowPos = new Float32Array(GLOW_CAPACITY * 3);
   private glowColor = new Float32Array(GLOW_CAPACITY * 3);
   private glowSize = new Float32Array(GLOW_CAPACITY);
   private ng = 0;
   private lp = new THREE.Vector3();
+  private lastTime = -1;
+  private dt = 0;
 
   constructor(
     private world: World,
     private road: Road,
-    catalog: VehicleCatalog,
+    private catalog: VehicleCatalog,
   ) {
-    const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.35 });
-    const fixedMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.1 });
-    catalog.types.forEach((t, i) => {
-      const model = buildVehicleModel(t, i + 1);
-      const paint = new THREE.InstancedMesh(model.paint, paintMat, CAPACITY);
-      const fixed = new THREE.InstancedMesh(model.fixed, fixedMat, CAPACITY);
-      paint.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(CAPACITY * 3), 3);
-      for (const m of [paint, fixed]) {
-        m.castShadow = true;
-        m.receiveShadow = true;
-        m.frustumCulled = false;
-        m.count = 0;
-        world.scene.add(m);
-      }
-      this.pools.push({ model, paint, fixed, n: 0 });
-    });
-    const lightGeo = new THREE.BoxGeometry(0.06, 0.12, 0.26);
-    this.brake = new THREE.InstancedMesh(lightGeo, new THREE.MeshBasicMaterial({ color: 0xff2a1f, toneMapped: false }), 1600);
-    this.signal = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 0.1, 0.14), new THREE.MeshBasicMaterial({ color: 0xffa31a, toneMapped: false }), 1600);
-    this.hazardBar = new THREE.InstancedMesh(new THREE.BoxGeometry(0.3, 0.11, 0.62), new THREE.MeshBasicMaterial({ color: 0xff3030, toneMapped: false }), 200);
-    const farGeo = new THREE.BoxGeometry(1, 1, 1);
-    farGeo.translate(0, 0.5, 0);
-    this.far = new THREE.InstancedMesh(farGeo, new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.2 }), FAR_CAPACITY);
-    this.far.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(FAR_CAPACITY * 3), 3);
-    for (const m of [this.brake, this.signal, this.hazardBar, this.far]) {
-      m.frustumCulled = false;
-      m.count = 0;
-      world.scene.add(m);
-    }
+    this.bodyMat = createVehicleMaterial({ lamps: true });
+    this.wheelMat = createVehicleMaterial({});
+    world.registerVehicleMaterial(this.bodyMat, 1);
+    world.registerVehicleMaterial(this.wheelMat, 0.8);
+    this.pools = catalog.types.map(() => null);
+    this.wheels = {
+      car: this.inst(wheelGeometry("car"), WHEEL_CAP, true, this.wheelMat, false),
+      heavy: this.inst(wheelGeometry("heavy"), WHEEL_CAP, true, this.wheelMat, false),
+    };
+    this.far = {
+      car: this.inst(farCar(), FAR_CAP, false, this.bodyMat, true),
+      tall: this.inst(farTall(), FAR_CAP, false, this.bodyMat, true),
+    };
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(this.glowPos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute("color", new THREE.BufferAttribute(this.glowColor, 3).setUsage(THREE.DynamicDrawUsage));
@@ -114,6 +132,39 @@ export class TrafficView {
     this.glow.frustumCulled = false;
     this.glow.renderOrder = 10;
     world.scene.add(this.glow);
+  }
+
+  /** 인스턴스 메시 하나 (등화 상태 속성·도색 색 포함) */
+  private inst(geo: THREE.BufferGeometry, cap: number, shadow: boolean, mat: THREE.Material, color: boolean): Inst {
+    const g = new THREE.BufferGeometry();
+    for (const name of ["position", "normal", "color", "surf"]) g.setAttribute(name, geo.getAttribute(name));
+    const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+    lamp.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute(LAMP_ATTR, lamp);
+    const mesh = new THREE.InstancedMesh(g, mat, cap);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    if (color) mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    mesh.count = 0;
+    mesh.visible = false;
+    this.world.scene.add(mesh);
+    return { mesh, lamp, n: 0, cap };
+  }
+
+  /** 차종 모델은 처음 나올 때 만든다 */
+  private pool(i: number): Pool | null {
+    const have = this.pools[i];
+    if (have !== undefined && have !== null) return have;
+    const t = this.catalog.types[i];
+    if (!t) return null;
+    const model = buildVehicleModel(t, i + 1);
+    const w0 = model.wheels[0];
+    const xs = model.wheels.map((w) => w.x);
+    const p: Pool = { model, near: null, mid: null, r0: w0?.r ?? 0.33, wb: xs.length ? Math.max(...xs) - Math.min(...xs) : t.wheelbase, pivotY: (w0?.r ?? 0.33) + 0.1 };
+    this.pools[i] = p;
+    return p;
   }
 
   private addGlow(p: THREE.Vector3, r: number, g: number, b: number, size: number) {
@@ -153,93 +204,140 @@ export class TrafficView {
     }
   }
 
-  /** 모델 좌표 → 인스턴스 행렬 */
+  /** 도로 위 자리 → this.m (차체 기울기 전) */
   private place(a: Agent) {
     const road = this.road;
-    const s = a.opposite ? -a.s : a.s;
-    const w = road.toWorld(Math.max(0, Math.min(road.length - 1, s)), a.d, this.world3);
-    const grade = road.sample(Math.max(0, Math.min(road.length - 1, s))).grade;
+    const s = Math.max(0, Math.min(road.length - 1, a.opposite ? -a.s : a.s));
+    const w = road.toWorld(s, a.d, this.world3);
+    road.sample(s, this.rs);
     const heading = w.heading + (a.opposite ? Math.PI : 0) + a.yaw;
     this.world.toScene(w.e, w.n, w.z, this.p);
-    this.e.set(0, heading, Math.atan(grade) * (a.opposite ? -1 : 1));
+    this.e.set(0, heading, Math.atan(this.rs.grade) * (a.opposite ? -1 : 1));
     this.q.setFromEuler(this.e);
-    this.m.compose(this.p, this.q, this.one);
+    this.m.compose(this.p, this.q, this.sv.set(1, 1, 1));
   }
 
-  update(agents: Agent[], opposite: Agent[], time: number, camera: THREE.Vector3, maxDist = 1400) {
-    for (const pool of this.pools) pool.n = 0;
+  /** 서스펜션: 가감속에 앞뒤로, 곡선·차로 변경에 좌우로 조금 기운다 (용수철-감쇠) */
+  private motion(a: Agent, pool: Pool): Vis {
+    let v = this.vis.get(a);
+    if (!v) {
+      v = { t: -1, spin: Math.random() * 6, pitch: 0, pv: 0, roll: 0, rv: 0, yaw: a.yaw, steer: 0, color: new THREE.Color(a.color), colorKey: a.color };
+      this.vis.set(a, v);
+    }
+    const dt = this.dt;
+    if (dt <= 0) return v;
+    const speed = Math.max(a.v, 0.5);
+    const yawRate = (a.yaw - v.yaw) / dt;
+    v.yaw = a.yaw;
+    const kPath = this.rs.kappa * (a.opposite ? -1 : 1) + yawRate / speed;
+    const heavy = a.heavy ? 0.55 : 1;
+    const pitchT = Math.max(-0.03, Math.min(0.025, a.acc * 0.0042 * heavy));
+    const rollT = Math.max(-0.04, Math.min(0.04, a.v * a.v * kPath * 0.009 * (a.heavy ? 1.3 : 1)));
+    const w = 7;
+    const z = 0.5;
+    v.pv += (w * w * (pitchT - v.pitch) - 2 * z * w * v.pv) * dt;
+    v.pitch += v.pv * dt;
+    v.rv += (w * w * (rollT - v.roll) - 2 * z * w * v.rv) * dt;
+    v.roll += v.rv * dt;
+    v.steer += (Math.max(-0.5, Math.min(0.5, pool.wb * kPath * 1.1)) - v.steer) * Math.min(1, dt * 6);
+    // 바퀴살이 거꾸로 도는 것처럼 보이지 않게 한 프레임에 0.5rad까지만
+    v.spin += Math.min(0.5, (a.v * dt) / pool.r0);
+    if (v.colorKey !== a.color) {
+      v.color.set(a.color);
+      v.colorKey = a.color;
+    }
+    return v;
+  }
+
+  update(agents: Agent[], opposite: Agent[], time: number, camera: THREE.Vector3, maxDist?: number) {
+    const set = this.world.settings;
+    const draw = Math.min(maxDist ?? set.drawDistance, set.drawDistance);
+    const near2 = set.lodNear * set.lodNear;
+    const mid2 = set.lodMid * set.lodMid;
+    this.dt = this.lastTime < 0 ? 0 : Math.max(0, Math.min(0.1, time - this.lastTime));
+    this.lastTime = time;
+    for (const p of this.pools) {
+      if (!p) continue;
+      if (p.near) p.near.n = 0;
+      if (p.mid) p.mid.n = 0;
+    }
+    this.wheels.car.n = this.wheels.heavy.n = 0;
+    this.far.car.n = this.far.tall.n = 0;
     const night = this.world.night > 0.05 ? this.world.night : 0;
+    setLampLevels(this.bodyMat, Math.max(night, this.world.tunnel * 0.6), (time * 1.4) % 1);
     this.ng = 0;
-    let nb = 0;
-    let ns = 0;
-    let nh = 0;
-    let nf = 0;
     const blink = Math.floor(time * 1.6) % 2 === 0;
-    const pm = new THREE.Matrix4();
+
     const add = (a: Agent) => {
-      const pool = this.pools[a.typeIndex];
+      const pool = this.pool(a.typeIndex);
       if (!pool) return;
       this.place(a);
-      // 아주 먼 차는 그리지 않고, 먼 차는 상자로
       this.tmp.setFromMatrixPosition(this.m);
       const d2 = this.tmp.distanceToSquared(camera);
-      if (d2 > maxDist * maxDist) return;
+      if (d2 > draw * draw) return;
+      const vis = this.motion(a, pool);
       if (night) this.nightLights(a, pool.model, camera, night);
-      if (d2 > LOD_NEAR * LOD_NEAR || pool.n >= CAPACITY) {
-        if (nf >= FAR_CAPACITY) return;
-        this.scale.set(a.len, a.type.height, a.width);
-        this.m.scale(this.scale);
-        this.far.setMatrixAt(nf, this.m);
-        this.far.setColorAt(nf, this.color.set(a.type.category === "화물" ? "#9aa0a6" : a.color));
-        nf++;
-        return;
-      }
-      pool.paint.setMatrixAt(pool.n, this.m);
-      pool.fixed.setMatrixAt(pool.n, this.m);
-      pool.paint.setColorAt(pool.n, this.color.set(a.color));
-      pool.n++;
-      if (a.brake && !a.opposite) {
-        for (const lp of pool.model.brakeLights) {
-          if (nb >= 1600) break;
-          pm.makeTranslation(lp.x, lp.y, lp.z);
-          this.brake.setMatrixAt(nb++, pm.premultiply(this.m));
+      const sigL = (a.hazard || a.signal < 0) && blink ? 1 : 0;
+      const sigR = (a.hazard || a.signal > 0) && blink ? 1 : 0;
+      const brake = a.brake ? 1 : 0;
+      // 차체 행렬: 바퀴 축 높이를 중심으로 기울인다
+      this.e.set(vis.roll, 0, vis.pitch, "YZX");
+      this.q.setFromEuler(this.e);
+      this.tm.compose(this.sv.set(0, pool.pivotY, 0), this.q, this.tmp.set(1, 1, 1));
+      this.bm.makeTranslation(0, -pool.pivotY, 0).premultiply(this.tm).premultiply(this.m);
+      if (d2 < near2) {
+        const inst = (pool.near ??= this.inst(pool.model.body, NEAR_CAP, true, this.bodyMat, true));
+        if (inst.n < inst.cap) {
+          this.put(inst, this.bm, vis.color, brake, sigL, sigR);
+          this.putWheels(pool, vis);
+          return;
         }
       }
-      const sig = a.hazard ? 2 : a.signal;
-      if (sig !== 0 && blink) {
-        const lights = sig === 2 ? [...pool.model.signalLeft, ...pool.model.signalRight] : sig < 0 ? pool.model.signalLeft : pool.model.signalRight;
-        for (const lp of lights) {
-          if (ns >= 1600) break;
-          pm.makeTranslation(lp.x, lp.y, lp.z);
-          this.signal.setMatrixAt(ns++, pm.premultiply(this.m));
+      if (d2 < mid2) {
+        const inst = (pool.mid ??= this.inst(pool.model.mid, MID_CAP, false, this.bodyMat, true));
+        if (inst.n < inst.cap) {
+          this.put(inst, this.bm, vis.color, brake, sigL, sigR);
+          return;
         }
       }
-      if (a.type.extras?.includes("lightBar") && blink && nh < 200) {
-        pm.makeTranslation(0, a.type.height + 0.05, 0);
-        this.hazardBar.setMatrixAt(nh++, pm.premultiply(this.m));
-      }
+      const t = a.type;
+      const far = t.length > 6 ? this.far.tall : this.far.car;
+      if (far.n >= far.cap) return;
+      this.bm.copy(this.m).scale(this.sv.set(a.len, t.height, a.width));
+      this.put(far, this.bm, t.category === "화물" ? this.color.set(0x9aa0a6) : vis.color, brake, sigL, sigR);
     };
     for (const a of agents) add(a);
     for (const a of opposite) add(a);
-    for (const pool of this.pools) {
-      pool.paint.count = pool.n;
-      pool.fixed.count = pool.n;
-      pool.paint.visible = pool.fixed.visible = pool.n > 0;
-      if (pool.n > 0) {
-        pool.paint.instanceMatrix.needsUpdate = true;
-        pool.fixed.instanceMatrix.needsUpdate = true;
-        if (pool.paint.instanceColor) pool.paint.instanceColor.needsUpdate = true;
+
+    const finish = (inst: Inst | null) => {
+      if (!inst) return;
+      const m = inst.mesh;
+      m.count = inst.n;
+      m.visible = inst.n > 0;
+      if (inst.n > 0) {
+        m.instanceMatrix.clearUpdateRanges();
+        m.instanceMatrix.addUpdateRange(0, inst.n * 16);
+        m.instanceMatrix.needsUpdate = true;
+        if (m.instanceColor) {
+          m.instanceColor.clearUpdateRanges();
+          m.instanceColor.addUpdateRange(0, inst.n * 3);
+          m.instanceColor.needsUpdate = true;
+        }
+        inst.lamp.clearUpdateRanges();
+        inst.lamp.addUpdateRange(0, inst.n * 4);
+        inst.lamp.needsUpdate = true;
       }
+    };
+    for (const p of this.pools) {
+      if (!p) continue;
+      finish(p.near);
+      finish(p.mid);
     }
-    this.brake.count = nb;
-    this.signal.count = ns;
-    this.hazardBar.count = nh;
-    this.far.count = nf;
-    this.far.instanceMatrix.needsUpdate = true;
-    if (this.far.instanceColor) this.far.instanceColor.needsUpdate = true;
-    this.brake.instanceMatrix.needsUpdate = true;
-    this.signal.instanceMatrix.needsUpdate = true;
-    this.hazardBar.instanceMatrix.needsUpdate = true;
+    finish(this.wheels.car);
+    finish(this.wheels.heavy);
+    finish(this.far.car);
+    finish(this.far.tall);
+
     const g = this.glow.geometry;
     g.setDrawRange(0, this.ng);
     this.glow.visible = this.ng > 0;
@@ -257,8 +355,67 @@ export class TrafficView {
     }
   }
 
+  private put(inst: Inst, m: THREE.Matrix4, color: THREE.Color, brake: number, sigL: number, sigR: number) {
+    const i = inst.n++;
+    inst.mesh.setMatrixAt(i, m);
+    if (inst.mesh.instanceColor) inst.mesh.setColorAt(i, color);
+    inst.lamp.setXYZW(i, brake, sigL, sigR, 0);
+  }
+
+  /** 바퀴: 차체 기울기는 따르지 않고 굴러가고 앞바퀴는 꺾인다 */
+  private putWheels(pool: Pool, vis: Vis) {
+    for (const w of pool.model.wheels) {
+      const inst = w.heavy ? this.wheels.heavy : this.wheels.car;
+      if (inst.n >= inst.cap) return;
+      const left = w.z < 0;
+      const ang = (vis.spin * pool.r0) / w.r;
+      // 휠 면이 바깥을 보게 왼쪽 바퀴는 뒤집는다. 뒤집으면 도는 방향도 반대
+      this.e.set(0, (w.steer ? vis.steer : 0) + (left ? Math.PI : 0), left ? ang : -ang, "YZX");
+      this.q.setFromEuler(this.e);
+      this.wm.compose(this.p.set(w.x, w.r, w.z), this.q, this.sv.set(w.r, w.r, w.w)).premultiply(this.m);
+      const i = inst.n++;
+      inst.mesh.setMatrixAt(i, this.wm);
+    }
+  }
+
   /** 몇 종류의 차가 지금 화면에 나오는지 (검수용) */
   visibleTypes(): string[] {
-    return this.pools.filter((p) => p.n > 0).map((p) => p.model.type.id);
+    return this.pools.filter((p): p is Pool => !!p && ((p.near?.n ?? 0) > 0 || (p.mid?.n ?? 0) > 0)).map((p) => p.model.type.id);
   }
+}
+
+// ---------- 먼 차: 공용 모양 (크기 1, 인스턴스 행렬로 늘인다) ----------
+
+const FAR_GLASS: Surf = { color: 0x0b1117, r: 0.1, m: 0.2, c: 0, tag: TAG.GLASS };
+const FAR_TAIL: Surf = { color: 0x8e0d14, r: 0.2, m: 0.1, c: 0, tag: TAG.TAIL };
+const FAR_HEAD: Surf = { color: 0xe8eef6, r: 0.2, m: 0.3, c: 0, tag: TAG.DRL };
+const FAR_DARK: Surf = { color: 0x151617, r: 0.9, m: 0, c: 0, tag: 0 };
+
+/** 승용차 모양: 아래 몸체 + 좁은 유리 지붕 */
+function farCar(): THREE.BufferGeometry {
+  const m = new Mesher();
+  const P = paintSurf(1, 0.5);
+  box(m, 1, 0.42, 1, 0, 0.36, 0, P);
+  box(m, 0.94, 0.12, 0.96, 0, 0.09, 0, FAR_DARK);
+  box(m, 0.5, 0.36, 0.84, -0.06, 0.74, 0, FAR_GLASS);
+  box(m, 0.44, 0.04, 0.8, -0.06, 0.93, 0, P);
+  for (const s of [-1, 1]) {
+    box(m, 0.02, 0.06, 0.22, -0.505, 0.5, s * 0.36, FAR_TAIL);
+    box(m, 0.02, 0.05, 0.2, 0.505, 0.47, s * 0.35, FAR_HEAD);
+  }
+  return m.build();
+}
+
+/** 버스·트럭 모양: 상자 + 창 띠 */
+function farTall(): THREE.BufferGeometry {
+  const m = new Mesher();
+  const P = paintSurf(1, 0.3);
+  box(m, 1, 0.84, 1, 0, 0.56, 0, P);
+  box(m, 0.96, 0.12, 0.9, 0, 0.08, 0, FAR_DARK);
+  box(m, 0.02, 0.3, 0.88, 0.505, 0.66, 0, FAR_GLASS);
+  for (const s of [-1, 1]) {
+    box(m, 0.02, 0.05, 0.12, -0.505, 0.2, s * 0.38, FAR_TAIL);
+    box(m, 0.02, 0.04, 0.12, 0.505, 0.2, s * 0.36, FAR_HEAD);
+  }
+  return m.build();
 }

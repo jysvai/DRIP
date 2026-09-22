@@ -1,11 +1,14 @@
-// 플레이어 차: 겉모습, 운전석 실내(대시보드·운전대·필러·천장), 시점 세 가지, 거울 세 개.
-// 한국 차는 왼쪽 운전석이라 눈 위치를 차 중심에서 왼쪽으로 옮긴다.
-// 차 모델 좌표: x 앞, y 위, z 오른쪽 (vehicleModels.ts와 같다)
+// 플레이어 차: 겉모습, 운전석 실내, 시점 세 가지, 거울 세 개.
+// 차체는 용수철-감쇠로 제동·가속에 앞뒤로, 곡선에서 좌우로 기울고 노면 따라 조금 떨린다. 바퀴는 굴러가고 앞바퀴는 꺾인다.
+// 운전석 시점에서는 유리를 숨기고 차 안쪽 면·대시보드·운전대를 그린다. 눈 위치는 차종마다 다르다(모델의 cabin).
+// 한국 차는 왼쪽 운전석. 차 모델 좌표: x 앞, y 위, z 오른쪽 (vehicleModels.ts와 같다)
 
 import * as THREE from "three";
 import type { Road } from "../road/road";
 import type { PlayerCar } from "../sim/player";
-import { buildVehicleModel, type VehicleType } from "./vehicleModels";
+import { createVehicleMaterial, setLampLevels, vehicleUniforms } from "./carMaterials";
+import { buildCockpit, type Cockpit } from "./cockpit";
+import { buildVehicleModel, wheelGeometry, type VehicleModel, type VehicleType, type WheelSpec } from "./vehicleModels";
 import type { World } from "./world";
 
 export type CameraMode = "cockpit" | "hood" | "chase";
@@ -13,7 +16,6 @@ export const CAMERA_MODES: CameraMode[] = ["cockpit", "hood", "chase"];
 export const CAMERA_LABELS: Record<CameraMode, string> = { cockpit: "운전석", hood: "보닛", chase: "차 뒤" };
 
 const STEER_RATIO = 14;
-const MIRROR_EVERY = 1; // 한 프레임에 거울 하나씩 돌아가며 그린다
 
 interface Mirror {
   cam: THREE.PerspectiveCamera;
@@ -22,41 +24,66 @@ interface Mirror {
   frame: HTMLDivElement;
   eye: THREE.Vector3;
   dir: THREE.Vector3;
+  size: [number, number];
   rect: { x: number; y: number; w: number; h: number };
 }
 
-function interiorMat(color: number) {
-  // 실내는 반사광을 흉내 내려고 조금 스스로 밝힌다
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide, emissive: color, emissiveIntensity: 0.35 });
+interface WheelPart {
+  pivot: THREE.Group;
+  spin: THREE.Mesh;
+  spec: WheelSpec;
 }
 
-/** 두 점 사이를 잇는 막대 (A필러 등) */
-function beam(a: THREE.Vector3, b: THREE.Vector3, w: number, t: number, mat: THREE.Material) {
-  const len = a.distanceTo(b);
-  const m = new THREE.Mesh(new THREE.BoxGeometry(len, t, w), mat);
-  m.position.copy(a).add(b).multiplyScalar(0.5);
-  const dir = b.clone().sub(a).normalize();
-  m.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
-  return m;
+/** 용수철-감쇠 하나 (값, 속도) */
+class Spring {
+  x = 0;
+  v = 0;
+  constructor(
+    private w: number,
+    private z: number,
+  ) {}
+  step(target: number, dt: number) {
+    const w = this.w;
+    // 큰 dt에서도 안정하게 잘게 나눈다
+    const n = Math.max(1, Math.ceil(dt / 0.02));
+    const h = dt / n;
+    for (let i = 0; i < n; i++) {
+      this.v += (w * w * (target - this.x) - 2 * this.z * w * this.v) * h;
+      this.x += this.v * h;
+    }
+    return this.x;
+  }
+}
+
+/** 노면 요철: 거리 s에 따라 정해지는 잔잔한 떨림 (-1~1) */
+function roadNoise(s: number): number {
+  return Math.sin(s * 3.7) * 0.45 + Math.sin(s * 9.9 + 1.3) * 0.3 + Math.sin(s * 1.61 + 0.7) * 0.25;
 }
 
 export class PlayerView {
   readonly car = new THREE.Group();
-  private exterior = new THREE.Group();
+  /** 서스펜션 위 차체 (기울기·떨림). 모델 좌표는 inner 안에 */
+  private body = new THREE.Group();
+  private inner = new THREE.Group();
+  private exterior: THREE.Mesh;
   private interior = new THREE.Group();
-  private wheelSpin = new THREE.Group();
-  private brakeLights: THREE.Mesh[] = [];
-  private brakeMat = new THREE.MeshBasicMaterial({ color: 0xff2a1f, toneMapped: false });
+  private wheels: WheelPart[] = [];
+  private model: VehicleModel;
+  private bodyMat: THREE.MeshPhysicalMaterial;
+  private wheelMat: THREE.MeshPhysicalMaterial;
+  private cockpit: Cockpit;
   private headBeam: THREE.SpotLight | null = null;
   private night = 0;
   private headPos = new THREE.Vector3();
-  private sigL: THREE.Mesh[] = [];
-  private sigR: THREE.Mesh[] = [];
-  private eye: THREE.Vector3;
-  private hoodEye: THREE.Vector3;
-  private chaseYaw = 0;
-  private chaseInit = false;
-  private headShift = 0;
+  private pivotY: number;
+  private pitch = new Spring(8.5, 0.55);
+  private roll = new Spring(7.5, 0.5);
+  private heave = new Spring(14, 0.45);
+  private headX = new Spring(6, 0.7);
+  private headZ = new Spring(6, 0.7);
+  private lookYaw = 0;
+  private spinAngle = 0;
+  private chase = { yaw: 0, pos: new THREE.Vector3(), look: new THREE.Vector3(), init: false, fov: 60 };
   private mirrors: Mirror[] = [];
   private overlay = new THREE.Scene();
   private overlayCam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
@@ -65,6 +92,7 @@ export class PlayerView {
   private tmpW = { e: 0, n: 0, z: 0, heading: 0 };
   private v = new THREE.Vector3();
   private v2 = new THREE.Vector3();
+  private q = new THREE.Quaternion();
   mode: CameraMode = "cockpit";
   mirrorsOn = true;
 
@@ -74,135 +102,53 @@ export class PlayerView {
     color: string,
     hudRoot: HTMLElement,
   ) {
-    const L = type.length;
-    const W = type.width;
-    const H = type.height;
-    const model = buildVehicleModel(type, 7);
+    const model = (this.model = buildVehicleModel(type, 7));
+    const cab = model.cabin;
     for (const p of model.headLights) this.headPos.addScaledVector(p, 1 / model.headLights.length);
-    const paint = new THREE.Mesh(model.paint, new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.45 }));
-    const fixed = new THREE.Mesh(model.fixed, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.1 }));
-    for (const m of [paint, fixed]) {
-      m.castShadow = true;
-      m.receiveShadow = true;
-      this.exterior.add(m);
+    this.pivotY = (model.wheels[0]?.r ?? 0.33) + 0.12;
+
+    // ---- 겉모습 ----
+    this.bodyMat = createVehicleMaterial({ lamps: true });
+    vehicleUniforms(this.bodyMat).uPaint.value.set(color);
+    world.registerVehicleMaterial(this.bodyMat, 1);
+    this.exterior = new THREE.Mesh(model.body, this.bodyMat);
+    this.exterior.castShadow = true;
+    this.exterior.receiveShadow = true;
+    // 그림자에는 유리를 빼서 햇빛이 창으로 실내에 들어오게 한다
+    this.exterior.customDepthMaterial = glassFreeDepth();
+    this.inner.add(this.exterior);
+    this.inner.position.y = -this.pivotY;
+    this.body.position.y = this.pivotY;
+    this.body.add(this.inner);
+    this.car.add(this.body);
+
+    this.wheelMat = createVehicleMaterial({});
+    world.registerVehicleMaterial(this.wheelMat, 0.8);
+    for (const w of model.wheels) {
+      const pivot = new THREE.Group();
+      pivot.position.set(w.x, w.r, w.z);
+      const spin = new THREE.Mesh(wheelGeometry(w.heavy ? "heavy" : "car"), this.wheelMat);
+      spin.scale.set(w.r, w.r, w.w);
+      spin.castShadow = true;
+      spin.receiveShadow = true;
+      const flip = new THREE.Group();
+      if (w.z < 0) flip.rotation.y = Math.PI;
+      flip.add(spin);
+      pivot.add(flip);
+      this.car.add(pivot);
+      this.wheels.push({ pivot, spin, spec: w });
     }
-    const lampGeo = new THREE.BoxGeometry(0.07, 0.13, 0.28);
-    const brakeMat = this.brakeMat;
-    const sigMat = new THREE.MeshBasicMaterial({ color: 0xffa31a, toneMapped: false });
-    for (const p of model.brakeLights) {
-      const m = new THREE.Mesh(lampGeo, brakeMat);
-      m.position.copy(p);
-      this.brakeLights.push(m);
-      this.exterior.add(m);
-    }
-    for (const [list, out] of [
-      [model.signalLeft, this.sigL],
-      [model.signalRight, this.sigR],
-    ] as const) {
-      for (const p of list) {
-        const m = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.11, 0.16), sigMat);
-        m.position.copy(p);
-        m.visible = false;
-        out.push(m);
-        this.exterior.add(m);
-      }
-    }
-    this.car.add(this.exterior);
 
     // ---- 실내 ----
-    const dashMat = interiorMat(0x1f2123);
-    const trimMat = interiorMat(0x2c2d30);
-    const headMat = interiorMat(0x9d998f);
-    const front = L / 2;
-    const glassBase = front - 0.29 * L; // 앞유리 아래
-    const roofFront = front - 0.44 * L;
-    const belt = 0.64 * H;
-    this.eye = new THREE.Vector3(roofFront - 0.62, H * 0.81, -0.37);
-    this.hoodEye = new THREE.Vector3(glassBase + 0.1, belt + 0.3, 0);
-
-    // 운전석에서는 겉모습 대신 보닛 판만 보인다 (겉모습 안쪽 면이 비치지 않게)
-    const hoodGeo = new THREE.BufferGeometry();
-    const nose = 0.47 * H + 0.05;
-    const hw = W / 2 - 0.06;
-    hoodGeo.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(
-        [glassBase, belt, -hw, glassBase, belt, hw, front - 0.12, nose, hw - 0.08, front - 0.12, nose, -hw + 0.08],
-        3,
-      ),
-    );
-    hoodGeo.setIndex([0, 2, 1, 0, 3, 2]);
-    hoodGeo.computeVertexNormals();
-    const hood = new THREE.Mesh(hoodGeo, new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.45, side: THREE.DoubleSide }));
-    hood.receiveShadow = true;
-    this.interior.add(hood);
-    for (const side of [-1, 1]) {
-      const housing = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.13, 0.24), new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.4 }));
-      housing.position.set(glassBase - 0.08, belt + 0.06, side * (W / 2 + 0.1));
-      this.interior.add(housing);
+    this.cockpit = buildCockpit(model);
+    world.registerVehicleMaterial(this.cockpit.material, 0.35);
+    if (model.interior.getAttribute("position").count) {
+      const shell = new THREE.Mesh(model.interior, this.cockpit.material);
+      shell.receiveShadow = true;
+      this.interior.add(shell);
     }
-
-    // 대시보드: 앞끝이 보닛 뒤끝보다 조금 높고 앞에 있어야 둘 사이 틈으로 차 밑 도로가 보이지 않는다
-    const dashShape = new THREE.Shape([
-      new THREE.Vector2(roofFront + 0.02, belt - 0.01),
-      new THREE.Vector2(glassBase + 0.06, belt + 0.01),
-      new THREE.Vector2(glassBase + 0.06, belt - 0.45),
-      new THREE.Vector2(roofFront + 0.1, belt - 0.5),
-      new THREE.Vector2(roofFront - 0.05, belt - 0.16),
-    ]);
-    const dashGeo = new THREE.ExtrudeGeometry(dashShape, { depth: W - 0.16, bevelEnabled: false });
-    dashGeo.translate(0, 0, -(W - 0.16) / 2);
-    const dash = new THREE.Mesh(dashGeo, dashMat);
-    dash.receiveShadow = true;
-    this.interior.add(dash);
-    // 계기판 덮개
-    const binnacle = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.07, 0.42), trimMat);
-    binnacle.position.set(roofFront + 0.1, belt + 0.02, this.eye.z);
-    this.interior.add(binnacle);
-    // 운전대
-    const wheelBase = new THREE.Group();
-    wheelBase.position.set(this.eye.x + 0.5, belt - 0.15, this.eye.z);
-    wheelBase.rotation.z = -0.42;
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.022, 10, 36), interiorMat(0x151617));
-    rim.rotation.y = Math.PI / 2;
-    this.wheelSpin.add(rim);
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.05, 16), trimMat);
-    hub.rotation.z = Math.PI / 2;
-    this.wheelSpin.add(hub);
-    // 살 세 개: 아래, 왼쪽, 오른쪽
-    const down = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.17, 0.035), trimMat);
-    down.position.set(0, -0.09, 0);
-    this.wheelSpin.add(down);
-    for (const side of [-1, 1]) {
-      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.035, 0.17), trimMat);
-      spoke.position.set(0, 0, side * 0.09);
-      this.wheelSpin.add(spoke);
-    }
-    wheelBase.add(this.wheelSpin);
-    this.interior.add(wheelBase);
-    // A필러, 천장, 문 안쪽
-    for (const side of [-1, 1]) {
-      this.interior.add(beam(new THREE.Vector3(glassBase - 0.02, belt, side * (W / 2 - 0.12)), new THREE.Vector3(roofFront, H - 0.07, side * (W / 2 - 0.16)), 0.09, 0.07, trimMat));
-      const door = new THREE.Mesh(new THREE.BoxGeometry(glassBase - (roofFront - 1.6), belt - 0.3, 0.05), trimMat);
-      door.position.set((glassBase + roofFront - 1.6) / 2, (belt + 0.3) / 2, side * (W / 2 - 0.07));
-      this.interior.add(door);
-      const sill = new THREE.Mesh(new THREE.BoxGeometry(glassBase - (roofFront - 1.6), 0.03, 0.1), dashMat);
-      sill.position.set((glassBase + roofFront - 1.6) / 2, belt + 0.01, side * (W / 2 - 0.1));
-      this.interior.add(sill);
-    }
-    const headliner = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.04, W - 0.14), headMat);
-    headliner.position.set(roofFront - 0.93, H - 0.06, 0);
-    this.interior.add(headliner);
-    const header = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.06, W - 0.2), trimMat);
-    header.position.set(roofFront + 0.02, H - 0.08, 0);
-    this.interior.add(header);
-    // 햇빛가리개
-    for (const z of [-0.37, 0.37]) {
-      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.015, 0.36), headMat);
-      visor.position.set(roofFront - 0.1, H - 0.1, z);
-      this.interior.add(visor);
-    }
-    this.car.add(this.interior);
+    this.interior.add(this.cockpit.group);
+    this.inner.add(this.interior);
     world.scene.add(this.car);
 
     // ---- 거울 ----
@@ -215,12 +161,15 @@ export class PlayerView {
       const frame = document.createElement("div");
       frame.className = "mirror";
       hudRoot.appendChild(frame);
-      return { cam, rt, quad, frame, eye, dir: dir.normalize(), rect: { x: 0, y: 0, w: 0, h: 0 } };
+      return { cam, rt, quad, frame, eye, dir: dir.normalize(), size: [w, h], rect: { x: 0, y: 0, w: 0, h: 0 } };
     };
-    const mirrorX = glassBase - 0.05;
-    this.mirrors.push(mk(new THREE.Vector3(roofFront - 0.1, H - 0.12, 0), new THREE.Vector3(-1, -0.035, 0), 17, 3.2, 512, 160));
-    this.mirrors.push(mk(new THREE.Vector3(mirrorX, belt + 0.02, -W / 2 - 0.12), new THREE.Vector3(-1, -0.03, -0.11), 21, 1.45, 320, 220));
-    this.mirrors.push(mk(new THREE.Vector3(mirrorX, belt + 0.02, W / 2 + 0.12), new THREE.Vector3(-1, -0.03, 0.14), 21, 1.45, 320, 220));
+    const side = cab.kind === "bus" || cab.kind === "truck" ? 0.16 : 0.11;
+    this.mirrors.push(mk(cab.mirrorC.clone(), new THREE.Vector3(-1, -0.035, 0), 17, 3.2, 512, 160));
+    this.mirrors.push(mk(cab.mirrorL.clone(), new THREE.Vector3(-1, -0.03, -side), 21, 1.45, 320, 220));
+    this.mirrors.push(mk(cab.mirrorR.clone(), new THREE.Vector3(-1, -0.03, side + 0.03), 21, 1.45, 320, 220));
+    world.onQuality((_, s) => {
+      for (const m of this.mirrors) m.rt.setSize(Math.round(m.size[0] * s.mirrorScale), Math.round(m.size[1] * s.mirrorScale));
+    });
     this.layoutMirrors();
     addEventListener("resize", () => this.layoutMirrors());
     this.setMode(this.mode);
@@ -228,11 +177,13 @@ export class PlayerView {
 
   setMode(mode: CameraMode) {
     this.mode = mode;
-    this.interior.visible = mode === "cockpit";
-    this.exterior.visible = mode !== "cockpit";
-    this.chaseInit = false;
-    this.world.camera.fov = mode === "chase" ? 60 : mode === "hood" ? 60 : 64;
-    this.world.camera.near = mode === "cockpit" ? 0.05 : 0.1;
+    const cockpit = mode === "cockpit";
+    this.interior.visible = cockpit;
+    vehicleUniforms(this.bodyMat).uHideGlass.value = cockpit ? 1 : 0;
+    this.chase.init = false;
+    const big = this.model.cabin.kind === "bus" || this.model.cabin.kind === "truck";
+    this.world.camera.fov = mode === "chase" ? 60 : mode === "hood" ? 60 : big ? 66 : 64;
+    this.world.camera.near = cockpit ? 0.08 : 0.1;
     this.world.camera.updateProjectionMatrix();
     this.layoutMirrors();
   }
@@ -248,10 +199,15 @@ export class PlayerView {
     this.layoutMirrors();
   }
 
+  /** 거울은 운전석 시점에서만 보인다 */
+  private get showMirrors() {
+    return this.mirrorsOn && this.mode === "cockpit";
+  }
+
   private layoutMirrors() {
     const W = innerWidth;
     const H = innerHeight;
-    const show = this.mirrorsOn;
+    const show = this.showMirrors;
     const rw = Math.min(380, W * 0.28);
     const sw = Math.min(230, W * 0.16);
     const rects = [
@@ -278,16 +234,12 @@ export class PlayerView {
   /** 밤이면 전조등을 켜고 실내를 어둡게 한다. 첫 화면을 그리기 전에 부른다 (조명 수가 바뀌면 셰이더를 다시 만든다) */
   setNight(night: number) {
     this.night = night;
-    this.interior.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-      if (m && "emissiveIntensity" in m && m.emissiveIntensity > 0) m.emissiveIntensity = 0.35 * (1 - 0.9 * night);
-    });
     if (night < 0.1 || this.headBeam) return;
     // 전조등 (하향등 정도): 차 앞 가운데에서 25m 앞 노면을 향해
     const beam = new THREE.SpotLight(0xfff1dc, 160 * night, 150, 0.42, 0.55, 1.3);
     beam.position.copy(this.headPos);
     beam.target.position.set(this.headPos.x + 25, 0, 0);
-    this.car.add(beam, beam.target);
+    this.inner.add(beam, beam.target);
     this.headBeam = beam;
   }
 
@@ -297,52 +249,110 @@ export class PlayerView {
     const p = road.sample(car.s);
     this.world.toScene(w.e, w.n, w.z, this.car.position);
     const yaw = w.heading + car.theta;
-    const roll = Math.max(-0.05, Math.min(0.05, -car.ay * 0.004));
-    const pitch = Math.atan(p.grade) + Math.max(-0.03, Math.min(0.03, -car.ax * 0.003));
-    this.car.rotation.set(roll, yaw, pitch, "YZX");
-    this.car.updateMatrixWorld(true);
+    this.car.rotation.set(0, yaw, Math.atan(p.grade), "YZX");
+    this.world.heading = yaw;
+    const speed = Math.abs(car.vx);
+    const cab = this.model.cabin;
+    const heavy = cab.kind === "bus" || cab.kind === "truck";
 
-    this.wheelSpin.rotation.x = -car.steerAngle * STEER_RATIO;
+    // ---- 서스펜션 ----
+    const h = Math.max(0, Math.min(0.1, dt));
+    const vib = Math.min(1, speed / 30);
+    const bump = roadNoise(car.s) * vib;
+    const pitchT = Math.max(-0.035, Math.min(0.028, car.ax * (heavy ? 0.0012 : 0.0021))) + bump * 0.0007;
+    const rollT = Math.max(-0.05, Math.min(0.05, car.ay * (heavy ? 0.0075 : 0.0055)));
+    const pitch = this.pitch.step(pitchT, h);
+    const roll = this.roll.step(rollT, h);
+    const heave = this.heave.step(bump * 0.0028, h);
+    this.body.rotation.set(roll, 0, pitch, "YZX");
+    this.body.position.y = this.pivotY + heave;
+
+    // ---- 바퀴 ----
+    const r0 = this.model.wheels[0]?.r ?? 0.33;
+    const dAng = (car.vx * h) / r0;
+    this.spinAngle += Math.sign(dAng) * Math.min(Math.abs(dAng), 0.5);
+    for (const wp of this.wheels) {
+      const a = (this.spinAngle * r0) / wp.spec.r;
+      wp.spin.rotation.z = wp.spec.z < 0 ? a : -a;
+      wp.pivot.rotation.y = wp.spec.steer ? car.steerAngle : 0;
+    }
+    this.cockpit.wheel.rotation.x = -car.steerAngle * STEER_RATIO * (heavy ? 1.4 : 1);
+
+    // ---- 등화 ----
     const braking = car.ax < -1.2 || (car.speed < 0.3 && car.vx === 0);
-    // 밤에는 미등이 늘 켜져 있고 제동하면 더 밝아진다
-    for (const m of this.brakeLights) m.visible = braking || this.night > 0.1;
-    this.brakeMat.color.setHex(braking ? 0xff2a1f : 0x7a0c08);
     const blink = Math.floor(time * 1.6) % 2 === 0;
     const left = (signal === -1 || hazard) && blink;
     const right = (signal === 1 || hazard) && blink;
-    for (const m of this.sigL) m.visible = left;
-    for (const m of this.sigR) m.visible = right;
+    vehicleUniforms(this.bodyMat).uLampState.value.set(braking ? 1 : 0, left ? 1 : 0, right ? 1 : 0, car.vx < -0.1 ? 1 : 0);
+    setLampLevels(this.bodyMat, Math.max(this.night, this.world.tunnel * 0.6), (time * 1.4) % 1);
+    setLampLevels(this.cockpit.material, Math.max(this.night, this.world.tunnel * 0.4), 0);
+    // 실내 화면: 밤에는 눈부시지 않게 어둡게
+    this.cockpit.screen.color.setScalar(1 - 0.55 * this.night);
 
+    // ---- 카메라 ----
     const cam = this.world.camera;
+    this.car.updateMatrixWorld(true);
     if (this.mode === "cockpit") {
-      // 옆 가속도에 따라 머리가 조금 흔들린다
-      this.headShift += (Math.max(-0.06, Math.min(0.06, car.ay * 0.008)) - this.headShift) * Math.min(1, dt * 6);
-      this.v.copy(this.eye);
-      this.v.z += this.headShift;
-      cam.position.copy(this.car.localToWorld(this.v));
-      this.v2.set(this.eye.x + 20, this.eye.y - 0.9, this.eye.z + this.headShift * 0.5);
-      cam.up.set(0, 1, 0).applyQuaternion(this.car.quaternion);
-      cam.lookAt(this.car.localToWorld(this.v2));
+      // 머리: 가속하면 뒤로, 제동하면 앞으로, 곡선에서 바깥으로 조금. 노면 따라 살짝 흔들린다
+      const hx = this.headX.step(Math.max(-0.035, Math.min(0.035, -car.ax * 0.0035)), h);
+      const hz = this.headZ.step(Math.max(-0.04, Math.min(0.04, car.ay * 0.0045)), h);
+      const hy = bump * 0.0015 * vib;
+      // 곡선에서 가는 쪽을 조금 먼저 본다
+      this.lookYaw += (Math.max(-0.07, Math.min(0.07, car.r * 0.35)) - this.lookYaw) * Math.min(1, h * 3);
+      this.v.set(cab.eye.x + hx, cab.eye.y + hy, cab.eye.z + hz);
+      cam.position.copy(this.inner.localToWorld(this.v));
+      const down = heavy ? 0.075 : 0.05;
+      this.v2.set(cab.eye.x + 20 * Math.cos(this.lookYaw), cab.eye.y - 20 * down, cab.eye.z + hz - 20 * Math.sin(this.lookYaw));
+      cam.up.set(0, 1, 0).applyQuaternion(this.body.getWorldQuaternion(this.q));
+      cam.lookAt(this.inner.localToWorld(this.v2));
     } else if (this.mode === "hood") {
-      cam.position.copy(this.car.localToWorld(this.v.copy(this.hoodEye)));
-      cam.up.set(0, 1, 0);
-      cam.lookAt(this.car.localToWorld(this.v2.set(this.hoodEye.x + 20, this.hoodEye.y - 0.8, 0)));
+      cam.position.copy(this.inner.localToWorld(this.v.copy(cab.hoodEye)));
+      cam.up.set(0, 1, 0).applyQuaternion(this.car.getWorldQuaternion(this.q));
+      cam.lookAt(this.inner.localToWorld(this.v2.set(cab.hoodEye.x + 20, cab.hoodEye.y - 0.8, 0)));
     } else {
-      if (!this.chaseInit) {
-        this.chaseYaw = yaw;
-        this.chaseInit = true;
-      }
-      let dy = yaw - this.chaseYaw;
-      while (dy > Math.PI) dy -= 2 * Math.PI;
-      while (dy < -Math.PI) dy += 2 * Math.PI;
-      this.chaseYaw += dy * Math.min(1, dt * 4);
-      const back = 7.2 + this.type.length * 0.25;
-      const c = this.car.position;
-      cam.position.set(c.x - Math.cos(this.chaseYaw) * back, c.y + 2.6, c.z + Math.sin(this.chaseYaw) * back);
-      cam.up.set(0, 1, 0);
-      cam.lookAt(c.x + Math.cos(this.chaseYaw) * 4, c.y + 1.2, c.z - Math.sin(this.chaseYaw) * 4);
+      this.updateChase(yaw, speed, h);
     }
     cam.updateMatrixWorld(true);
+  }
+
+  /** 뒤따라가는 카메라: 방향·거리가 부드럽게 따라오고 빠를수록 시야가 넓어진다 */
+  private updateChase(yaw: number, speed: number, dt: number) {
+    const c = this.car.position;
+    const cam = this.world.camera;
+    const L = this.type.length;
+    const H = this.type.height;
+    const back = 5.2 + L * 0.62 + Math.min(1.5, speed * 0.03);
+    const up = 1.35 + H * 0.72;
+    const ch = this.chase;
+    if (!ch.init) {
+      ch.yaw = yaw;
+      ch.init = true;
+    }
+    let dy = yaw - ch.yaw;
+    while (dy > Math.PI) dy -= 2 * Math.PI;
+    while (dy < -Math.PI) dy += 2 * Math.PI;
+    ch.yaw += dy * (1 - Math.exp(-dt * 3.2));
+    const want = this.v.set(c.x - Math.cos(ch.yaw) * back, c.y + up, c.z + Math.sin(ch.yaw) * back);
+    const lookAt = this.v2.set(c.x + Math.cos(ch.yaw) * 6, c.y + H * 0.55, c.z - Math.sin(ch.yaw) * 6);
+    if (!ch.pos.lengthSq() || ch.pos.distanceTo(want) > 30) {
+      ch.pos.copy(want);
+      ch.look.copy(lookAt);
+    }
+    // 높이는 천천히 (오르막·내리막에서 흔들리지 않게), 나머지는 빠르게
+    const k = 1 - Math.exp(-dt * 9);
+    ch.pos.x += (want.x - ch.pos.x) * k;
+    ch.pos.z += (want.z - ch.pos.z) * k;
+    ch.pos.y += (want.y - ch.pos.y) * (1 - Math.exp(-dt * 4));
+    ch.look.lerp(lookAt, 1 - Math.exp(-dt * 10));
+    cam.position.copy(ch.pos);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(ch.look);
+    const fov = 58 + Math.min(10, Math.max(0, speed - 12) * 0.2);
+    ch.fov += (fov - ch.fov) * (1 - Math.exp(-dt * 2));
+    if (Math.abs(cam.fov - ch.fov) > 0.01) {
+      cam.fov = ch.fov;
+      cam.updateProjectionMatrix();
+    }
   }
 
   /** 본 화면과 거울을 그린다 */
@@ -350,12 +360,13 @@ export class PlayerView {
     const r = this.world.renderer;
     const scene = this.world.scene;
     this.frameCount++;
-    if (this.mirrorsOn && this.frameCount % MIRROR_EVERY === 0) {
+    const show = this.showMirrors;
+    if (show && this.frameCount % this.world.settings.mirrorEvery === 0) {
       const m = this.mirrors[this.mirrorTurn++ % this.mirrors.length];
-      m.cam.position.copy(this.car.localToWorld(this.v.copy(m.eye)));
+      m.cam.position.copy(this.inner.localToWorld(this.v.copy(m.eye)));
       this.v2.copy(m.eye).addScaledVector(m.dir, 20);
       m.cam.up.set(0, 1, 0);
-      m.cam.lookAt(this.car.localToWorld(this.v2));
+      m.cam.lookAt(this.inner.localToWorld(this.v2));
       m.cam.updateMatrixWorld(true);
       const vis = this.car.visible;
       this.car.visible = false;
@@ -367,10 +378,26 @@ export class PlayerView {
     r.setRenderTarget(null);
     r.shadowMap.needsUpdate = true;
     r.clear();
-    r.render(scene, this.world.camera);
-    if (this.mirrorsOn) {
+    const glow = Math.max(this.world.night, this.world.tunnel * 0.7);
+    if (!this.world.post.render(scene, this.world.camera, glow)) r.render(scene, this.world.camera);
+    if (show) {
       r.clearDepth();
       r.render(this.overlay, this.overlayCam);
     }
   }
+}
+
+/** 유리는 그림자를 만들지 않는 깊이 재질 */
+function glassFreeDepth(): THREE.MeshDepthMaterial {
+  const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute vec4 surf;\nvarying float vTag;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvTag = surf.w;");
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vTag;")
+      .replace("#include <clipping_planes_fragment>", "#include <clipping_planes_fragment>\nif ( abs( vTag - 12.0 ) < 0.5 ) discard;");
+  };
+  m.customProgramCacheKey = () => "drip-glass-free-depth";
+  return m;
 }
