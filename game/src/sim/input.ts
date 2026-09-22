@@ -27,6 +27,8 @@ const KEYMAP: Record<string, keyof typeof keysDown> = {
 
 const keysDown = { up: false, down: false, left: false, right: false };
 
+const KEY_FALLBACK: Record<string, string> = { ",": "Comma", ".": "Period", " ": "Space" };
+
 export class Input {
   mode: InputMode = "keyboard";
   controls: Controls = { throttle: 0, brake: 0, steer: 0, reverse: false };
@@ -63,13 +65,15 @@ export class Input {
 
   private onKey = (e: KeyboardEvent) => {
     const down = e.type === "keydown";
-    const k = KEYMAP[e.code];
+    // 물리 키(code)를 먼저 본다. 한글 입력 상태에서도 Q는 KeyQ다. code가 비어 있는 이벤트만 key로 대신한다
+    const code = e.code || KEY_FALLBACK[e.key] || (e.key.length === 1 ? `Key${e.key.toUpperCase()}` : e.key);
+    const k = KEYMAP[code];
     if (k) {
       keysDown[k] = down;
       e.preventDefault();
     }
     if (down && !e.repeat) {
-      switch (e.code) {
+      switch (code) {
         case "KeyQ":
         case "Comma":
           this.pendingActions.signalLeft = true;
@@ -102,9 +106,14 @@ export class Input {
           break;
       }
     }
-    if (down) this.pressed.add(e.code);
-    else this.pressed.delete(e.code);
+    if (down) this.pressed.add(code);
+    else this.pressed.delete(code);
   };
+
+  /** 키보드로 지금 조향 키를 누르고 있는지 */
+  get steeringKeyDown(): boolean {
+    return keysDown.left || keysDown.right;
+  }
 
   /** 이번 프레임에 눌린 버튼들 (한 번 읽으면 비워진다) */
   takeActions(): InputActions {

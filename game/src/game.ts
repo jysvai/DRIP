@@ -23,6 +23,13 @@ const PLAYER_TYPE = "sedan_mid";
 const PLAYER_COLOR = "#23466e";
 const SERIOUS_KMH = 15;
 
+/** 마지막 한글 글자에 받침이 있으면 b, 없으면 a (예: 와/과) */
+function josa(word: string, a: string, b: string): string {
+  const m = word.match(/[가-힣](?=[^가-힣]*$)/);
+  if (!m) return a;
+  return (m[0].charCodeAt(0) - 0xac00) % 28 ? b : a;
+}
+
 const INPUT_LABELS = { keyboard: "키보드", mouse: "마우스 조향", gamepad: "게임패드" } as const;
 
 function sunFor(hour: number): { elevation: number; daylight: number } {
@@ -59,6 +66,7 @@ export class Game {
   private fpsFrames = 0;
   private fpsTime = 0;
   private autoLane = 0;
+  private assistWeight = 0;
   private controls: Controls = { throttle: 0, brake: 0, steer: 0, reverse: false };
 
   constructor(
@@ -216,6 +224,7 @@ export class Game {
     if (actions.horn) this.sound.horn();
 
     const c = this.autopilot ? this.autoControls() : this.input.update(dt, p.speed);
+    if (!this.autopilot) this.keyboardAssist(c, dt);
     this.controls = c;
     this.t += dt;
 
@@ -320,7 +329,7 @@ export class Game {
       if (kmh >= SERIOUS_KMH) {
         a.v = 0;
         a.hazard = true;
-        this.crashed(`${a.type.name}와(과) 충돌`, kmh);
+        this.crashed(`${a.type.name}${josa(a.type.name, "와", "과")} 충돌`, kmh);
         return;
       }
       // 가벼운 접촉: 밀어내고 속도를 나눈다
@@ -360,6 +369,9 @@ export class Game {
   private crashed(what: string, kmh: number) {
     if (this.state !== "run") return;
     this.state = "crash";
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.r = 0;
     this.sound.crash(1);
     showDialog("충돌", `${what} · 충돌 속도 약 ${Math.round(kmh)}km/h. 충돌은 기록에 남습니다.`, [
       { label: "이어서 달리기 (Enter)", primary: true, key: "Enter", onClick: () => this.respawn() },
@@ -411,6 +423,29 @@ export class Game {
       },
       () => location.reload(),
     );
+  }
+
+  /** 키보드 조향 보조: 조향 키를 놓으면 차 방향을 도로 방향에 맞춘다 (차로 위치는 그대로).
+   *  키보드는 반대로 꺾어 바로잡기가 어려워서 넣는다. 마우스·게임패드·휠에는 쓰지 않는다. */
+  private keyboardAssist(c: Controls, dt: number) {
+    if (this.input.mode !== "keyboard" || this.input.steeringKeyDown) {
+      this.assistWeight = 0;
+      return;
+    }
+    this.assistWeight = Math.min(1, this.assistWeight + dt / 0.3);
+    const p = this.player;
+    const sp = p.spec;
+    const v = Math.max(3, p.vx);
+    const L = sp.lf + sp.lr;
+    const K = (sp.mass * sp.lr) / L / sp.cf - (sp.mass * sp.lf) / L / sp.cr; // 언더스티어 계수
+    const kappa = this.road.sample(p.s).kappa;
+    // 차가 실제로 가는 방향(차 방향 + 옆미끄럼)과 길 방향의 차이. 차 방향만 맞추면 굽은 길에서 바깥으로 밀린다
+    const course = p.theta + p.vy / v;
+    // 바퀴각(왼쪽 +) = 굽은 길 따라가기 (L+Kv²)κ − 진행 방향 오차를 1초에 줄이기 (L+Kv²)·course/v.
+    // 조향 입력은 오른쪽이 +라서 부호를 뒤집는다.
+    const wheel = (L + K * v * v) * (kappa - course / (v * 1.0));
+    const assist = Math.max(-0.5, Math.min(0.5, -wheel / sp.maxSteer));
+    c.steer += assist * this.assistWeight;
   }
 
   /** 검수용: 화면이 가려져 requestAnimationFrame이 멈춰도 시뮬레이션을 sec초 진행하고 한 번 그린다 */
