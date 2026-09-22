@@ -72,5 +72,6 @@ export function makeConfig(): GameConfig {
     real: null,
     cameras: null,
     events: null,
+    realWeather: null,
   };
 }

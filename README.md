@@ -85,12 +85,13 @@ API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값�
 | `pipeline/traffic_ex.py daily` | 전날 AVC(차종 분류기) 15분 자료 → 주행선별 시간대 차로당 밀도·속도·차종 구성 → `game/public/traffic/latest.json`. 메뉴의 "실제 교통"이 이걸 쓴다 (측정 지점이 있는 36개 주행선, 출발 위치에서 가장 가까운 지점 값) | `EX_API_KEY` |
 | `pipeline/habits_avc.py [--apply]` | 쌓인 AVC 원자료로 한국 운전 습관(차종별 희망속도, 대형화물 지정차로 준수, 차로 이용)을 계산해 `driver_profiles.json`에 넣는다 (`game/DATA.md`) | 없음 |
 | `pipeline/events_its.py [--loop 5] [--export]` | ITS 돌발상황(사고·공사·고장·기상)을 받아 게임 주행선 위치를 붙여 쌓는다. `--export`는 게임용 `game/public/events/latest.json`도 쓴다: 메뉴에서 "실제" 교통을 고르면 그 시각의 실제 공사 구간·사고·고장 차량이 나온다 (없으면 빈도로 놓는다) | `ITS_API_KEY` |
+| `pipeline/weather_om.py [--date YYYYMMDD]` | 어제 시간대별 노선 날씨(40km 간격)를 받아 `game/public/weather/latest.json`에 쓴다. 메뉴의 "실제" 날씨가 출발 지점·같은 시각 값을 쓴다 | 없음 (Open-Meteo) |
 | `pipeline/compare_hotspots.py` | 게임 주행 기록(Supabase)을 실제 사고 1km 구간과 비교 (가설 1·2) | DB |
 
 - 키 없이 시험: `--key test` (포털 설명서의 예시 키. 도로공사는 실제 자료를 주지만 시험용, ITS는 고정 표본만 준다). 지금 저장소의 `latest.json`과 기준점은 이 예시 키로 한 번 만든 것이다.
 - 매일 자동 수집: `.github/workflows/traffic.yml`이 매일 06:40(한국 시간)에 전날 자료를 받아 커밋하고 사이트를 다시 올린다. 저장소 비밀 `EX_API_KEY`가 있어야 돈다:
   `gh secret set EX_API_KEY` (붙여 넣기). `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`도 넣으면 AVC 원자료(차로별·차종별 속도)를 R2에 쌓는다.
-  `gh secret set ITS_API_KEY`도 넣으면 같은 시각의 돌발상황을 받아 `events/latest.json`으로 올린다 (its.go.kr 오픈API 신청 때 '돌발상황정보'를 고른다, 승인 3~5일).
+  날씨(Open-Meteo)는 키가 없어도 매일 받는다. `gh secret set ITS_API_KEY`도 넣으면 같은 시각의 돌발상황을 받아 `events/latest.json`으로 올린다 (its.go.kr 오픈API 신청 때 '돌발상황정보'를 고른다, 승인 3~5일).
 - 도로공사 방향: E = 이정이 느는 쪽(종점 방향), S = 기점 방향. 경부선은 기점이 부산이라 E = 서울 방향.
 - VDS 좌표가 비어 있는 노선(수도권제2순환선 일부, 세종포천선)과 민자 고속도로는 아직 기준점이 없다.
 
@@ -101,3 +102,5 @@ API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값�
 - 지형 높이: AWS Terrain Tiles (Mapzen terrarium, SRTM 등)
 - 교통량·속도·차종(VDS·AVC): 한국도로공사 [고속도로 공공데이터 포털](https://data.ex.co.kr)
 - 돌발상황: 국토교통부 [국가교통정보센터](https://www.its.go.kr/opendata/)
+- 과속 단속 카메라: 경찰청 전국무인교통단속카메라표준데이터 ([공공데이터포털 15028200](https://www.data.go.kr/data/15028200/standard.do))
+- 실제 날씨: [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0)

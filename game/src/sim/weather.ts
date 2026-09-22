@@ -1,9 +1,12 @@
 // 날씨: 맑음·흐림·비·폭우·안개. 가시거리(안개), 노면 마찰(물리), 법정 감속(판정), 주변 차의 반응(교통)을 한곳에서 정한다.
 // 기상청 실황을 붙이기 전까지는 메뉴에서 고른다.
 
+import type { Road } from "../road/road";
 import type { Rules, WeatherResponse } from "./config";
 
 export type WeatherKind = "clear" | "cloudy" | "rain" | "heavy_rain" | "fog";
+/** 메뉴에서 고르는 날씨: 직접 고르거나 실제(어제 같은 시각, weather/latest.json) */
+export type WeatherChoice = WeatherKind | "real";
 
 export interface Weather {
   kind: WeatherKind;
@@ -59,4 +62,27 @@ export function gripAt(w: Weather, kmh: number, heavy = false): number {
 /** 주변 차가 이 날씨에 속도·차간시간을 얼마나 바꾸는지 (driver_profiles.json weather) */
 export function trafficResponse(w: Weather, table: Partial<Record<WeatherKind, WeatherResponse>> | undefined): WeatherResponse {
   return table?.[w.kind] ?? { speedScale: 1, headwayScale: 1 };
+}
+
+/** weather/latest.json (pipeline/weather_om.py): 주행선마다 [s, 24시간 날씨 글자] */
+export interface RealWeatherData {
+  source: string;
+  date: string;
+  roads: Record<string, [number, string][]>;
+}
+
+const REAL_CODES: Record<string, WeatherKind> = { c: "clear", o: "cloudy", r: "rain", h: "heavy_rain", f: "fog", s: "rain" };
+
+/** 실제 날씨: 출발 위치(원래 주행선·위치)에서 가장 가까운 지점의 그 시각 날씨. 눈은 아직 그리지 못해 비로 본다 */
+export function realWeatherAt(data: RealWeatherData | null, road: Road, s: number, hour: number): { weather: Weather; snow: boolean; stamp: string } | null {
+  if (!data) return null;
+  const src = road.sourceAt(s);
+  const points = data.roads[src.road];
+  if (!points?.length) return null;
+  let best = points[0];
+  for (const p of points) if (Math.abs(p[0] - src.s) < Math.abs(best[0] - src.s)) best = p;
+  const h = ((Math.floor(hour) % 24) + 24) % 24;
+  const c = best[1][h] ?? "c";
+  const stamp = `${data.date.slice(4, 6)}/${data.date.slice(6, 8)} ${h}시`;
+  return { weather: WEATHERS[REAL_CODES[c] ?? "clear"], snow: c === "s", stamp };
 }

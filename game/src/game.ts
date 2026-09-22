@@ -13,7 +13,7 @@ import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
-import { gripAt, legalFactor, trafficResponse, weatherOf, type Weather } from "./sim/weather";
+import { gripAt, legalFactor, realWeatherAt, trafficResponse, weatherOf, type Weather } from "./sim/weather";
 import { planIncidents, type Incident } from "./sim/incidents";
 import { realEventsFor, realEventsStamp } from "./sim/realEvents";
 import type { GameConfig } from "./sim/config";
@@ -72,6 +72,8 @@ export class Game {
   /** 실제 돌발상황을 쓰면 그 기준 시각 ("09/22 06:40 기준"), 아니면 "" */
   readonly realEvents: string;
   readonly weather: Weather;
+  /** 실제 날씨를 쓰면 출발 안내 문구 */
+  private realWeather = "";
   readonly weatherView: WeatherView;
   readonly road: Road;
   readonly spec: PlayerSpec;
@@ -112,8 +114,10 @@ export class Game {
     if (sun.night > 0.6) this.world.setSun(40, 200);
     else this.world.setSun(Math.max(2, sun.elevation), sun.azimuth);
     this.world.setNight(sun.night);
-    // 날씨: 흐리면 어둡고, 비·안개는 가시거리만큼 안개를 당긴다
-    const weather = weatherOf(settings.weather);
+    // 날씨: 흐리면 어둡고, 비·안개는 가시거리만큼 안개를 당긴다. '실제'는 어제 같은 시각 출발 지점의 날씨
+    const realW = settings.weather === "real" ? realWeatherAt(cfg.realWeather, road, Math.max(60, setup.startS), settings.hour) : null;
+    const weather = realW ? realW.weather : weatherOf(settings.weather === "real" ? "clear" : settings.weather);
+    this.realWeather = realW ? `실제 날씨(Open-Meteo, ${realW.stamp}, 출발 지점): ${weather.label}${realW.snow ? " (눈은 아직 비로 그립니다)" : ""}.` : "";
     this.weather = weather;
     this.weatherView = new WeatherView(this.world, weather);
     this.weatherView.apply(sun.night);
@@ -293,6 +297,7 @@ export class Game {
     }
     const works = this.workZones.filter((z) => z.s0 > s).length;
     if (works) notes.push(`경로에 공사 구간이 ${works}곳 있습니다. 한 차로를 라바콘으로 막고 제한속도 ${ZONE_KMH}km/h입니다.`);
+    if (this.realWeather) notes.push(this.realWeather);
     const cut = Math.round((1 - this.rules.weatherFactor) * 100);
     const weatherNote = this.weatherNote(cut);
     if (weatherNote) notes.push(weatherNote);

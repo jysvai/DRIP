@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { makeConfig } from "../testing/fixtures";
-import { legalFactor, trafficResponse, weatherOf, WEATHERS } from "./weather";
+import { makeConfig, makeRoad } from "../testing/fixtures";
+import { legalFactor, realWeatherAt, trafficResponse, weatherOf, WEATHERS, type RealWeatherData } from "./weather";
 
 describe("날씨", () => {
   const cfg = makeConfig();
@@ -25,5 +25,24 @@ describe("날씨", () => {
     expect(weatherOf("snow").kind).toBe("clear");
     expect(weatherOf(null).kind).toBe("clear");
     expect(weatherOf("fog").visibilityM).toBeLessThanOrEqual(100);
+  });
+
+  it("실제 날씨는 출발 위치에서 가장 가까운 지점의 그 시각 날씨 (눈은 비로)", () => {
+    const road = makeRoad({ length: 100000 });
+    const hours = (c: string) => c.repeat(24);
+    const data: RealWeatherData = {
+      source: "t",
+      date: "20260921",
+      roads: { [road.id]: [[0, hours("c")], [40000, "cccccccccccccchrrrrrrccc"], [80000, hours("s")]] },
+    };
+    const a = realWeatherAt(data, road, 45000, 14)!;
+    expect(a.weather.kind).toBe("heavy_rain");
+    expect(a.stamp).toBe("09/21 14시");
+    expect(realWeatherAt(data, road, 45000, 15)!.weather.kind).toBe("rain");
+    expect(realWeatherAt(data, road, 10000, 14)!.weather.kind).toBe("clear");
+    const snow = realWeatherAt(data, road, 90000, 3)!;
+    expect(snow.weather.kind).toBe("rain");
+    expect(snow.snow).toBe(true);
+    expect(realWeatherAt(null, road, 0, 0)).toBeNull();
   });
 });

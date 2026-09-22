@@ -4,7 +4,7 @@ import type { Network, Place, Leg } from "../road/route";
 import { buildPlaces, findRoute, searchPlaces } from "../road/route";
 import type { RealTraffic } from "../sim/config";
 import { specFor } from "../sim/vehicleSpec";
-import type { WeatherKind } from "../sim/weather";
+import type { RealWeatherData, WeatherChoice } from "../sim/weather";
 import { paletteFor, type VehicleCatalog, type VehicleType } from "../render/vehicleModels";
 import { NetMap } from "./netMap";
 import { VehiclePreview } from "./vehiclePreview";
@@ -31,8 +31,8 @@ export interface DriveSettings {
   preset: Preset;
   hour: number;
   weekend: boolean;
-  /** 날씨 (없으면 맑음) */
-  weather?: WeatherKind;
+  /** 날씨 (없으면 맑음). real이면 어제 같은 시각 출발 지점의 실제 날씨 */
+  weather?: WeatherChoice;
   camera: CameraMode;
   consent: boolean;
   sound: boolean;
@@ -92,7 +92,7 @@ function hourLabel(h: number): string {
 
 const KIND_LABEL: Record<Place["kind"], string> = { 도시: "도시", IC: "나들목", JC: "분기점", TG: "요금소", SA: "휴게소", 기타: "" };
 
-export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffic | null): Promise<DriveSettings> {
+export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffic | null, realWeather: RealWeatherData | null = null): Promise<DriveSettings> {
   return new Promise((resolve) => {
     const places = buildPlaces(net);
     const saved = load();
@@ -109,7 +109,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let preset: Preset = saved.preset ?? "자동";
     let hour = now.getHours();
     let weekend = now.getDay() === 0 || now.getDay() === 6;
-    let weather: WeatherKind = saved.weather ?? "clear";
+    let weather: WeatherChoice = saved.weather === "real" && !realWeather ? "clear" : (saved.weather ?? "clear");
     let camera: CameraMode = saved.camera ?? "cockpit";
     let sound = saved.sound ?? true;
     let voice = saved.voice ?? true;
@@ -443,13 +443,14 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       body.appendChild(
         field(
           "날씨",
-          seg<WeatherKind>(
+          seg<WeatherChoice>(
             [
               ["clear", "맑음"],
               ["cloudy", "흐림"],
               ["rain", "비"],
               ["heavy_rain", "폭우"],
               ["fog", "짙은 안개"],
+              ...(realWeather ? ([["real", `실제 (${realWeather.date.slice(4, 6)}/${realWeather.date.slice(6)} 같은 시각)`]] as [WeatherChoice, string][]) : []),
             ],
             weather,
             (v) => (weather = v),
