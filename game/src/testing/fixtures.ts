@@ -71,5 +71,6 @@ export function makeConfig(): GameConfig {
     rules: rules as unknown as Rules,
     real: null,
     cameras: null,
+    events: null,
   };
 }

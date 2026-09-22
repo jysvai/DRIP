@@ -1,5 +1,6 @@
 // 데이터 파일(public/data/*.json)의 형식과 불러오기. 한국 운전 특징·법규·교통량은 모두 여기로 들어온다.
 
+import type { RealEventData } from "./realEvents";
 import type { VehicleCatalog } from "../render/vehicleModels";
 import { loadCatalog } from "../render/vehicleModels";
 
@@ -119,6 +120,8 @@ export interface GameConfig {
   rules: Rules;
   real: RealTraffic | null;
   cameras: CameraData | null;
+  /** 실제 돌발상황 (pipeline/events_its.py --export). 없으면 공사·선 차를 빈도로 놓는다 */
+  events: RealEventData | null;
 }
 
 async function json<T>(url: string): Promise<T> {
@@ -136,8 +139,12 @@ export async function loadConfig(base = "./data/"): Promise<GameConfig> {
   ]);
   // 실제 교통·단속 카메라는 없어도 게임은 돈다
   const optional = <T>(url: string) => json<T>(url).catch(() => null);
-  const [real, cameras] = await Promise.all([optional<RealTraffic>("./traffic/latest.json"), optional<CameraData>(`${base}cameras.json`)]);
-  return { catalog, profiles, traffic, rules, real, cameras };
+  const [real, cameras, events] = await Promise.all([
+    optional<RealTraffic>("./traffic/latest.json"),
+    optional<CameraData>(`${base}cameras.json`),
+    optional<RealEventData>("./events/latest.json"),
+  ]);
+  return { catalog, profiles, traffic, rules, real, cameras, events };
 }
 
 /** 편도 차로 수에 따른 지정차로 (도로교통법 시행규칙 별표9). 반환: [왼쪽 차로들, 오른쪽 차로들] */

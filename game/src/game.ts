@@ -15,6 +15,7 @@ import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
 import { gripAt, legalFactor, trafficResponse, weatherOf, type Weather } from "./sim/weather";
 import { planIncidents, type Incident } from "./sim/incidents";
+import { realEventsFor, realEventsStamp } from "./sim/realEvents";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
@@ -68,6 +69,8 @@ export class Game {
   readonly enforcement: Enforcement;
   readonly workZones: WorkZone[];
   readonly incidents: Incident[];
+  /** 실제 돌발상황을 쓰면 그 기준 시각 ("09/22 06:40 기준"), 아니면 "" */
+  readonly realEvents: string;
   readonly weather: Weather;
   readonly weatherView: WeatherView;
   readonly road: Road;
@@ -137,13 +140,22 @@ export class Game {
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
     const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
-    // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
-    this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
-    this.chunks.setWorkZones(this.workZones);
-    // 돌발상황 (고장·사고로 선 차): 같은 시드면 어디서 출발하든 같은 자리라, 피할 공사 구간도 출발 위치로 거르기 전 전체를 쓴다
     const night = sun.night > 0.5;
-    const allZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: -Infinity, finishS: Infinity });
-    this.incidents = planIncidents(road, { seed: settings.seed, night, startS: s0, finishS: setup.finishS, workZones: allZones });
+    // '실제' 교통을 고르고 실제 돌발상황(ITS)이 있으면 그 공사·선 차를 쓴다
+    const real = settings.preset === "실제" ? realEventsFor(road, cfg.events) : null;
+    this.realEvents = real ? realEventsStamp(cfg.events!) : "";
+    if (real) {
+      const ahead = (s: number) => s > s0 + 300 && s < setup.finishS - 300;
+      this.workZones = real.workZones.filter((z) => ahead(z.s0));
+      this.incidents = real.incidents.filter((i) => ahead(i.s));
+    } else {
+      // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
+      this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
+      // 돌발상황 (고장·사고로 선 차): 같은 시드면 어디서 출발하든 같은 자리라, 피할 공사 구간도 출발 위치로 거르기 전 전체를 쓴다
+      const allZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: -Infinity, finishS: Infinity });
+      this.incidents = planIncidents(road, { seed: settings.seed, night, startS: s0, finishS: setup.finishS, workZones: allZones });
+    }
+    this.chunks.setWorkZones(this.workZones);
     this.chunks.setIncidents(this.incidents, night);
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
@@ -275,6 +287,10 @@ export class Game {
     const notes: string[] = [];
     if (this.busZones.some((z) => z.s1 > s)) notes.push("경로에 버스전용차로 구간이 있습니다(파란 선, 1차로).");
     if (this.spec.vehicleClass !== "car") notes.push("화물·대형승합은 지정차로(오른쪽 차로)로 달려야 합니다. 앞지르기 때만 바로 왼쪽 차로를 쓸 수 있습니다.");
+    if (this.realEvents) {
+      const inc = this.incidents.filter((i) => i.s > s).length;
+      notes.push(`실제 돌발상황(국가교통정보센터, ${this.realEvents})을 씁니다: 사고·고장 차량 ${inc}곳.`);
+    }
     const works = this.workZones.filter((z) => z.s0 > s).length;
     if (works) notes.push(`경로에 공사 구간이 ${works}곳 있습니다. 한 차로를 라바콘으로 막고 제한속도 ${ZONE_KMH}km/h입니다.`);
     const cut = Math.round((1 - this.rules.weatherFactor) * 100);

@@ -1,5 +1,6 @@
 # 매일 아침 전날 고속도로 교통(도로공사 AVC 15분 자료)을 받아 게임의 '실제 교통'을 새로 만들고 사이트를 다시 올린다.
-# 저장소 비밀 EX_API_KEY가 있어야 돈다 (없으면 건너뛴다). R2_* 비밀 네 개가 있으면 원자료도 R2(raw/ex/avc15/)에 쌓는다.
+# 저장소 비밀 EX_API_KEY가 있어야 교통을 받는다. R2_* 비밀 네 개가 있으면 원자료도 R2(raw/ex/avc15/)에 쌓는다.
+# 저장소 비밀 ITS_API_KEY가 있으면 그 시각의 돌발상황(공사·사고·고장)도 받아 게임의 '실제' 교통에 넣는다.
 name: Collect traffic
 
 on:
@@ -24,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EX_API_KEY: ${{ secrets.EX_API_KEY }}
+      ITS_API_KEY: ${{ secrets.ITS_API_KEY }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -33,22 +35,24 @@ jobs:
       - name: Check key
         id: key
         run: |
-          if [ -z "$EX_API_KEY" ]; then
-            echo "::notice::저장소 비밀 EX_API_KEY가 없어 건너뜁니다 (README의 '실제 교통 수집' 참고)"
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
+          ex=false; its=false
+          if [ -n "$EX_API_KEY" ]; then ex=true; else echo "::notice::저장소 비밀 EX_API_KEY가 없어 교통 수집을 건너뜁니다 (README의 '실제 교통 수집' 참고)"; fi
+          if [ -n "$ITS_API_KEY" ]; then its=true; else echo "::notice::저장소 비밀 ITS_API_KEY가 없어 돌발상황 수집을 건너뜁니다"; fi
+          echo "ex=$ex" >> "$GITHUB_OUTPUT"
+          echo "its=$its" >> "$GITHUB_OUTPUT"
+          if [ "$ex" = true ] || [ "$its" = true ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/checkout@v7
         if: steps.key.outputs.ok == 'true'
       - uses: actions/setup-python@v7
         if: steps.key.outputs.ok == 'true'
         with:
           python-version: "3.13"
-      - name: Collect
+      - name: Install
         if: steps.key.outputs.ok == 'true'
+        run: pip install --quiet numpy pyproj python-dotenv boto3
+      - name: Collect
+        if: steps.key.outputs.ex == 'true'
         run: |
-          pip install --quiet numpy pyproj python-dotenv boto3
           args=()
           if [ -n "$DATE" ]; then
             [[ "$DATE" =~ ^[0-9]{8}$ ]] || { echo "::error::날짜는 YYYYMMDD"; exit 1; }
@@ -56,6 +60,11 @@ jobs:
           fi
           if [ -n "$R2_BUCKET" ]; then args+=(--upload); fi
           python pipeline/traffic_ex.py daily "${args[@]}"
+      - name: Collect incidents
+        if: steps.key.outputs.its == 'true'
+        # 실패해도 교통은 올린다
+        continue-on-error: true
+        run: python pipeline/events_its.py --export
       - name: Commit and redeploy
         if: steps.key.outputs.ok == 'true'
         env:
@@ -63,12 +72,15 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add game/public/traffic/latest.json data/processed/traffic
+          # 받은 것만 올린다 (없는 경로를 같이 넘기면 git add 전체가 실패한다)
+          for f in game/public/traffic/latest.json data/processed/traffic game/public/events/latest.json; do
+            if [ -e "$f" ]; then git add "$f"; fi
+          done
           if git diff --cached --quiet; then
             echo "바뀐 것이 없습니다"
             exit 0
           fi
-          git commit -m "Update real traffic for $(jq -r .date game/public/traffic/latest.json)"
+          git commit -m "Update real traffic and incidents ($(date -u +%F))"
           git push
           # GITHUB_TOKEN으로 올린 커밋은 다른 워크플로를 깨우지 않아서 배포를 직접 부른다
           gh workflow run pages.yml --ref main

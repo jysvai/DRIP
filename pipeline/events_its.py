@@ -3,6 +3,8 @@
   python pipeline/events_its.py                한 번 받아서 data/raw/its/events/날짜.jsonl에 덧붙인다
   python pipeline/events_its.py --loop 5       5분마다 계속 (끝난 사건은 목록에서 빠지므로 자주 받아야 기록이 남는다)
   --upload                                     그날 파일을 R2(raw/its/events/)에도 올린다
+  --export                                     받은 사건을 게임용 game/public/events/latest.json으로도 쓴다
+                                               (공사·작업 → 공사 구간, 교통사고 → 사고 차량, 고장 → 고장 차량)
 
 키: .env의 ITS_API_KEY (its.go.kr 회원가입 → 오픈API 신청 → 승인 3~5일, 신청할 때 '돌발상황정보'를 골라야 한다).
 예시 키 test는 늘 같은 20건 표본만 준다.
@@ -29,6 +31,8 @@ from traffic_ex import RoadGeom, load_roads
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "raw" / "its" / "events"
+GAME_OUT = ROOT / "game" / "public" / "events" / "latest.json"
+GAME_SNAP_M = 80.0
 URL = "https://openapi.its.go.kr:9443/eventInfo"
 KST = timezone(timedelta(hours=9))
 SNAP_M = 60
@@ -94,7 +98,7 @@ class Snapper:
         return sorted(out, key=lambda c: c["dist"])
 
 
-def collect(key: str, snapper: Snapper, upload: bool) -> int:
+def collect(key: str, snapper: Snapper, upload: bool, export: bool = False) -> int:
     now = datetime.now(KST)
     events = fetch(key)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,88 @@ def collect(key: str, snapper: Snapper, upload: bool) -> int:
         client().put_object(Bucket=bucket(), Key=f"raw/its/events/{path.name}", Body=path.read_bytes())
     snapped = sum(1 for e in events if e["roads"])
     print(f"{now:%H:%M} 돌발상황 {len(events)}건 (게임 주행선 위 {snapped}건) → {path.relative_to(ROOT)}")
+    if export:
+        GAME_OUT.parent.mkdir(parents=True, exist_ok=True)
+        GAME_OUT.write_text(json.dumps(export_game(events, now), ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return len(events)
+
+
+def classify(e: dict) -> str | None:
+    """게임에서 쓰는 종류: work(공사·작업), crash(교통사고), breakdown(고장). 나머지(기상·재난 등)는 None"""
+    text = " ".join(str(e.get(k) or "") for k in ("eventType", "eventDetailType", "message"))
+    if "고장" in text:
+        return "breakdown"
+    kind = e.get("eventType") or ""
+    if kind == "교통사고" or "사고" in (e.get("eventDetailType") or ""):
+        return "crash"
+    if kind in ("공사", "작업"):
+        return "work"
+    return None
+
+
+def blocked_lanes(e: dict) -> list[int]:
+    """막힌 차로 번호들 ('2차로 차단', '1 차로', '(2,3차로)'). 갓길이면 [0], 모르면 []"""
+    import re
+
+    text = f"{e.get('lanesBlocked') or ''} {e.get('message') or ''}"
+    lanes: set[int] = set()
+    for m in re.finditer(r"((?:\d\s*,\s*)*\d)\s*차로", text):
+        lanes.update(int(x) for x in re.findall(r"\d", m.group(1)) if 0 < int(x) <= 8)
+    if not lanes and "갓길" in text:
+        return [0]
+    return sorted(lanes)
+
+
+def export_game(events: list[dict], fetched: datetime) -> dict:
+    """사건을 게임 주행선 위치로 옮긴다. 방향은 cameras.py처럼 방향 글('부산방향')로 정하고, 모르면 확실히 가까운 주행선만"""
+    from cameras import CLEAR, Line, direction_words
+
+    index = json.loads((ROOT / "game" / "public" / "roads" / "index.json").read_text(encoding="utf-8"))
+    lines = [Line(m) for m in index["roads"]]
+    tf = Transformer.from_crs(4326, 5179, always_xy=True)
+    roads: dict[str, list] = {}
+    skipped = {"종류": 0, "주행선 없음": 0, "방향 모름": 0}
+    for e in events:
+        kind = classify(e)
+        if not kind:
+            skipped["종류"] += 1
+            continue
+        try:
+            x, y = tf.transform(float(e["coordX"]), float(e["coordY"]))
+        except (KeyError, TypeError, ValueError):
+            skipped["주행선 없음"] += 1
+            continue
+        near = sorted(((ln.nearest(x, y), ln) for ln in lines), key=lambda t: t[0][0])
+        near = [(d, s, ln) for (d, s), ln in near if d < GAME_SNAP_M]
+        if not near:
+            skipped["주행선 없음"] += 1
+            continue
+        cand = [c for c in near if c[2].ref == near[0][2].ref]
+        frm, to = direction_words(f"{e.get('roadDrcType') or ''} {e.get('message') or ''}")
+        pick = None
+        if to or frm:
+            scored = [(int(c[2].place_score(c[1], to, True)) * 2 + int(c[2].place_score(c[1], frm, False)), c) for c in cand]
+            best = max(scored, key=lambda t: t[0])
+            if best[0] > 0 and sum(1 for sc, _ in scored if sc == best[0]) == 1:
+                pick = best[1]
+        if pick is None and (len(cand) == 1 or cand[0][0] < CLEAR * cand[1][0]):
+            pick = cand[0]
+        if pick is None:
+            skipped["방향 모름"] += 1
+            continue
+        _, s, ln = pick
+        msg = " ".join(str(e.get("message") or "").split())[:80]
+        roads.setdefault(ln.id, []).append([round(s), kind, blocked_lanes(e), str(e.get("startDate") or "")[:12], msg])
+    for v in roads.values():
+        v.sort()
+    n = sum(len(v) for v in roads.values())
+    print(f"게임용 돌발상황 {n}건 (건너뜀: {skipped}) → {GAME_OUT.relative_to(ROOT)}")
+    return {
+        "source": "국가교통정보센터(ITS) 돌발상황정보",
+        "fetchedAt": fetched.isoformat(timespec="minutes"),
+        "fields": ["s", "kind(work|crash|breakdown)", "blockedLanes(0=갓길)", "startDate(YYYYMMDDHHmm)", "message"],
+        "roads": roads,
+    }
 
 
 def main() -> None:
@@ -121,12 +206,13 @@ def main() -> None:
     ap.add_argument("--key", help="ITS_API_KEY 대신 쓸 키 (시험: test)")
     ap.add_argument("--loop", type=float, help="이 분마다 계속 받는다")
     ap.add_argument("--upload", action="store_true")
+    ap.add_argument("--export", action="store_true", help="게임용 events/latest.json도 쓴다")
     args = ap.parse_args()
     key = api_key(args.key)
     snapper = Snapper()
     while True:
         try:
-            collect(key, snapper, args.upload)
+            collect(key, snapper, args.upload, args.export)
         except Exception as e:  # 한 번 실패해도 계속 돈다
             print(f"실패: {e}")
             if not args.loop:
