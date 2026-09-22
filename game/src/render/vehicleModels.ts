@@ -1008,8 +1008,10 @@ function buildCar(t: VehicleType, b: VB) {
     kind: t.body === "van" || t.body === "mpv" || vanLike ? "van" : "car",
     eye,
     hoodEye: new THREE.Vector3(X(fh) + 0.1, top(fh) + 0.3, 0),
-    wheel: { pos: new THREE.Vector3(eye.x + 0.47, eyeY - 0.36, eye.z), tilt: 0.42, r: 0.18 },
-    dash: { x0: X(fh) + 0.02, x1: eye.x + 0.62, y: top(fh) + 0.04, w: 2 * (hwAt(fh) - 0.12) },
+    // 승합은 운전대가 더 눕고 낮아 계기판을 가리지 않는다
+    wheel: { pos: new THREE.Vector3(eye.x + 0.47, eyeY - (vanLike ? 0.4 : 0.36), eye.z), tilt: vanLike ? 0.55 : 0.42, r: 0.18 },
+    // 승합·미니버스는 앉는 자리가 높아 대시보드도 앞유리 아래끝보다 높게 (계기판이 시야 아래로 잘리지 않게)
+    dash: { x0: X(fh) + 0.02, x1: eye.x + 0.62, y: vanLike ? Math.max(top(fh) + 0.04, eyeY - 0.34) : top(fh) + 0.04, w: 2 * (hwAt(fh) - 0.12) },
     wsBase: [X(fh), top(fh)],
     wsTop: [X(fRF), yRoofAt(0)],
     roofY: H - 0.06,
