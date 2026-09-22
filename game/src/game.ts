@@ -247,6 +247,7 @@ export class Game {
     this.sound.wetRoad = weather.wet;
     this.view.windshield.rain = weather.rain;
     this.spray.wet = weather.rain;
+    this.trafficView.wet = weather.wet ? 0.6 + 0.4 * weather.rain : 0;
     this.view.windshield.onStroke = () => {
       if (this.view.mode === "cockpit") this.sound.wiper();
     };
@@ -753,6 +754,7 @@ export class Game {
     this.world.daylight += (target - this.world.daylight) * Math.min(1, dt * 2);
     this.world.tunnel += ((inTunnel ? 1 : 0) - this.world.tunnel) * Math.min(1, dt * 2);
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
+    this.trafficView.viewGround = this.view.car.position.y;
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
     this.updateSpray(dt, inTunnel);
     this.world.update(this.view.car.position);

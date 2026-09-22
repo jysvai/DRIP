@@ -15,6 +15,37 @@ const MID_CAP = 96;
 const FAR_CAP = 1500;
 const WHEEL_CAP = 700;
 const GLOW_CAPACITY = 8000;
+const REFLECT_CAPACITY = 1500;
+
+/** 젖은 노면에 비친 등화: 등 아래 노면에서 카메라 쪽으로 길게 누운 띠 (화면에서는 세로 줄). 더해서 그린다 */
+function reflectMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vColor;
+      void main() {
+        vUv = uv;
+        vColor = instanceColor;
+        // 노면 굴곡·편경사 때문에 노면 아래로 조금 들어가도 보이게, 같은 시선 위에서 카메라 쪽으로 35cm 당긴다 (화면 위치는 그대로)
+        vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        mv.xyz *= max(0.0, 1.0 - 0.35 / max(0.4, length(mv.xyz)));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vColor;
+      void main() {
+        // 길이: 등 아래에서 곧 밝아졌다가 카메라 쪽으로 옅어진다. 폭: 가운데가 밝다
+        float along = smoothstep(0.0, 0.06, vUv.x) * pow(1.0 - vUv.x, 1.6);
+        float w = (vUv.y - 0.5) * 2.0;
+        float a = along * exp(-w * w * 5.0);
+        gl_FragColor = vec4(vColor * a, 1.0);
+      }`,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+}
 
 /** 밤의 전조등·미등 빛 번짐. 가까우면 크기가 m 단위로, 멀어도 몇 픽셀은 남는다 */
 function glowMaterial(): THREE.ShaderMaterial {
@@ -116,6 +147,17 @@ export class TrafficView {
   private world3 = { e: 0, n: 0, z: 0, heading: 0 };
   private rs = {} as RoadSample;
   private glow: THREE.Points;
+  private reflect: THREE.InstancedMesh;
+  private nr = 0;
+  private rm = new THREE.Matrix4();
+  private rx = new THREE.Vector3();
+  private ry = new THREE.Vector3();
+  private rz = new THREE.Vector3();
+  private rc = new THREE.Color();
+  /** 노면 젖은 정도 0~1 (비·폭우). 밤에 등화가 노면에 길게 비친다 */
+  wet = 0;
+  /** 카메라 아래(내 차) 노면 높이: 반사 띠가 오르막·내리막을 따라 기울게 */
+  viewGround = 0;
   private glowPos = new Float32Array(GLOW_CAPACITY * 3);
   private glowColor = new Float32Array(GLOW_CAPACITY * 3);
   private glowSize = new Float32Array(GLOW_CAPACITY);
@@ -166,6 +208,17 @@ export class TrafficView {
       mat.uniformsNeedUpdate = true;
     };
     world.scene.add(this.glow);
+    // 젖은 노면 반사: 길이 방향 x(0~1), 폭 z(-0.5~0.5)로 누운 판
+    const rg = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0.5, 0, 0);
+    this.reflect = new THREE.InstancedMesh(rg, reflectMaterial(), REFLECT_CAPACITY);
+    this.reflect.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.reflect.setColorAt(0, this.rc.set(0, 0, 0));
+    this.reflect.instanceColor!.setUsage(THREE.DynamicDrawUsage);
+    this.reflect.count = 0;
+    this.reflect.frustumCulled = false;
+    this.reflect.visible = false;
+    this.reflect.renderOrder = 9;
+    world.scene.add(this.reflect);
     // 거울에는 뒤차만 넘긴다 (앞차까지 꼭짓점 계산을 하지 않게)
     world.onMirrorPass((on) => {
       for (const i of this.insts) if (i.n > 0) i.mesh.count = on ? i.nb : i.n;
@@ -221,6 +274,28 @@ export class TrafficView {
     this.glowSize[i] = size;
   }
 
+  /**
+   * 젖은 노면에 비친 등 하나: 등 바로 아래 노면에서 카메라 쪽으로 눕힌 띠. 멀수록, 등이 높을수록 길다.
+   * ground: 그 차 노면 높이, k: 밝기 (색에 곱한다)
+   */
+  private addReflection(p: THREE.Vector3, ground: number, camera: THREE.Vector3, r: number, g: number, b: number, width: number) {
+    if (this.nr >= REFLECT_CAPACITY) return;
+    const dx = camera.x - p.x;
+    const dz = camera.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 3) return;
+    const h = Math.max(0.3, p.y - ground);
+    const len = Math.min(dist * 0.85, (3 + 0.22 * dist) * Math.min(1.6, h / 0.7));
+    // 띠 방향: 등 아래 노면에서 내 차 아래 노면 쪽으로 (기울기 포함). 판의 윗면(+y)이 위를 보게
+    const X = this.rx.set(dx, this.viewGround - ground, dz).normalize();
+    const Y = this.ry.set(0, 1, 0).addScaledVector(X, -X.y).normalize();
+    const Z = this.rz.crossVectors(X, Y);
+    this.rm.makeBasis(X.multiplyScalar(len), Y, Z.multiplyScalar(width)).setPosition(p.x, ground + 0.06, p.z);
+    const i = this.nr++;
+    this.reflect.setMatrixAt(i, this.rm);
+    this.reflect.setColorAt(i, this.rc.setRGB(r, g, b));
+  }
+
   /** 밤: 카메라 쪽을 보는 전조등, 카메라 쪽으로 등을 보이는 미등(제동하면 더 밝게). this.m은 크기 조절 전 행렬 */
   private nightLights(a: Agent, model: VehicleModel, camera: THREE.Vector3, night: number) {
     const e = this.m.elements;
@@ -231,10 +306,12 @@ export class TrafficView {
     const facing = (e[0] * dx + e[1] * dy + e[2] * dz) / dist; // 차 앞쪽이 카메라를 볼수록 1
     const head = Math.min(1, Math.max(0, facing * 4)) * night;
     const tail = Math.min(1, Math.max(0, -facing * 4)) * night;
+    const wet = this.wet * (1 - this.world.tunnel);
     if (head > 0.01) {
       for (const p of model.headLights) {
         this.lp.copy(p).applyMatrix4(this.m);
         this.addGlow(this.lp, 1.0 * head, 0.95 * head, 0.82 * head, 1.5);
+        if (wet > 0) this.addReflection(this.lp, e[13], camera, 0.85 * head * wet, 0.8 * head * wet, 0.7 * head * wet, 0.55);
       }
     }
     if (tail > 0.01) {
@@ -242,6 +319,7 @@ export class TrafficView {
       for (const p of model.brakeLights) {
         this.lp.copy(p).applyMatrix4(this.m);
         this.addGlow(this.lp, 1.0 * tail * k, 0.08 * tail * k, 0.04 * tail * k, a.brake ? 1.1 : 0.75);
+        if (wet > 0) this.addReflection(this.lp, e[13], camera, 1.3 * tail * (0.35 + k) * wet, 0.08 * tail * (0.35 + k) * wet, 0.04 * tail * (0.35 + k) * wet, 0.4);
       }
     }
   }
@@ -312,6 +390,7 @@ export class TrafficView {
     const night = this.world.night > 0.05 ? this.world.night : 0;
     setLampLevels(this.bodyMat, Math.max(night, this.world.tunnel * 0.6), (time * 1.4) % 1);
     this.ng = 0;
+    this.nr = 0;
     const blink = Math.floor(time * 1.6) % 2 === 0;
 
     // 1) 자리와 거리
@@ -415,6 +494,18 @@ export class TrafficView {
     finish(this.wheels.heavy);
     finish(this.far.car);
     finish(this.far.tall);
+
+    const rf = this.reflect;
+    rf.count = this.nr;
+    rf.visible = this.nr > 0;
+    if (this.nr > 0) {
+      rf.instanceMatrix.clearUpdateRanges();
+      rf.instanceMatrix.addUpdateRange(0, this.nr * 16);
+      rf.instanceMatrix.needsUpdate = true;
+      rf.instanceColor!.clearUpdateRanges();
+      rf.instanceColor!.addUpdateRange(0, this.nr * 3);
+      rf.instanceColor!.needsUpdate = true;
+    }
 
     const g = this.glow.geometry;
     g.setDrawRange(0, this.ng);
