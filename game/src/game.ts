@@ -80,6 +80,7 @@ export class Game {
   private autoLane = 0;
   private assistWeight = 0;
   private controls: Controls = { throttle: 0, brake: 0, steer: 0, reverse: false };
+  private legIndex = -1;
 
   constructor(
     app: HTMLElement,
@@ -117,8 +118,8 @@ export class Game {
     this.player.place(road, s0, startLane, startKmh / 3.6);
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
-    const src = road.sourceAt(s0);
-    const tr = trafficFor({ road: { id: src.road }, startKm: src.s / 1000, preset: settings.preset, hour: settings.hour }, cfg);
+    const tr = this.trafficAt(s0);
+    this.legIndex = road.legs.indexOf(road.legAt(s0));
     this.traffic = new Traffic(road, cfg, settings.seed);
     this.traffic.density = Math.max(1, tr.density);
     this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
@@ -181,6 +182,25 @@ export class Game {
       if (document.hidden && this.state === "run") this.pause();
     });
     requestAnimationFrame(this.frame);
+  }
+
+  /** s 위치의 교통량: 원래 주행선과 그 위치로 실제 교통·시간대 교통을 찾는다 */
+  private trafficAt(s: number) {
+    const src = this.road.sourceAt(s);
+    return trafficFor({ road: { id: src.road }, startKm: src.s / 1000, preset: this.settings.preset, hour: this.settings.hour }, this.cfg);
+  }
+
+  /** 경로의 다음 노선으로 넘어가면 그 노선의 교통량으로 바꾼다 (새로 나타나는 차부터 적용) */
+  private updateLegTraffic() {
+    const leg = this.road.legAt(this.player.s);
+    const k = this.road.legs.indexOf(leg);
+    if (k === this.legIndex || this.player.s < leg.s0) return;
+    this.legIndex = k;
+    const tr = this.trafficAt(this.player.s);
+    this.traffic.density = Math.max(1, tr.density);
+    this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
+    this.traffic.setComposition(tr.composition);
+    this.hud.toast(`${leg.name} · ${leg.to} 방향`, 2.5);
   }
 
   playerState(): PlayerState {
@@ -299,6 +319,7 @@ export class Game {
     this.contactCooldown -= dt;
 
     // 교통
+    if (this.road.isRoute) this.updateLegTraffic();
     const ps = this.playerState();
     this.traffic.update(dt, ps, this.t);
     this.collide();

@@ -23,7 +23,7 @@
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | 사고 데이터 1km 집계 → 게임 후보 구간 선정 | 완료 |
-| 2 | 전국 고속도로 운전 게임 + 법규 판정 + 주행 기록 저장 + 실제 교통 수집 | 시험판 공개. 남은 일: 본인 API 키 넣기, 한국 운전 습관 데이터 |
+| 2 | 전국 고속도로 운전 게임 + 법규 판정 + 주행 기록 저장 + 실제 교통 수집 | 시험판 공개. 출발지·도착지 경로 주행, 차종 76가지 운전, 한국 운전 습관(통계 기반) 반영. 남은 일: 본인 API 키 넣기 |
 | 3 | 참가자 모집 → 실제 사고다발구간과 비교 | |
 | 4 | 데이터셋 공개, AI 운전자 비교 | |
 
@@ -33,7 +33,7 @@
 |---|---|
 | `pipeline/` | 데이터 수집·가공 스크립트 (Python) |
 | `game/` | 운전 게임 (Vite + TypeScript + three.js). 사이트의 `/play/`로 배포 |
-| `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`가 만든 것) |
+| `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`)와 도로망 `network.json` (분기점에서 갈아타는 곳 560곳, `pipeline/network.py`) |
 | `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규 (JSON, 코드 수정 없이 바꿀 수 있음. `game/DATA.md` 참고) |
 | `game/public/traffic/latest.json` | 전날 실제 교통 (주행선별 시간대 밀도·속도·차종 구성). `pipeline/traffic_ex.py`가 만든다 |
 | `supabase/` | 주행 기록 DB 스키마 (브라우저 키는 넣기만 가능) |
@@ -48,6 +48,7 @@ python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python pipeline\accident_hotspots.py   # 사고 1km 집계
 .venv\Scripts\python pipeline\osm_roads.py           # 전국 고속도로 주행선 (OSM + 지형)
+.venv\Scripts\python pipeline\network.py             # 주행선을 분기점에서 이어 경로 찾기용 도로망으로
 
 cd game
 npm install
@@ -59,7 +60,15 @@ npm run build
 게임에 기록 저장을 켜려면 `game/.env.local`에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣는다 (publishable 키만. secret 키는 절대 넣지 않는다).
 배포 빌드는 저장소 변수(Settings → Variables)의 같은 이름 값을 쓴다.
 
-검수용 주소: `/play/?road=r1-1&km=20&cam=chase&hour=22&preset=실제&auto=1` 처럼 붙이면 메뉴 없이 바로 시작한다 (`auto=1`은 자동 운전, 이렇게 연 주행은 서버에 올리지 않음).
+## 게임
+
+메뉴에서 출발지·도착지(도시·나들목·분기점)를 넣으면 전국 고속도로망에서 가장 빠른 경로를 찾고, 경로의 주행선들을 분기점 연결로로 이어 하나의 도로로 만든다.
+배속 없이 실제 시간으로 달리며, 위쪽 내비 안내(분기점 거리·차로 안내), 미니맵, 도착 예정 시각을 보고 분기점에서 갈아탄다. 목적지에 닿으면 주행이 끝나고 결과 화면이 나온다.
+차량은 76가지 중에서 고른다. 무게·엔진(가솔린·디젤·대형 디젤·전기)·속도제한장치가 차종마다 다르고, 화물·대형승합은 화물차 제한속도와 지정차로, 버스는 버스전용차로 규칙을 따른다.
+경로 주행 기록의 `s`는 이어 붙인 도로 기준이고, 세션의 `route`(조각별 원래 주행선·위치)로 원래 주행선 위치로 되돌린다 (`compare_hotspots.py`가 자동으로 한다).
+
+검수용 주소: `/play/?road=r1-1&km=20&cam=chase&hour=22&preset=실제&auto=1` 또는 `/play/?from=서울&to=강릉&car=tractor_40ft` 처럼 붙이면 메뉴 없이 바로 시작한다
+(`auto=1`은 자동 운전, 이렇게 연 주행은 서버에 올리지 않음). 조작법은 게임에서 F1.
 
 API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값을 채운다.
 

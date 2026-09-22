@@ -105,12 +105,38 @@ def to_bins(anchors: pd.DataFrame, roads: dict, bins: pd.DataFrame, rid: str, s:
     return pd.concat(parts) if parts else pd.DataFrame(columns=["i", "route", "direction", "km_bin"])
 
 
+def unroute(df: pd.DataFrame) -> pd.DataFrame:
+    """출발지·도착지 경로 주행(route가 있는 세션)의 s를 원래 주행선의 (road_id, s)로 되돌린다.
+    route = [[주행선 id, 경로 s0, s1, 원래 src0, src1, 분기점], ...]. 연결로(조각 사이) 위 기록은 뺀다."""
+    if df.empty or "route" not in df:
+        return df
+    has = df["route"].notna()
+    if not has.any():
+        return df.drop(columns=["route"])
+    out = df[~has].copy()
+    fixed = []
+    for _, g in df[has].groupby("session_id"):
+        legs = g["route"].iloc[0]
+        s = g["s"].to_numpy(float)
+        road = np.full(len(g), None, dtype=object)
+        src = np.full(len(g), np.nan)
+        for rid, s0, s1, a0, _a1, _via in legs:
+            m = (s >= s0) & (s <= s1)
+            road[m] = rid
+            src[m] = a0 + (s[m] - s0)
+        g = g.copy()
+        g["road_id"] = road
+        g["s"] = src
+        fixed.append(g[g["road_id"].notna()])
+    return pd.concat([out, *fixed]).drop(columns=["route"])
+
+
 def load_game(min_seconds: float) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Supabase에서 세션·사건·1초 기록을 읽는다 (서버 전용 DB 연결)."""
     from db import connect
 
     with connect() as c:
-        sessions = pd.read_sql("select id, road_id, started_at from drip_sessions", c)
+        sessions = pd.read_sql("select id, road_id, started_at, route from drip_sessions", c)
         events = pd.read_sql("select session_id, t, type, s, lane, speed_kmh from drip_events", c)
         samples = pd.read_sql("select session_id, t0, columns, data from drip_samples", c)
     rows = []
@@ -120,12 +146,12 @@ def load_game(min_seconds: float) -> tuple[pd.DataFrame, pd.DataFrame]:
             rows.append(dict(zip(cols, row)) | {"session_id": r["session_id"]})
     samp = pd.DataFrame(rows)
     if samp.empty:
-        return events.merge(sessions, left_on="session_id", right_on="id"), samp
+        return unroute(events.merge(sessions, left_on="session_id", right_on="id")), samp
     dur = samp.groupby("session_id").size()
     good = dur[dur >= min_seconds].index
     samp = samp[samp["session_id"].isin(good)].merge(sessions, left_on="session_id", right_on="id")
     events = events[events["session_id"].isin(good)].merge(sessions, left_on="session_id", right_on="id")
-    return events, samp
+    return unroute(events), unroute(samp)
 
 
 def main() -> None:

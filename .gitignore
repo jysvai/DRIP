@@ -7,3 +7,6 @@ __pycache__/
 data/raw/
 
 _archive/
+
+# Claude Code 작업 공간
+.claude/worktrees/
