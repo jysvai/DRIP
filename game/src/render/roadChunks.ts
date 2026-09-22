@@ -7,6 +7,7 @@ import { arrowBoardTexture, enforcementSigns, planSigns, workZoneSigns, type Sig
 import { coneLine, END_TAPER_M, type WorkZone } from "../sim/workzones";
 import type { Enforcement } from "../sim/cameras";
 import { incidentBlockS, incidentVehicleS, type Incident } from "../sim/incidents";
+import { iceAt, type IcePatch } from "../sim/ice";
 import type { World } from "./world";
 
 export const CHUNK = 200;
@@ -211,6 +212,7 @@ export class RoadChunks {
   private arrowMats = new Map<string, THREE.MeshBasicMaterial>();
   /** 돌발상황: 안전삼각대, 밤에는 불꽃신호, 대피했거나 차 옆에 선 사람 */
   private incidents: Incident[] = [];
+  private ice: IcePatch[] = [];
   private incidentNight = false;
   private triangleGeo = makeTriangleGeometry();
   private personGeo = makePersonGeometry();
@@ -264,6 +266,12 @@ export class RoadChunks {
     }
   }
 
+  /** 새벽 결빙: 언 곳 노면에 얇은 얼음막 (조금 어둡고 반들거린다). 조각을 만들기 전에 부른다 */
+  setIce(patches: IcePatch[], sky: THREE.Texture | null) {
+    this.ice = patches;
+    (this.mats.ice as THREE.MeshStandardMaterial).envMap = sky;
+  }
+
   /** 단속 카메라와 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setEnforcement(e: Enforcement) {
     this.enforcement = e;
@@ -292,6 +300,7 @@ export class RoadChunks {
       terrain: new THREE.MeshStandardMaterial({ vertexColors: true, map: grass, roughness: 1, metalness: 0, side: THREE.DoubleSide }),
       tunnel: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide }),
       lamp: new THREE.MeshBasicMaterial({ color: 0xfff1cf, side: THREE.DoubleSide }),
+      ice: new THREE.MeshStandardMaterial({ color: 0x1c2126, roughness: 0.12, metalness: 0, transparent: true, opacity: 0.32, envMapIntensity: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
       tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
       post: new THREE.MeshStandardMaterial({ color: 0x8e9396, roughness: 0.5, metalness: 0.6 }),
       cone: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }),
@@ -455,6 +464,9 @@ export class RoadChunks {
     laned(asphaltOpp, -1);
     strip(surface, (_, L) => L.oppShoulder, (_, L) => L.oppOuter, 0, shoulderCol);
     strip(surface, (_, L) => L.oppInner, (_, L) => L.oppInner + 1.4, 0.001, shoulderCol, (r) => !inTunnel(r));
+    // 새벽 결빙: 우리 쪽 노면(차로+갓길)에 얇은 얼음막
+    const iceGeo = new Geo();
+    if (this.ice.some((p) => p.s1 > s0 && p.s0 < s1)) strip(iceGeo, (_, L) => L.ourL, (_, L) => L.shoulderR, 0.003, shoulderCol, (r) => !iceAt(this.ice, r.s));
 
     // ---- 차선 ----
     const white = new THREE.Color(0xf2f2ee);
@@ -712,6 +724,7 @@ export class RoadChunks {
       group.add(m);
     };
     add(surface, this.mats.surface, { cast: false, receive: true });
+    add(iceGeo, this.mats.ice, { cast: false, receive: true });
     add(marks, this.mats.marks, { cast: false, receive: true });
     add(concrete, this.mats.concrete, { cast: true, receive: true });
     add(metal, this.mats.metal, { cast: true, receive: true });

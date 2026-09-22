@@ -218,6 +218,8 @@ kbd { display: inline-grid; place-items: center; min-width: 24px; height: 24px; 
 .hud2 .enf.incident svg, .hud2 .enf.incident b { color: #ff7a5c; }
 .hud2 .enf.section b, .hud2 .enf.section svg { color: #7cb8ff; }
 .hud2 .enf.work { border-color: rgba(242, 138, 30, 0.8); }
+.hud2 .enf.ice { border-color: rgba(140, 200, 255, 0.75); }
+.hud2 .enf.ice b, .hud2 .enf.ice svg { color: #9fd3ff; }
 .hud2 .enf.work b, .hud2 .enf.work svg { color: #ffa24d; }
 .hud2 .nav-lanes i.closed { color: #ff8a3d; background: rgba(242, 138, 30, 0.18); }
 .hud2 .enf.over { border-color: #ff5a4e; box-shadow: 0 0 0 3px rgba(255, 90, 78, 0.25); }

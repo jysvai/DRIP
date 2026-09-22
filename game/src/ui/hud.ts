@@ -7,6 +7,7 @@ import type { Network } from "../road/route";
 import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
 import { zoneLimit, type WorkZone } from "../sim/workzones";
+import { nextIceWarning } from "../sim/ice";
 import { incidentBlockS, type Incident } from "../sim/incidents";
 
 export interface HudFrame {
@@ -56,6 +57,8 @@ export interface HudOptions {
   workZones?: WorkZone[];
   /** 돌발상황 (고장·사고로 선 차). 실제 내비처럼 1km 앞에서 알린다 */
   incidents?: Incident[];
+  /** 새벽 결빙: 긴 다리 앞마다 결빙주의 안내 (실제 도로의 결빙주의 표지·전광판처럼, 얼었는지와 상관없이) */
+  iceWarn?: boolean;
   /** 악천후 감속: 날씨 이름과 법정 감속 배율 (weather.legalFactor) */
   weather?: { label: string; factorAt: (s: number) => number };
 }
@@ -203,6 +206,7 @@ export class Hud {
   private enfEl: HTMLDivElement;
   private lastSection: { avgKmh: number } | null = null;
   private chimeTimer = 0;
+  private iceSaidS = -1e9;
   /** 남은 경로를 제한속도로 달리는 데 걸리는 시간 (1km 간격, 끝에서부터 누적) */
   private etaTable: Float32Array;
   private netLines: { pts: Float32Array; box: [number, number, number, number] }[] = [];
@@ -405,6 +409,7 @@ export class Hud {
     }
     this.lastSection = sec;
     const work = (this.opts.workZones ?? []).find((z) => z.s1 > s && z.s0 - s < 2000);
+    let ice: ReturnType<typeof nextIceWarning> = null;
     // 돌발상황이 1km 안이면 다른 안내보다 먼저
     const inc = (this.opts.incidents ?? []).find((i) => i.s + 20 > s && incidentBlockS(i) - s < 1000);
     if (inc) {
@@ -417,6 +422,16 @@ export class Hud {
       if (dist > 50) this.sayOnce(`inc|${Math.round(inc.s)}`, `${spokenDist(dist)} 앞 ${where} ${inc.kind === "crash" ? "사고 차량" : "고장 차량"}이 서 있습니다. 주의하세요.`);
       if (dist <= 300 && dist > 0 && inLane) this.sayOnce(`inc-near|${Math.round(inc.s)}`, "앞에 멈춘 차가 있습니다. 옆 차로로 옮기세요.");
       warn = inLane && dist < 300;
+    } else if (!sec && this.opts.iceWarn && (ice = nextIceWarning(this.road, s, 500))) {
+      const dist = Math.max(0, ice.s0 - s);
+      cls = "ice";
+      icon = WARN_ICON;
+      html = `<b>결빙 주의</b> ${ice.name || "교량"} · ${dist > 0 ? fmtDist(dist) : "통과 중"}`;
+      // 말로는 8km에 한 번만 (긴 다리는 몇 km마다 나온다)
+      if (dist > 100 && s - this.iceSaidS > 8000) {
+        this.iceSaidS = s;
+        this.opts.say?.(`전방 ${ice.name || "교량"} 결빙 주의 구간입니다. 다리 위는 먼저 얼어 있을 수 있습니다.`);
+      }
     } else if (!sec && work && (!enf || !enf.fixed.some((c) => c.s > s && c.s < work.s0))) {
       const dist = work.s0 - s;
       const inLane = f.lane === work.lane;

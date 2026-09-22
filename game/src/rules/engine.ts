@@ -7,6 +7,7 @@ import type { Enforcement, EnforcementSection } from "../sim/cameras";
 import { designatedLanes, type Rules } from "../sim/config";
 import { zoneLimit, type WorkZone } from "../sim/workzones";
 import { incidentBlockS, type Incident } from "../sim/incidents";
+import { iceAt, type IcePatch } from "../sim/ice";
 import type { Agent, BusLaneZone } from "../sim/traffic";
 
 export type EventType =
@@ -27,6 +28,7 @@ export type EventType =
   | "section_speeding"
   | "work_zone_merge"
   | "incident_pass"
+  | "ice_pass"
   | "near_miss"
   | "crash";
 
@@ -58,6 +60,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   section_speeding: "구간단속 평균속도 초과",
   work_zone_merge: "공사 구간 앞 합류",
   incident_pass: "고장·사고 차량 옆 통과",
+  ice_pass: "결빙 구간(블랙아이스) 통과",
   near_miss: "아차사고",
   crash: "충돌",
 };
@@ -133,6 +136,9 @@ export class RuleEngine {
   private criticalSince = -1;
   private lane1Start = -1;
   private busLaneOn = false;
+  /** 새벽 결빙 구간 (날씨가 black_ice일 때). 지날 때마다 들어갈 때·가장 빠를 때·나올 때 속도를 남긴다 */
+  ice: IcePatch[] = [];
+  private onIce: { p: IcePatch; entry: number; max: number; lane: number } | null = null;
   private lastLane = 0;
   private signalDir: -1 | 0 | 1 = 0;
   private signalDist = 0;
@@ -220,6 +226,18 @@ export class RuleEngine {
   }
 
   /** 선 차 옆을 지나는 순간: 속도, 옆 간격, 막힌 차로에서 빠져나온 거리 (2차사고 위험 행동 분석용) */
+  private checkIce(f: PlayerFrame, lane: number, kmh: number) {
+    if (!this.ice.length) return;
+    const p = iceAt(this.ice, f.s);
+    const on = this.onIce;
+    if (on && on.p !== p) {
+      this.emit(f, "ice_pass", { kind: on.p.kind, lengthM: Math.round(on.p.s1 - on.p.s0), entryKmh: Math.round(on.entry), maxKmh: Math.round(on.max), exitKmh: Math.round(kmh) }, on.lane);
+      this.onIce = null;
+    }
+    if (p && !this.onIce) this.onIce = { p, entry: kmh, max: kmh, lane };
+    if (this.onIce) this.onIce.max = Math.max(this.onIce.max, kmh);
+  }
+
   private checkIncidents(f: PlayerFrame, lane: number, kmh: number, limit: number) {
     const prev = this.lastIncS;
     this.lastIncS = f.s;
@@ -400,6 +418,7 @@ export class RuleEngine {
     }
     if (lane >= 1 && lane <= lanes) this.lastLane = lane;
     this.checkIncidents(f, lane, kmh, limit);
+    this.checkIce(f, lane, kmh);
 
     // ---- 갓길 ----
     if (r.shoulder.enabled) {

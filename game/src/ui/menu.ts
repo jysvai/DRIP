@@ -452,6 +452,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
               ["fog", "짙은 안개"],
               ["snow", "눈"],
               ["heavy_snow", "폭설"],
+              ["black_ice", "새벽 결빙"],
               ...(realWeather ? ([["real", `실제 (${realWeather.date.slice(4, 6)}/${realWeather.date.slice(6)} 같은 시각)`]] as [WeatherChoice, string][]) : []),
             ],
             weather,

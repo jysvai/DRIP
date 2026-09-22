@@ -1,10 +1,10 @@
-// 날씨: 맑음·흐림·비·폭우·안개·눈·폭설. 가시거리(안개), 노면 마찰(물리), 법정 감속(판정), 주변 차의 반응(교통)을 한곳에서 정한다.
+// 날씨: 맑음·흐림·비·폭우·안개·눈·폭설·새벽 결빙. 가시거리(안개), 노면 마찰(물리), 법정 감속(판정), 주변 차의 반응(교통)을 한곳에서 정한다.
 // 기상청 실황을 붙이기 전까지는 메뉴에서 고른다.
 
 import type { Road } from "../road/road";
 import type { Rules, WeatherResponse } from "./config";
 
-export type WeatherKind = "clear" | "cloudy" | "rain" | "heavy_rain" | "fog" | "snow" | "heavy_snow";
+export type WeatherKind = "clear" | "cloudy" | "rain" | "heavy_rain" | "fog" | "snow" | "heavy_snow" | "black_ice";
 /** 메뉴에서 고르는 날씨: 직접 고르거나 실제(어제 같은 시각, weather/latest.json) */
 export type WeatherChoice = WeatherKind | "real";
 
@@ -26,6 +26,8 @@ export interface Weather {
    *  눈은 가정: 다져진 눈길 마찰은 마른 노면의 약 1/3. 같은 공단 빙판길 시험(30km/h 제동거리 승용 7.0배, 화물 4.6배, 버스 4.9배)보다는 덜 미끄럽다 */
   grip: number;
   gripHeavy: number;
+  /** 새벽 결빙: 맑지만 다리 위·터널 출구 뒤가 군데군데 언다 (sim/ice.ts). 얼음 위 말고는 마른 노면 */
+  ice?: boolean;
 }
 
 export const WEATHERS: Record<WeatherKind, Weather> = {
@@ -37,6 +39,8 @@ export const WEATHERS: Record<WeatherKind, Weather> = {
   // 눈: 20mm 미만 쌓인 노면(20% 감속). 폭설: 가시거리 100m 이내(50% 감속)
   snow: { kind: "snow", label: "눈", visibilityM: 400, overcast: 0.95, rain: 0, snow: 0.55, wet: true, grip: 0.33, gripHeavy: 0.4 },
   heavy_snow: { kind: "heavy_snow", label: "폭설", visibilityM: 90, overcast: 1, rain: 0, snow: 1, wet: true, grip: 0.28, gripHeavy: 0.34 },
+  // 새벽 결빙(블랙아이스): 법정 감속은 '노면이 얼어붙은 경우' 50%지만 보이지 않는 얼음이라 전 구간 감속으로 판정하지 않는다
+  black_ice: { kind: "black_ice", label: "새벽 결빙", visibilityM: 20000, overcast: 0.1, rain: 0, snow: 0, wet: false, grip: 1, gripHeavy: 1, ice: true },
 };
 
 export const WEATHER_KINDS = Object.keys(WEATHERS) as WeatherKind[];
@@ -78,7 +82,7 @@ export interface RealWeatherData {
   roads: Record<string, [number, string][]>;
 }
 
-const REAL_CODES: Record<string, WeatherKind> = { c: "clear", o: "cloudy", r: "rain", h: "heavy_rain", f: "fog", s: "snow", S: "heavy_snow" };
+const REAL_CODES: Record<string, WeatherKind> = { c: "clear", o: "cloudy", r: "rain", h: "heavy_rain", f: "fog", s: "snow", S: "heavy_snow", i: "black_ice" };
 
 /** 실제 날씨: 출발 위치(원래 주행선·위치)에서 가장 가까운 지점의 그 시각 날씨 */
 export function realWeatherAt(data: RealWeatherData | null, road: Road, s: number, hour: number): { weather: Weather; stamp: string } | null {

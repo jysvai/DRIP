@@ -230,3 +230,22 @@ describe("돌발상황", () => {
     expect(ev[0].detail.sideGapM).toBeLessThan(2.5);
   });
 });
+
+describe("새벽 결빙", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ lanes: 2, speed: 100 });
+
+  it("언 곳을 지나면 들어갈 때·가장 빠를 때·나올 때 속도를 남긴다 (위반은 아니다)", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.ice = [{ s0: 1500, s1: 1800, kind: "bridge" }];
+    // 90km/h로 들어가 얼음 위에서 70km/h까지 줄인다
+    drive(e, (t) => ({ s: t < 20 ? 1000 + t * 25 : 1500 + (t - 20) * 19.4, speed: t < 20 ? 25 : 19.4, d: road.laneCenter(2, 1000) }), 40);
+    const ev = e.events.filter((x) => x.type === "ice_pass");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].detail).toMatchObject({ kind: "bridge", lengthM: 300 });
+    expect(ev[0].detail.entryKmh).toBeGreaterThanOrEqual(70);
+    expect(ev[0].detail.maxKmh).toBeGreaterThanOrEqual(ev[0].detail.exitKmh as number);
+    expect(ev[0].detail.exitKmh).toBe(70);
+    expect(e.summary.counts.ice_pass).toBe(1);
+  });
+});

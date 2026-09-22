@@ -5,6 +5,7 @@ r"""노선별 시간대 날씨 (Open-Meteo, 키 없음) → game/public/weather/
 
 주행선마다 시작점부터 40km 간격(끝점 포함)으로 지점을 잡는다. 시간마다 한 글자:
   c 맑음 · o 흐림(구름 70% 이상) · r 비(강수 0.1mm/h 이상) · h 폭우(20mm/h 이상) · f 안개(WMO 45·48) · s 눈 · S 폭설(1cm/h 이상, WMO 75·86)
+  i 새벽 결빙: 비·눈이 오지 않는데 기온 1°C 이하이고, 그날 앞선 12시간 안에 비·눈이 왔거나 습도 90% 이상 (다리 위·터널 출구가 언다고 본다)
 
 실행: .venv\Scripts\python pipeline\weather_om.py [--date YYYYMMDD]
 자료: Open-Meteo.com (CC BY 4.0), 기상 모델 재분석·예보 값이라 관측소 실측과 다를 수 있다.
@@ -42,6 +43,9 @@ FOG_CODES = {45, 48}
 SNOW_CODES = {71, 73, 75, 77, 85, 86}
 HEAVY_SNOW_CODES = {75, 86}
 HEAVY_SNOW_CM = 1.0
+ICE_TEMP_C = 1.0
+ICE_HUMID = 90
+ICE_LOOKBACK_H = 12
 
 
 def code(wmo: int | None, precip: float | None, snow: float | None, cloud: float | None) -> str:
@@ -61,6 +65,18 @@ def code(wmo: int | None, precip: float | None, snow: float | None, cloud: float
     if float(cloud or 0) >= 70:
         return "o"
     return "c"
+
+
+def with_ice(hours: str, temp: list, humid: list, precip: list) -> str:
+    """비·눈이 오지 않는 시간 중 결빙 조건이면 i로 바꾼다"""
+    out = list(hours)
+    for k, c in enumerate(hours):
+        if c not in "cof" or temp[k] is None or float(temp[k]) > ICE_TEMP_C:
+            continue
+        wet_before = any(float(p or 0) >= RAIN_MM for p in precip[max(0, k - ICE_LOOKBACK_H) : k])
+        if wet_before or float(humid[k] or 0) >= ICE_HUMID:
+            out[k] = "i"
+    return "".join(out)
 
 
 def sample_points(lines: list[Line]) -> list[tuple[str, int, float, float]]:
@@ -93,7 +109,7 @@ def fetch(points: list[tuple[str, int, float, float]], date: str) -> list[dict]:
         q = {
             "latitude": ",".join(str(p[2]) for p in chunk),
             "longitude": ",".join(str(p[3]) for p in chunk),
-            "hourly": "weather_code,precipitation,snowfall,cloud_cover",
+            "hourly": "weather_code,precipitation,snowfall,cloud_cover,temperature_2m,relative_humidity_2m",
             "start_date": day,
             "end_date": day,
             "timezone": "Asia/Seoul",
@@ -129,6 +145,7 @@ def main() -> None:
     for (rid, s, _, _), r in zip(points, results):
         h = r["hourly"]
         hours = "".join(code(*v) for v in zip(h["weather_code"], h["precipitation"], h["snowfall"], h["cloud_cover"]))
+        hours = with_ice(hours, h["temperature_2m"], h["relative_humidity_2m"], h["precipitation"])
         roads.setdefault(rid, []).append([s, hours])
         for c in hours:
             counts[c] = counts.get(c, 0) + 1
@@ -138,7 +155,7 @@ def main() -> None:
             {
                 "source": "Open-Meteo.com (CC BY 4.0)",
                 "date": date,
-                "codes": {"c": "clear", "o": "cloudy", "r": "rain", "h": "heavy_rain", "f": "fog", "s": "snow", "S": "heavy_snow"},
+                "codes": {"c": "clear", "o": "cloudy", "r": "rain", "h": "heavy_rain", "f": "fog", "s": "snow", "S": "heavy_snow", "i": "black_ice"},
                 "roads": roads,
             },
             ensure_ascii=False,

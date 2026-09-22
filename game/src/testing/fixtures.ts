@@ -9,7 +9,7 @@ import type { DriverProfiles, GameConfig, Rules, TrafficDefaults } from "../sim/
 import type { VehicleCatalog } from "../render/vehicleModels";
 
 /** 동쪽으로 곧게 뻗은 길. curveFrom 뒤로는 반지름 radius로 왼쪽으로 굽는다 */
-export function makeRoad(opts: { length?: number; lanes?: number; speed?: number; tunnel?: [number, number]; curveFrom?: number; radius?: number; junctions?: [number, string, string][]; ref?: string; from?: string; to?: string } = {}): Road {
+export function makeRoad(opts: { length?: number; lanes?: number; speed?: number; tunnel?: [number, number]; bridges?: [number, number][]; curveFrom?: number; radius?: number; junctions?: [number, string, string][]; ref?: string; from?: string; to?: string } = {}): Road {
   const length = opts.length ?? 5000;
   const step = 10;
   const n = Math.round(length / step) + 1;
@@ -37,7 +37,8 @@ export function makeRoad(opts: { length?: number; lanes?: number; speed?: number
     qy = ny;
   }
   const structure: [number, number][] = [[0, 0]];
-  if (opts.tunnel) structure.push([opts.tunnel[0], 1], [opts.tunnel[1], 0]);
+  const spans: [number, number, number][] = [...(opts.tunnel ? [[opts.tunnel[0], opts.tunnel[1], 1] as [number, number, number]] : []), ...(opts.bridges ?? []).map(([a, b]) => [a, b, 2] as [number, number, number])];
+  for (const [a, b, k] of spans.sort((x, y) => x[0] - y[0])) structure.push([a, k], [b, 0]);
   const f: RoadFile = {
     id: "test",
     ref: opts.ref ?? "1",

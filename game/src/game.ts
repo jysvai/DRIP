@@ -6,6 +6,7 @@ import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
 import { PlayerView, CAMERA_LABELS, type CameraMode } from "./render/playerView";
 import { SprayView, type SpraySource } from "./render/spray";
+import { ICE_GRIP, iceAt, planIce, type IcePatch } from "./sim/ice";
 import { TrafficView } from "./render/trafficView";
 import { World } from "./render/world";
 import { WeatherView } from "./render/weather";
@@ -61,6 +62,8 @@ export class Game {
   readonly traffic: Traffic;
   readonly view: PlayerView;
   readonly trafficView: TrafficView;
+  /** 새벽 결빙: 언 곳 (날씨가 black_ice일 때만) */
+  readonly ice: IcePatch[];
   /** 비 오는 날 차들이 튀기는 물보라 */
   readonly spray: SprayView;
   private spraySources: SpraySource[] = [];
@@ -140,10 +143,15 @@ export class Game {
     const type = setup.vehicle;
     this.spec = specFor(type);
     this.player = new PlayerCar(this.spec);
-    // 젖은 노면은 미끄럽다 (터널 안은 마른 노면)
+    // 젖은 노면은 미끄럽다 (터널 안은 마른 노면). 새벽 결빙이면 언 곳만 아주 미끄럽다
     const heavyGrip = this.spec.vehicleClass !== "car";
-    this.player.grip = (kmh) => (road.structureAt(this.player.s) === Structure.Tunnel ? 1 : gripAt(weather, kmh, heavyGrip));
     const s0 = Math.max(60, Math.min(setup.finishS - 400, setup.startS));
+    this.ice = weather.ice ? planIce(road, { seed: settings.seed, startS: s0, finishS: setup.finishS }) : [];
+    this.player.grip = (kmh) => {
+      const s = this.player.s;
+      if (this.ice.length && iceAt(this.ice, s)) return heavyGrip ? ICE_GRIP.heavy : ICE_GRIP.car;
+      return road.structureAt(s) === Structure.Tunnel ? 1 : gripAt(weather, kmh, heavyGrip);
+    };
     const lanes = road.lanesAt(s0);
     // 화물·대형승합은 지정차로(오른쪽)에서 출발
     const startLane = this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
@@ -167,6 +175,7 @@ export class Game {
     }
     this.chunks.setWorkZones(this.workZones);
     this.chunks.setIncidents(this.incidents, night);
+    if (this.ice.length) this.chunks.setIce(this.ice, this.weatherView.roadEnvironment());
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
     const tr = this.trafficAt(s0);
@@ -210,6 +219,7 @@ export class Game {
       enforcement: this.enforcement,
       workZones: this.workZones,
       incidents: this.incidents,
+      iceWarn: !!weather.ice,
       weather: { label: weather.label, factorAt: (s) => this.rules.weatherFactorAt(s) },
       chime: () => this.sound.chime(),
     });
@@ -224,6 +234,7 @@ export class Game {
     this.rules.enforcement = this.enforcement;
     this.rules.workZones = this.workZones;
     this.rules.incidents = this.incidents;
+    this.rules.ice = this.ice;
     this.rules.weatherFactor = legalFactor(weather, cfg.rules);
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
@@ -346,6 +357,8 @@ export class Game {
   /** 출발 안내에 넣을 날씨 설명 */
   private weatherNote(cut: number): string {
     const w = this.weather;
+    if (w.ice)
+      return "새벽 결빙: 맑지만 다리 위와 터널을 나온 뒤 그늘이 군데군데 얼어 있습니다. 젖은 것처럼 조금 어둡게 반들거릴 뿐 잘 보이지 않습니다. 얼음 위에서는 제동거리가 약 7배로 늘어납니다. 긴 다리 앞에는 결빙 주의 안내가 나옵니다.";
     if (w.kind === "clear" || w.kind === "cloudy") return "";
     const why = w.visibilityM <= 100 ? `${w.label}로 앞이 ${w.visibilityM}m 정도밖에 보이지 않습니다` : w.snow > 0 ? "눈이 내려 노면에 눈이 쌓이고 있습니다" : `${w.label}가 내려 노면이 젖어 있습니다`;
     const grip = w.wet ? ` 노면이 미끄러워 제동거리가 약 ${(1 / w.grip).toFixed(1)}배로 늘어납니다.` : "";
