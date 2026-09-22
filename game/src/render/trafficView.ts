@@ -217,15 +217,28 @@ export class TrafficView {
     this.m.compose(this.p, this.q, this.sv.set(1, 1, 1));
   }
 
-  /** 서스펜션: 가감속에 앞뒤로, 곡선·차로 변경에 좌우로 조금 기운다 (용수철-감쇠) */
-  private motion(a: Agent, pool: Pool): Vis {
+  /** 차마다 남기는 보이는 상태 (색·서스펜션) */
+  private visOf(a: Agent): Vis {
     let v = this.vis.get(a);
     if (!v) {
       v = { t: -1, spin: Math.random() * 6, pitch: 0, pv: 0, roll: 0, rv: 0, yaw: a.yaw, steer: 0, color: new THREE.Color(a.color), colorKey: a.color };
       this.vis.set(a, v);
     }
+    if (v.colorKey !== a.color) {
+      v.color.set(a.color);
+      v.colorKey = a.color;
+    }
+    return v;
+  }
+
+  /** 서스펜션: 가감속에 앞뒤로, 곡선·차로 변경에 좌우로 조금 기운다 (용수철-감쇠). 가까운 차만 */
+  private motion(a: Agent, pool: Pool): Vis {
+    const v = this.visOf(a);
     const dt = this.dt;
     if (dt <= 0) return v;
+    // 한동안 멀리 있다가 다가온 차는 방향 변화를 새로 잰다
+    if (this.lastTime - v.t > 0.25) v.yaw = a.yaw;
+    v.t = this.lastTime;
     const speed = Math.max(a.v, 0.5);
     const yawRate = (a.yaw - v.yaw) / dt;
     v.yaw = a.yaw;
@@ -242,10 +255,6 @@ export class TrafficView {
     v.steer += (Math.max(-0.5, Math.min(0.5, pool.wb * kPath * 1.1)) - v.steer) * Math.min(1, dt * 6);
     // 바퀴살이 거꾸로 도는 것처럼 보이지 않게 한 프레임에 0.5rad까지만
     v.spin += Math.min(0.5, (a.v * dt) / pool.r0);
-    if (v.colorKey !== a.color) {
-      v.color.set(a.color);
-      v.colorKey = a.color;
-    }
     return v;
   }
 
@@ -275,11 +284,20 @@ export class TrafficView {
       this.tmp.setFromMatrixPosition(this.m);
       const d2 = this.tmp.distanceToSquared(camera);
       if (d2 > draw * draw) return;
-      const vis = this.motion(a, pool);
       if (night) this.nightLights(a, pool.model, camera, night);
       const sigL = (a.hazard || a.signal < 0) && blink ? 1 : 0;
       const sigR = (a.hazard || a.signal > 0) && blink ? 1 : 0;
       const brake = a.brake ? 1 : 0;
+      if (d2 >= mid2) {
+        // 먼 차: 공용 모양, 기울기 없이
+        const t = a.type;
+        const far = t.length > 6 ? this.far.tall : this.far.car;
+        if (far.n >= far.cap) return;
+        this.bm.copy(this.m).scale(this.sv.set(a.len, t.height, a.width));
+        this.put(far, this.bm, t.category === "화물" ? this.color.set(0x9aa0a6) : this.visOf(a).color, brake, sigL, sigR);
+        return;
+      }
+      const vis = this.motion(a, pool);
       // 차체 행렬: 바퀴 축 높이를 중심으로 기울인다
       this.e.set(vis.roll, 0, vis.pitch, "YZX");
       this.q.setFromEuler(this.e);

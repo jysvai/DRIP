@@ -22,6 +22,7 @@ import {
   profile,
   surfacePoint,
   util,
+  type Proj,
   type Surf,
   type YZ,
 } from "./vehicleGeom";
@@ -368,6 +369,31 @@ function makeSection(P: Profile) {
 /** 중간 거리용: 단면 점 일부만 */
 const MID_KEEP = [0, 1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 14, 15];
 
+/**
+ * 무늬(등화·그릴 등)를 두 번 붙인다: 가까이서 보는 몸체(b.m)에는 곱게,
+ * 중간 거리 몸체(b.mid)에는 덜 쪼개서 (중간 거리 차가 많을 때 삼각형을 아낀다)
+ */
+function dual(b: VB, body: Loft) {
+  return {
+    poly(proj: Proj, pts: Pt[], s: Surf, off = 0.01, lv = 1) {
+      decalPoly(b.m, body, proj, pts, s, off, lv);
+      decalPoly(b.mid, body, proj, pts, s, off, Math.max(0, lv - 1));
+    },
+    polyPair(proj: Proj, pts: Pt[], s: Surf | [Surf, Surf], off = 0.012, lv = 1) {
+      decalPolyPair(b.m, body, proj, pts, s, off, lv);
+      decalPolyPair(b.mid, body, proj, pts, s, off, Math.max(0, lv - 1));
+    },
+    strip(proj: Proj, line: Pt[], w: number, s: Surf, off = 0.008, seg = 0.06) {
+      decalStrip(b.m, body, proj, line, w, s, off, seg);
+      decalStrip(b.mid, body, proj, line, w, s, off, seg * 3);
+    },
+    stripPair(proj: Proj, line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.008, seg = 0.06) {
+      decalStripPair(b.m, body, proj, line, w, s, off, seg);
+      decalStripPair(b.mid, body, proj, line, w, s, off, seg * 3);
+    },
+  };
+}
+
 // ---------- 승용차 ----------
 
 interface CarShape {
@@ -675,11 +701,11 @@ function buildCar(t: VehicleType, b: VB) {
 
   // 중간 거리 몸체
   const midSt: number[] = [];
-  for (const d of [0, 0.012, 0.05, 0.12, 0.25]) midSt.push(xF - d, -xF + d);
+  for (const d of [0, 0.02, 0.1, 0.25]) midSt.push(xF - d, -xF + d);
   midSt.push(X(fh * 0.6), X(fh), X((fh + fRF) / 2), X(fRF), X(fRR), xB + 0.045, xB - 0.045, X((fRR + fGR) / 2), X(fGR), X(lerp(fGR, 1, 0.45)));
   if (six) midSt.push(xCb + 0.035, xCb - 0.035);
   else midSt.push(xC(J.G2));
-  archSt(midSt, [45, 90, 135]);
+  archSt(midSt, [60, 120]);
   new Loft({
     stations: midSt,
     section: (x) => {
@@ -695,11 +721,12 @@ function buildCar(t: VehicleType, b: VB) {
   const yF0 = top(0.2 / L);
   const yL = yF0 - 0.075;
   const core = b.core;
+  const D = dual(b, body);
   const plateY = st.grille === "crest" ? yb + 0.17 : yb + 0.24;
   const sigR = S.sigR;
   const sigL = S.sigL;
-  const lampPair = (pts: Pt[], s: Surf, off = 0.014, lv = 2) => decalPolyPair(core, body, "front", pts, s, off, lv);
-  const stripPair = (line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.016) => decalStripPair(core, body, "front", line, w, s, off);
+  const lampPair = (pts: Pt[], s: Surf, off = 0.014, lv = 2) => D.polyPair("front", pts, s, off, lv);
+  const stripPair = (line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.016) => D.stripPair("front", line, w, s, off);
   switch (st.front) {
     case "slim":
       lampPair([[0.4 * W2, yL - 0.035], [0.93 * W2, yL - 0.022], [1.0 * W2, yL + 0.035], [0.44 * W2, yL + 0.03]], S.headHousing);
@@ -727,8 +754,8 @@ function buildCar(t: VehicleType, b: VB) {
       break;
     case "round":
       lampPair(circle(0.7 * W2, yL, 0.085, 0.085, 14), S.headHousing, 0.014, 2);
-      decalStripPair(core, body, "front", closeLoop(circle(0.7 * W2, yL, 0.088, 0.088, 14)), 0.014, S.chrome, 0.016, 0.04);
-      decalStripPair(core, body, "front", closeLoop(circle(0.7 * W2, yL, 0.055, 0.055, 12)), 0.012, S.drl, 0.018, 0.04);
+      D.stripPair("front", closeLoop(circle(0.7 * W2, yL, 0.088, 0.088, 14)), 0.014, S.chrome, 0.016, 0.04);
+      D.stripPair("front", closeLoop(circle(0.7 * W2, yL, 0.055, 0.055, 12)), 0.012, S.drl, 0.018, 0.04);
       stripPair([[0.6 * W2, yL - 0.12], [0.8 * W2, yL - 0.12]], 0.018, [sigR, sigL]);
       break;
     case "split":
@@ -742,8 +769,8 @@ function buildCar(t: VehicleType, b: VB) {
   // 그릴
   const gTop = st.front === "split" || st.front === "bar" ? yL - 0.005 : yL + 0.01;
   const gBot = plateY + 0.075;
-  const frontPoly = (pts: Pt[], s: Surf, off = 0.01, lv = 1) => decalPoly(core, body, "front", pts, s, off, lv);
-  const frontStrip = (line: Pt[], w: number, s: Surf, off = 0.014) => decalStrip(core, body, "front", line, w, s, off);
+  const frontPoly = (pts: Pt[], s: Surf, off = 0.01, lv = 1) => D.poly("front", pts, s, off, lv);
+  const frontStrip = (line: Pt[], w: number, s: Surf, off = 0.014) => D.strip("front", line, w, s, off);
   switch (st.grille) {
     case "wide": {
       const g: Pt[] = [[-0.36 * W2, gTop], [0.36 * W2, gTop], [0.44 * W2, (gTop + gBot) / 2], [0.4 * W2, gBot], [-0.4 * W2, gBot], [-0.44 * W2, (gTop + gBot) / 2]];
@@ -805,7 +832,7 @@ function buildCar(t: VehicleType, b: VB) {
       frontPoly([[-0.46 * W2, yb + 0.07], [0.46 * W2, yb + 0.07], [0.4 * W2, yb + 0.17], [-0.4 * W2, yb + 0.17]], S.gloss);
       break;
   }
-  if (st.grille !== "none") frontPoly(circle(0, st.grille === "crest" ? yL + 0.075 : yL + 0.045, 0.05, 0.024, 10), S.chrome, 0.018, 0);
+  if (st.grille !== "none") decalPoly(b.m, body, "front", circle(0, st.grille === "crest" ? yL + 0.075 : yL + 0.045, 0.05, 0.024, 10), S.chrome, 0.018, 0);
   plate(core, body, "front", t, plateY, undefined, 0.52, 0.11, b.m);
 
   // 전조등·방향지시등 위치
@@ -817,9 +844,9 @@ function buildCar(t: VehicleType, b: VB) {
   // ---- 뒤 ----
   const yR0 = top(1 - 0.12 / L);
   const yRL = yR0 - 0.1;
-  const rearPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.012, lv = 1) => decalPolyPair(core, body, "rear", pts, s, off, lv);
-  const rearStripPair = (line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.016) => decalStripPair(core, body, "rear", line, w, s, off);
-  const rearStrip = (line: Pt[], w: number, s: Surf, off = 0.016) => decalStrip(core, body, "rear", line, w, s, off);
+  const rearPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.012, lv = 1) => D.polyPair("rear", pts, s, off, lv);
+  const rearStripPair = (line: Pt[], w: number, s: Surf | [Surf, Surf], off = 0.016) => D.stripPair("rear", line, w, s, off);
+  const rearStrip = (line: Pt[], w: number, s: Surf, off = 0.016) => D.strip("rear", line, w, s, off);
   const lowSignals = () => rearStripPair([[0.66 * W2, yb + 0.3], [0.92 * W2, yb + 0.3]], 0.03, [sigR, sigL]);
   const reverse = () => rearPair(rect(0.36 * W2, yb + 0.26, 0.5 * W2, yb + 0.31), S.reverse, 0.014, 0);
   switch (st.rear) {
@@ -856,14 +883,14 @@ function buildCar(t: VehicleType, b: VB) {
   }
   // 반사판, 디퓨저, 머플러, 번호판, 엠블럼
   rearStripPair([[0.72 * W2, yb + 0.17], [0.9 * W2, yb + 0.17]], 0.025, S.reflector, 0.012);
-  decalPoly(core, body, "rear", [[-0.7 * W2, yb + 0.05], [0.7 * W2, yb + 0.05], [0.66 * W2, yb + 0.13], [-0.66 * W2, yb + 0.13]], S.trim, 0.01, 1);
-  if (!t.ev) for (const s of [-1, 1]) decalPoly(core, body, "rear", circle(s * 0.55 * W2, yb + 0.09, 0.045, 0.03, 10), S.chrome, 0.016, 0);
+  D.poly("rear", [[-0.7 * W2, yb + 0.05], [0.7 * W2, yb + 0.05], [0.66 * W2, yb + 0.13], [-0.66 * W2, yb + 0.13]], S.trim, 0.01, 1);
+  if (!t.ev) for (const s of [-1, 1]) decalPoly(b.m, body, "rear", circle(s * 0.55 * W2, yb + 0.09, 0.045, 0.03, 10), S.chrome, 0.016, 0);
   const plateYR = hasDeck ? yR0 - 0.3 : lerp(yb, yR0, 0.5);
   plate(core, body, "rear", t, plateYR, undefined, 0.52, 0.11, b.m);
-  decalPoly(core, body, "rear", circle(0, yRL + 0.07, 0.045, 0.022, 10), S.chrome, 0.018, 0);
+  decalPoly(b.m, body, "rear", circle(0, yRL + 0.07, 0.045, 0.022, 10), S.chrome, 0.018, 0);
   // 보조 제동등: 뒷유리 위
   const yCH = roof(fRR + (fGR - fRR) * 0.1) - 0.04;
-  if (!sh.bed) decalStrip(core, body, "rear", [[-0.16, yCH], [0.16, yCH]], 0.022, S.brake, 0.02);
+  if (!sh.bed) D.strip("rear", [[-0.16, yCH], [0.16, yCH]], 0.022, S.brake, 0.02);
   b.at(body, "rear", 0.8 * W2, yRL, b.brake);
   b.at(body, "rear", -0.8 * W2, yRL, b.brake);
   b.at(body, "rear", 0.9 * W2, yRL + 0.01, b.sigR);
@@ -966,7 +993,7 @@ function buildCar(t: VehicleType, b: VB) {
     // 적재함: 위에서 보면 검은 바닥
     const x0 = X(fGR) - 0.08;
     const x1 = -xF + 0.1;
-    decalPoly(core, body, "top", rect(x1, -(W2 - 0.1), x0, W2 - 0.1), S.bed, 0.006, 2);
+    D.poly("top", rect(x1, -(W2 - 0.1), x0, W2 - 0.1), S.bed, 0.006, 2);
     if (ex.includes("arrowBoard")) {
       box(core, 0.08, 1.0, 1.6, x1 + 0.3, yBelt + 0.6, 0, S.trim);
       box(core, 0.02, 0.5, 1.2, x1 + 0.25, yBelt + 0.62, 0, surf(0xf6d44a, 0.4, 0, 0, TAG.BEACON_A));
@@ -1074,9 +1101,9 @@ function reflectTape(m: Mesher, x: number, y: number, W: number, s: number) {
 
 /** 차체 틀·연료탱크·공기탱크·옆 보호대·흙받이 (프레임 트럭 공통) */
 function chassis(b: VB, x0: number, x1: number, frameY: number, W: number, gaps: [number, number][], tank = true) {
-  const m = b.core;
-  // 프레임 두 줄
-  for (const s of [-1, 1]) box(m, x0 - x1, 0.2, 0.08, (x0 + x1) / 2, frameY, s * 0.42, S.chassis);
+  // 프레임은 모든 거리, 탱크·보호대는 가까이서만
+  for (const s of [-1, 1]) box(b.core, x0 - x1, 0.2, 0.08, (x0 + x1) / 2, frameY, s * 0.42, S.chassis);
+  const m = b.m;
   const free = (xa: number, xb: number) => !gaps.some(([g0, g1]) => xa < g1 && xb > g0);
   if (tank) {
     // 연료탱크 (알루미늄, 왼쪽), 배터리 상자 (오른쪽): 운전실 바로 뒤, 바퀴를 피해서
@@ -1269,10 +1296,11 @@ function buildBus(t: VehicleType, b: VB) {
 
   const core = b.core;
   const m = b.m;
-  const front = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "front", pts, s, off, lv);
-  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "front", pts, s, off, lv);
-  const rearPoly = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "rear", pts, s, off, lv);
-  const rearPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "rear", pts, s, off, lv);
+  const D = dual(b, body);
+  const front = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => D.poly("front", pts, s, off, lv);
+  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => D.polyPair("front", pts, s, off, lv);
+  const rearPoly = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => D.poly("rear", pts, s, off, lv);
+  const rearPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => D.polyPair("rear", pts, s, off, lv);
   // ---- 앞: 행선지 표시(주황 LED), 범퍼, 전조등, 그릴, 번호판, 와이퍼 ----
   const yDest = yRoof - 0.36;
   front(rect(-W2 + 0.25, yDest - 0.1, W2 - 0.25, yDest + 0.1), S.gloss, 0.014, 2);
@@ -1284,10 +1312,10 @@ function buildBus(t: VehicleType, b: VB) {
   frontPair(rect(0.62 * W2, yLamp + 0.1, 0.96 * W2, yLamp + 0.125), S.drl, 0.02, 1);
   frontPair(rect(0.86 * W2, yLamp - 0.13, 0.97 * W2, yLamp - 0.09), [S.sigR, S.sigL], 0.018, 1);
   front(rect(-0.5 * W2, yb + 0.3, 0.5 * W2, yWs - 0.12), S.mesh, 0.012, 2);
-  for (let k = 1; k < 4; k++) decalStrip(core, body, "front", [[-0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)], [0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)]], 0.012, S.satin, 0.016);
+  for (let k = 1; k < 4; k++) decalStrip(m, body, "front", [[-0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)], [0.5 * W2, lerp(yb + 0.3, yWs - 0.12, k / 4)]], 0.012, S.satin, 0.016);
   front(circle(0, yWs - 0.06, 0.07, 0.03, 12), S.chrome, 0.02, 0);
   plate(core, body, "front", t, yb + 0.16, undefined, 0.52, 0.11, core);
-  for (const z of [-0.45, 0.35]) decalStrip(core, body, "front", [[z - 0.35, yWs + 0.05], [z + 0.35, yWs + 0.09]], 0.016, S.trim, 0.02);
+  for (const z of [-0.45, 0.35]) decalStrip(m, body, "front", [[z - 0.35, yWs + 0.05], [z + 0.35, yWs + 0.09]], 0.016, S.trim, 0.02);
   b.head.push(new THREE.Vector3(xF + 0.02, yLamp, -0.8 * W2), new THREE.Vector3(xF + 0.02, yLamp, 0.8 * W2));
   b.sigL.push(new THREE.Vector3(xF + 0.02, yLamp - 0.11, -0.92 * W2));
   b.sigR.push(new THREE.Vector3(xF + 0.02, yLamp - 0.11, 0.92 * W2));
@@ -1298,7 +1326,7 @@ function buildBus(t: VehicleType, b: VB) {
   rearPair(rect(0.86 * W2, yT - 0.04, 0.97 * W2, yT + 0.1), [S.sigR, S.sigL], 0.018, 1);
   rearPair(rect(0.86 * W2, yT - 0.26, 0.97 * W2, yT - 0.08), S.reverse, 0.018, 1);
   rearPoly(rect(-0.62 * W2, yb + 0.35, 0.62 * W2, yb + 0.95), S.mesh, 0.012, 2);
-  for (let k = 1; k < 6; k++) decalStrip(core, body, "rear", [[-0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)], [0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)]], 0.01, S.paint, 0.016);
+  for (let k = 1; k < 6; k++) decalStrip(m, body, "rear", [[-0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)], [0.6 * W2, lerp(yb + 0.35, yb + 0.95, k / 6)]], 0.01, S.paint, 0.016);
   if (coach) rearPoly(rect(-0.62 * W2, yBelt + 0.25, 0.62 * W2, yRoof - 0.45), S.glassPriv, 0.012, 2);
   rearPoly(rect(-0.18, yRoof - 0.28, 0.18, yRoof - 0.24), S.brake, 0.016, 0);
   plate(core, body, "rear", t, yb + 0.2, undefined, 0.52, 0.11, core);
@@ -1339,14 +1367,15 @@ function buildBus(t: VehicleType, b: VB) {
     if (t.livery === "tour") sideBoth([[xF - 1.5, yb + 0.5], [-xF + 0.8, yBelt - 0.6]], 0.3, surf(0xd23a6e, 0.35, 0.2, 1), 0.008);
   }
   // 옆 표시등 (주황)
-  for (let x = xF - 1.2; x > -xF + 0.5; x -= 2.2) for (const s of [-1, 1]) box(core, 0.08, 0.035, 0.012, x, yb + 0.28, s * (hwAt(F(x)) - 0.03), S.marker);
+  for (let x = xF - 1.2; x > -xF + 0.5; x -= 2.2) for (const s of [-1, 1]) box(m, 0.08, 0.035, 0.012, x, yb + 0.28, s * (hwAt(F(x)) - 0.03), S.marker);
   // ---- 토끼귀 거울 (지붕 앞 모서리에서 앞으로 내려온다) ----
   const glass: MirrorGlass[] = [];
   for (const s of [-1, 1]) {
     const root = new THREE.Vector3(xF - 0.25, yRoof - 0.12, s * (W2 - 0.12));
-    const g = bigMirror(core, xF + 0.42, yRoof - 0.95, s * (W2 + 0.02), s, [root, new THREE.Vector3(xF - 0.05, yRoof - 0.35, s * (W2 - 0.05))]);
-    rod(core, root, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), 0.022, S.trim);
-    rod(core, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), new THREE.Vector3(xF + 0.46, yRoof - 0.78, s * (W2 + 0.01)), 0.022, S.trim);
+    const g = bigMirror(m, xF + 0.42, yRoof - 0.95, s * (W2 + 0.02), s, [root, new THREE.Vector3(xF - 0.05, yRoof - 0.35, s * (W2 - 0.05))]);
+    rod(m, root, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), 0.022, S.trim);
+    rod(m, new THREE.Vector3(xF + 0.3, yRoof - 0.05, s * (W2 - 0.02)), new THREE.Vector3(xF + 0.46, yRoof - 0.78, s * (W2 + 0.01)), 0.022, S.trim);
+    box(b.mid, 0.08, 0.5, 0.22, xF + 0.46, yRoof - 1.0, s * (W2 + 0.02), S.trim);
     glass.push(g);
   }
   // ---- 바퀴 ----
@@ -1480,8 +1509,9 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
   }).build(b.mid);
 
   const core = b.core;
-  const front1 = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => decalPoly(core, body, "front", pts, s, off, lv);
-  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => decalPolyPair(core, body, "front", pts, s, off, lv);
+  const D = dual(b, body);
+  const front1 = (pts: Pt[], s: Surf, off = 0.012, lv = 1) => D.poly("front", pts, s, off, lv);
+  const frontPair = (pts: Pt[], s: Surf | [Surf, Surf], off = 0.014, lv = 1) => D.polyPair("front", pts, s, off, lv);
   // ---- 범퍼 (앞으로 조금 나온 검은 상자), 전조등, 그릴 ----
   const bumpH = light ? 0.3 : 0.38;
   const bumpY = y0 + bumpH / 2 - 0.02;
@@ -1494,7 +1524,7 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
     for (const c of [0.68, 0.82]) frontPair(rect(c * W2 - 0.04, lampY - 0.03, c * W2 + 0.04, lampY + 0.04), S.headLens, 0.02, 1);
     frontPair(rect(0.88 * W2, lampY - 0.06, 0.96 * W2, lampY + 0.05), [S.sigR, S.sigL], 0.02, 1);
     front1(rect(-0.45 * W2, lampY - 0.06, 0.45 * W2, lampY + 0.07), S.mesh, 0.012, 2);
-    for (let k = 1; k < 3; k++) decalStrip(core, body, "front", [[-0.44 * W2, lampY - 0.06 + k * 0.043], [0.44 * W2, lampY - 0.06 + k * 0.043]], 0.012, S.satin, 0.016);
+    for (let k = 1; k < 3; k++) decalStrip(b.m, body, "front", [[-0.44 * W2, lampY - 0.06 + k * 0.043], [0.44 * W2, lampY - 0.06 + k * 0.043]], 0.012, S.satin, 0.016);
     front1(circle(0, lampY + 0.13, 0.06, 0.025, 12), S.chrome, 0.018, 0);
   } else {
     // 중·대형: 범퍼 안 전조등, 큰 그릴(크롬 가로살), 앞유리 위 햇빛가리개와 표시등
@@ -1508,8 +1538,8 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
     const g0 = y0 + bumpH + 0.06;
     const g1 = yBelt - 0.14;
     front1(rect(-0.62 * W2, g0, 0.62 * W2, g1), S.mesh, 0.012, 2);
-    for (let k = 1; k < 5; k++) decalStrip(core, body, "front", [[-0.62 * W2, lerp(g0, g1, k / 5)], [0.62 * W2, lerp(g0, g1, k / 5)]], 0.022, S.chrome, 0.016);
-    decalStrip(core, body, "front", closeLoop(rect(-0.62 * W2, g0, 0.62 * W2, g1)), 0.03, S.chrome, 0.017);
+    for (let k = 1; k < 5; k++) D.strip("front", [[-0.62 * W2, lerp(g0, g1, k / 5)], [0.62 * W2, lerp(g0, g1, k / 5)]], 0.022, S.chrome, 0.016);
+    D.strip("front", closeLoop(rect(-0.62 * W2, g0, 0.62 * W2, g1)), 0.03, S.chrome, 0.017);
     front1(rect(-0.2, g1 + 0.03, 0.2, g1 + 0.09), S.chrome, 0.018, 0);
     if (heavy) {
       // 햇빛가리개 + 주황 표시등 다섯
@@ -1518,7 +1548,7 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
       for (let i = -2; i <= 2; i++) box(core, 0.04, 0.035, 0.07, vx + 0.26, yTop - 0.04, i * 0.3, S.marker);
     }
   }
-  for (const z of [-0.5, 0.45]) decalStrip(core, body, "front", [[z - 0.32, yBelt + 0.05], [z + 0.32, yBelt + 0.09]], 0.018, S.trim, 0.02);
+  for (const z of [-0.5, 0.45]) decalStrip(b.m, body, "front", [[z - 0.32, yBelt + 0.05], [z + 0.32, yBelt + 0.09]], 0.018, S.trim, 0.02);
   b.head.push(new THREE.Vector3(front + 0.1, lampY, -(W / 2 - 0.3)), new THREE.Vector3(front + 0.1, lampY, W / 2 - 0.3));
   b.sigL.push(new THREE.Vector3(front + 0.09, lampY, -(W / 2 - 0.08)));
   b.sigR.push(new THREE.Vector3(front + 0.09, lampY, W / 2 - 0.08));
@@ -1529,7 +1559,7 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
   seam([[xd0, y0 + 0.12], [xd0, top(fDoor0) + (roofY(fDoor0) - top(fDoor0)) * 0.9]]);
   seam([[xd1, y0 + 0.12], [xd1, top(fDoor1) + (roofY(fDoor1) - top(fDoor1)) * 0.9]]);
   decalPolyPair(b.m, body, "right", rect(xd1 + 0.08, yBelt - 0.14, xd1 + 0.28, yBelt - 0.1), S.trim, 0.008, 0);
-  if (!light) for (const s of [-1, 1]) for (const [k, dy] of [0.25, 0.55].entries()) box(core, 0.4 - k * 0.06, 0.04, 0.2, xAxle - ar - 0.25, y0 - dy + 0.35, s * (W / 2 - 0.12), S.steel);
+  if (!light) for (const s of [-1, 1]) for (const [k, dy] of [0.25, 0.55].entries()) box(b.m, 0.4 - k * 0.06, 0.04, 0.2, xAxle - ar - 0.25, y0 - dy + 0.35, s * (W / 2 - 0.12), S.steel);
   // ---- 사이드미러 (앞유리 옆 기둥에서 팔) ----
   const mx = front - 0.12;
   const my = yBelt + (yTop - yBelt) * 0.35;
@@ -1537,7 +1567,8 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
   for (const s of [-1, 1]) {
     const z = s * (W2 + (light ? 0.14 : 0.2));
     const from = [new THREE.Vector3(front - wsLen * 0.6, yBelt + (yTop - yBelt) * 0.7, s * (W2 - 0.08)), new THREE.Vector3(front - 0.1, yBelt + 0.05, s * (W2 - 0.06))];
-    glass.push(bigMirror(core, mx, my, z, s, from));
+    glass.push(bigMirror(b.m, mx, my, z, s, from));
+    box(b.mid, 0.08, 0.5, 0.22, mx + 0.03, my - 0.08, z, S.trim);
   }
   // ---- 운전석 ----
   const eye = new THREE.Vector3(front - wsLen - (light ? 0.42 : 0.62), yBelt + (yTop - yBelt) * 0.42, -W2 + (light ? 0.45 : 0.58));
@@ -1578,7 +1609,7 @@ function truckRear(b: VB, t: VehicleType, x: number, y: number, W: number) {
     (s < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(x - 0.07, y, z));
   }
   plate(m, null, "rear", t, y - 0.02, x - 0.04, 0.34, 0.2);
-  reflectTape(m, x - 0.05, y - 0.14, W - 0.3, -1);
+  reflectTape(b.m, x - 0.05, y - 0.14, W - 0.3, -1);
 }
 
 const CONTAINER_COLORS = [0x2c5e9e, 0xb52a2a, 0x2f7a4a, 0x8a8f94, 0xd9d9d6, 0x7b3f2a, 0x1f3e6e, 0xc8702a];
@@ -1589,10 +1620,12 @@ const C = {
 };
 
 /** 짐 상자 (탑차·윙바디·냉동): 모서리 기둥, 위아래 테, 뒷문 두 짝과 잠금대 */
-function cargoBox(m: Mesher, x0: number, x1: number, y0: number, h: number, W: number, s: Surf, trimS: Surf, wing: boolean) {
+function cargoBox(b: VB, x0: number, x1: number, y0: number, h: number, W: number, s: Surf, trimS: Surf, wing: boolean) {
   const len = x0 - x1;
   const xc = (x0 + x1) / 2;
-  box(m, len, h, W, xc, y0 + h / 2, 0, s);
+  box(b.core, len, h, W, xc, y0 + h / 2, 0, s);
+  // 기둥·테·골·문은 가까이서만
+  const m = b.m;
   // 모서리 기둥·테
   for (const sz of [-1, 1]) {
     for (const x of [x0, x1]) box(m, 0.07, h + 0.02, 0.07, x - Math.sign(x - xc) * 0.03, y0 + h / 2, sz * (W / 2 - 0.03), trimS);
@@ -1661,7 +1694,7 @@ function buildTruck(t: VehicleType, b: VB) {
       for (const side of [-1, 1]) {
         box(m, bodyLen, gate, 0.04, bodyMid, deckY + gate / 2 + 0.05, side * (W / 2 - 0.02), gs(sideC));
         // 옆판 세로 골·경첩
-        for (let x = bodyX0 - 0.3; x > bodyX1 + 0.2; x -= 0.3) box(m, 0.04, gate - 0.04, 0.012, x, deckY + gate / 2 + 0.05, side * (W / 2 + 0.004), gs(sideC));
+        for (let x = bodyX0 - 0.3; x > bodyX1 + 0.2; x -= 0.3) box(b.m, 0.04, gate - 0.04, 0.012, x, deckY + gate / 2 + 0.05, side * (W / 2 + 0.004), gs(sideC));
         box(m, bodyLen, 0.04, 0.02, bodyMid, deckY + gate + 0.05, side * (W / 2), S.alu);
       }
       box(m, 0.04, gate, W, bodyX1 + 0.02, deckY + gate / 2 + 0.05, 0, gs(sideC));
@@ -1685,7 +1718,7 @@ function buildTruck(t: VehicleType, b: VB) {
       const boxH = Math.max(1.3, topH - 0.02);
       const wing = cargo === "wing";
       const col = wing ? S.alu : surf(0xf2f2ef, 0.4, 0, 0.35);
-      cargoBox(m, bodyX0, bodyX1, deckY, boxH, W, col, wing ? surf(0x9ea3a8, 0.35, 0.8) : surf(0xc9ccce, 0.35, 0.7), wing);
+      cargoBox(b, bodyX0, bodyX1, deckY, boxH, W, col, wing ? surf(0x9ea3a8, 0.35, 0.8) : surf(0xc9ccce, 0.35, 0.7), wing);
       if (cargo === "fridge") {
         // 냉동기: 짐칸 앞 위
         cbox(m, 0.32, 0.5, W * 0.62, 0.04, bodyX0 + 0.16, deckY + boxH - 0.32, 0, surf(0xe4e5e3, 0.5, 0, 0.2));
@@ -1775,7 +1808,7 @@ function buildTruck(t: VehicleType, b: VB) {
     }
   }
   truckRear(b, t, bodyX1, frameY + 0.1, W);
-  mudflaps(m, xs[xs.length - 1] - wr - 0.15, wr, W, light ? 0.24 : 0.62);
+  mudflaps(b.m, xs[xs.length - 1] - wr - 0.15, wr, W, light ? 0.24 : 0.62);
   if (t.extras?.includes("lightBar")) {
     const cy = cabY0 + cabH;
     box(m, 0.3, 0.12, 0.7, front - 0.6, cy + 0.06, -0.38, surf(0xf0a51e, 0.2, 0, 1, TAG.BEACON_A));
@@ -1806,7 +1839,7 @@ function buildTractor(t: VehicleType, b: VB) {
   chassis(b, front - cabLen, front - tractorLen, frameY, W, gaps, true);
   // 오륜 (트레일러 연결판)
   cyl(m, 0.6, 0.08, front - 4.6, frameY + 0.18, 0, "y", S.chassis, 16);
-  mudflaps(m, txs[2] - wr - 0.15, wr, W, 0.62);
+  mudflaps(b.m, txs[2] - wr - 0.15, wr, W, 0.62);
   heavyWheels(b, txs, wr, W, tw, 1, (i) => i > 0);
   // ---- 트레일러 ----
   const tx0 = front - 3.2;
@@ -1892,7 +1925,7 @@ function buildTractor(t: VehicleType, b: VB) {
     }
   }
   truckRear(b, t, tx1, deckY - 0.2, W);
-  mudflaps(m, tws[tws.length - 1] - wr - 0.15, wr, W, 0.62);
+  mudflaps(b.m, tws[tws.length - 1] - wr - 0.15, wr, W, 0.62);
   heavyWheels(b, tws, wr, W, tw, 0, () => true);
 }
 
@@ -1926,7 +1959,7 @@ function lathe(m: Mesher, prof: [number, number][], s: Surf, seg: number) {
 function makeWheel(heavy: boolean, low: boolean): THREE.BufferGeometry {
   const m = new Mesher();
   const tire = S.rubber;
-  const seg = low ? 10 : heavy ? 20 : 22;
+  const seg = low ? 10 : heavy ? 16 : 18;
   const rimR = heavy ? 0.6 : 0.68;
   // 타이어 (옆면 둥글게)
   const tp: [number, number][] = low
@@ -1971,7 +2004,7 @@ function makeWheel(heavy: boolean, low: boolean): THREE.BufferGeometry {
     );
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
-      const g = new THREE.CylinderGeometry(0.03, 0.03, 0.05, 6);
+      const g = new THREE.CylinderGeometry(0.03, 0.03, 0.05, 5, 1, true);
       g.rotateX(Math.PI / 2);
       g.translate(Math.cos(a) * 0.2, Math.sin(a) * 0.2, 0.46);
       m.geo(g, S.darkChrome);

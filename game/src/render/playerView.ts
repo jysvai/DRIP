@@ -16,6 +16,7 @@ export const CAMERA_MODES: CameraMode[] = ["cockpit", "hood", "chase"];
 export const CAMERA_LABELS: Record<CameraMode, string> = { cockpit: "운전석", hood: "보닛", chase: "차 뒤" };
 
 const STEER_RATIO = 14;
+const MIRROR_ORDER = [0, 1, 0, 2];
 
 interface Mirror {
   cam: THREE.PerspectiveCamera;
@@ -151,12 +152,16 @@ export class PlayerView {
     }
     this.interior.add(this.cockpit.group);
     this.inner.add(this.interior);
+    // 가까운 내 차(실내·차체)를 먼저 그려서 그 뒤에 가려지는 길·차는 색칠하지 않게 한다 (깊이 검사로 걸러진다)
+    this.interior.traverse((o) => (o.renderOrder = -2));
+    this.exterior.renderOrder = -1;
     world.scene.add(this.car);
 
     // ---- 거울: 화면 구석 창 + 차 안팎의 거울 유리 (운전석 시점에서만 비친다) ----
     const mk = (eye: THREE.Vector3, dir: THREE.Vector3, fov: number, aspect: number, w: number): Mirror => {
       const h = Math.round(w / aspect);
-      const cam = new THREE.PerspectiveCamera(fov, aspect, 0.5, 900);
+      // 거울에는 뒤 350m까지만 (멀리 있는 것은 작아서 안 보인다)
+      const cam = new THREE.PerspectiveCamera(fov, aspect, 0.5, 350);
       const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 2 });
       const mat = new THREE.MeshBasicMaterial({ map: rt.texture, side: THREE.DoubleSide });
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
@@ -392,7 +397,8 @@ export class PlayerView {
     const show = this.showMirrors;
     // 운전석 시점이면 거울 창을 꺼도 차의 거울 유리에 비치므로 계속 그린다
     if (this.mode === "cockpit" && this.frameCount % this.world.settings.mirrorEvery === 0) {
-      const m = this.mirrors[this.mirrorTurn++ % this.mirrors.length];
+      // 룸미러를 양옆 거울보다 두 배 자주 (가운데, 왼쪽, 가운데, 오른쪽)
+      const m = this.mirrors[MIRROR_ORDER[this.mirrorTurn++ % MIRROR_ORDER.length]];
       m.cam.position.copy(this.inner.localToWorld(this.v.copy(m.eye)));
       this.v2.copy(m.eye).addScaledVector(m.dir, 20);
       m.cam.up.set(0, 1, 0);
