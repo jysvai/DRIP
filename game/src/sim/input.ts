@@ -12,6 +12,7 @@ export interface InputActions {
   pause: boolean;
   horn: boolean;
   mirrors: boolean;
+  help: boolean;
 }
 
 const KEYMAP: Record<string, keyof typeof keysDown> = {
@@ -101,6 +102,10 @@ export class Input {
         case "KeyM":
           this.mode = this.mode === "mouse" ? "keyboard" : "mouse";
           break;
+        case "F1":
+          e.preventDefault();
+          this.pendingActions.help = true;
+          break;
         case "KeyR":
           this.controls.reverse = !this.controls.reverse;
           break;
@@ -183,5 +188,5 @@ function approach(x: number, target: number, maxDelta: number): number {
 }
 
 function blank(): InputActions {
-  return { signalLeft: false, signalRight: false, hazard: false, camera: false, pause: false, horn: false, mirrors: false };
+  return { signalLeft: false, signalRight: false, hazard: false, camera: false, pause: false, horn: false, mirrors: false, help: false };
 }

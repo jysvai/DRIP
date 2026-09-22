@@ -24,6 +24,10 @@ export interface CarSpec {
   maxBrakeDecel: number; // m/s²
   length: number;
   width: number;
+  /** 최고속도 제한 (m/s). 없으면 제한 없음 */
+  governor?: number;
+  /** 자동변속 [적게 밟을 때, 끝까지 밟을 때] 올리는 rpm */
+  shiftRpm?: [number, number];
 }
 
 export const DEFAULT_CAR: CarSpec = {
@@ -133,7 +137,8 @@ export class PlayerCar {
 
   /** 자동변속: 가속 페달을 많이 밟을수록 높은 rpm까지 끌고 간다 */
   private pickGear(v: number, throttle: number): number {
-    const upRpm = 2000 + throttle * 3800;
+    const [lo, hi] = this.spec.shiftRpm ?? [2000, 5800];
+    const upRpm = lo + throttle * (hi - lo);
     let gear = 1;
     for (let g = 1; g <= this.spec.gears.length; g++) {
       gear = g;
@@ -170,14 +175,17 @@ export class PlayerCar {
       fx += c.throttle * 3500 * (v > -5 ? 1 : 0);
     } else {
       const ratio = sp.gears[this.gear - 1] * sp.finalDrive;
-      const torque = this.torqueAt(this.rpm) * c.throttle;
+      // 속도제한장치: 제한속도 0.5m/s 앞에서부터 힘을 줄인다
+      const gov = sp.governor ?? Infinity;
+      const cut = v > gov - 0.5 ? Math.max(0, (gov - v) / 0.5) : 1;
+      const torque = this.torqueAt(this.rpm) * c.throttle * cut;
       fx += (torque * ratio * 0.9) / sp.wheelRadius;
     }
     fx -= 0.5 * RHO * sp.dragArea * v * Math.abs(v);
     fx -= sp.rolling * sp.mass * G * Math.sign(v) * Math.min(1, Math.abs(v) / 0.5);
     fx -= sp.mass * G * p.grade * Math.cos(this.theta);
     // 엔진 브레이크
-    if (!c.reverse && c.throttle < 0.05 && v > 1) fx -= 250 + this.rpm * 0.08;
+    if (!c.reverse && c.throttle < 0.05 && v > 1) fx -= (250 + this.rpm * 0.08) * Math.sqrt(sp.mass / 1550);
     const brakeF = c.brake * sp.maxBrakeDecel * sp.mass;
 
     // 옆 방향: 타이어 힘

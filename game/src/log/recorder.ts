@@ -3,8 +3,9 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { DriveEvent, Summary } from "../rules/engine";
+import type { LegInfo } from "../road/road";
 
-export const APP_VERSION = "0.1.0";
+export const APP_VERSION = "0.2.0";
 
 export const SAMPLE_COLUMNS = ["t", "s", "d", "lane", "speed_kmh", "ax", "ay", "headway_s", "ttc_s", "signal", "steer", "throttle", "brake", "limit_kmh", "near_count"] as const;
 export type Sample = (number | null)[];
@@ -20,6 +21,10 @@ export interface SessionInfo {
   seed: number;
   inputMode: string;
   camera: string;
+  /** 차종 id (vehicles.json) */
+  vehicle: string;
+  /** 여러 주행선을 이어 붙인 경로면 조각들 (s를 원래 주행선 위치로 되돌릴 때 쓴다) */
+  route: LegInfo[] | null;
 }
 
 function participantId(): string {
@@ -84,6 +89,8 @@ export class Recorder {
       seed: info.seed,
       input_mode: info.inputMode,
       camera: info.camera,
+      vehicle: info.vehicle,
+      route: info.route ? info.route.map((l) => [l.road, Math.round(l.s0), Math.round(l.s1), Math.round(l.src0), Math.round(l.src1), l.via]) : null,
       device: {
         ua: navigator.userAgent.slice(0, 300),
         screen: [screen.width, screen.height, devicePixelRatio],

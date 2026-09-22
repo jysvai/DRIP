@@ -14,6 +14,7 @@ export interface ReportInput {
 }
 
 const REASONS: Record<string, string> = {
+  arrived: "목적지에 도착했습니다",
   road_end: "주행선 끝까지 달렸습니다",
   user: "주행을 끝냈습니다",
   crash: "충돌 뒤 주행을 끝냈습니다",
@@ -103,7 +104,7 @@ export function showReport(input: ReportInput, onRetry: () => void, onMenu: () =
 }
 
 /** 버튼 몇 개짜리 안내 창 (일시정지, 충돌, 출발 준비) */
-export function showDialog(title: string, text: string, buttons: { label: string; primary?: boolean; key?: string; onClick: () => void }[]) {
+export function showDialog(title: string, text: string, buttons: { label: string; primary?: boolean; key?: string; keep?: boolean; onClick: () => void }[]) {
   const ov = document.createElement("div");
   ov.className = "overlay";
   const card = document.createElement("div");
@@ -120,17 +121,19 @@ export function showDialog(title: string, text: string, buttons: { label: string
     btn.className = `btn${b.primary ? " primary" : ""}`;
     btn.textContent = b.label;
     btn.onclick = () => {
-      close();
+      if (!b.keep) close();
       b.onClick();
     };
     row.appendChild(btn);
   }
   const onKey = (e: KeyboardEvent) => {
+    // 조작법 창이 위에 떠 있으면 그 창이 키를 받는다
+    if (document.querySelector(".help-overlay")) return;
     const b = buttons.find((x) => x.key && (x.key === e.code || (x.key === "Enter" && (e.code === "Enter" || e.code === "Space"))));
     if (b) {
       e.preventDefault();
       e.stopPropagation();
-      close();
+      if (!b.keep) close();
       b.onClick();
     }
   };

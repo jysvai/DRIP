@@ -1,7 +1,8 @@
 // 한 번의 주행: 물리·교통·법규 판정·기록·화면을 한 루프로 돌린다.
 
-import type { Road } from "./road/road";
+import type { Road, RoadFile } from "./road/road";
 import { Structure } from "./road/road";
+import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
 import { PlayerView, CAMERA_LABELS, type CameraMode } from "./render/playerView";
 import { TrafficView } from "./render/trafficView";
@@ -10,18 +11,33 @@ import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
 import type { GameConfig } from "./sim/config";
-import { busLaneZones, sunFor, trafficFor } from "./sim/scenario";
+import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
-import { DEFAULT_CAR, PlayerCar, type Controls } from "./sim/player";
+import { PlayerCar, type Controls } from "./sim/player";
+import { specFor, type PlayerSpec } from "./sim/vehicleSpec";
+import type { VehicleType } from "./render/vehicleModels";
 import { Traffic, type Agent, type BusLaneZone, type PlayerState } from "./sim/traffic";
 import { Hud } from "./ui/hud";
 import type { DriveSettings } from "./ui/menu";
 import { showDialog, showReport } from "./ui/report";
+import { showControls } from "./ui/help";
 
 const PHYS_DT = 1 / 120;
-const PLAYER_TYPE = "sedan_mid";
-const PLAYER_COLOR = "#23466e";
 const SERIOUS_KMH = 15;
+
+/** 한 번의 주행에 필요한 도로·경로 정보 */
+export interface DriveSetup {
+  road: Road;
+  /** 경로를 이룬 원래 주행선 파일들 (한 주행선이면 null) */
+  sources: Map<string, RoadFile> | null;
+  net: Network | null;
+  startS: number;
+  /** 여기에 닿으면 목적지 도착 */
+  finishS: number;
+  destName: string;
+  originName: string;
+  vehicle: VehicleType;
+}
 
 /** 마지막 한글 글자에 받침이 있으면 b, 없으면 a (예: 와/과) */
 function josa(word: string, a: string, b: string): string {
@@ -44,6 +60,8 @@ export class Game {
   readonly input: Input;
   readonly hud: Hud;
   readonly busZones: BusLaneZone[];
+  readonly road: Road;
+  readonly spec: PlayerSpec;
   state: "ready" | "run" | "pause" | "crash" | "end" = "ready";
   t = 0;
   signal: -1 | 0 | 1 = 0;
@@ -65,12 +83,15 @@ export class Game {
 
   constructor(
     app: HTMLElement,
-    readonly road: Road,
+    readonly setup: DriveSetup,
     readonly cfg: GameConfig,
     readonly settings: DriveSettings,
     private sound: Sound,
   ) {
+    const road = setup.road;
+    this.road = road;
     this.world = new World(app);
+    (this.world as World & { setQuality?: (q: DriveSettings["quality"]) => void }).setQuality?.(settings.quality);
     this.world.renderer.shadowMap.autoUpdate = false;
     const sun = sunFor(settings.hour);
     // 밤에는 하늘을 그리지 않고, 빛 방향은 높이 뜬 달
@@ -80,22 +101,28 @@ export class Game {
     this.baseDaylight = sun.daylight;
     this.world.daylight = sun.daylight;
 
-    this.busZones = busLaneZones(road, cfg.rules, settings.weekend, settings.hour);
+    this.busZones = routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
     this.chunks = new RoadChunks(road, this.world);
     this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
 
-    const type = cfg.catalog.types.find((t) => t.id === PLAYER_TYPE) ?? cfg.catalog.types[0];
-    this.player = new PlayerCar({ ...DEFAULT_CAR, length: type.length, width: type.width });
-    const s0 = Math.max(60, Math.min(road.length - 400, settings.startKm * 1000));
+    const type = setup.vehicle;
+    this.spec = specFor(type);
+    this.player = new PlayerCar(this.spec);
+    const s0 = Math.max(60, Math.min(setup.finishS - 400, setup.startS));
     const lanes = road.lanesAt(s0);
-    const startLane = lanes >= 3 ? 2 : lanes;
-    const startKmh = Math.min(road.speedAt(s0) * 0.8, 90);
+    // 화물·대형승합은 지정차로(오른쪽)에서 출발
+    const startLane = this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
+    const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
+    const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8, 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
 
-    const tr = trafficFor(settings, cfg);
+    // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
+    const src = road.sourceAt(s0);
+    const tr = trafficFor({ road: { id: src.road }, startKm: src.s / 1000, preset: settings.preset, hour: settings.hour }, cfg);
     this.traffic = new Traffic(road, cfg, settings.seed);
     this.traffic.density = Math.max(1, tr.density);
     this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
+    this.traffic.headwayScale = 1 + 0.1 * sun.night;
     this.traffic.setComposition(tr.composition);
     this.traffic.busZones = this.busZones;
     this.traffic.fill(this.playerState());
@@ -107,21 +134,35 @@ export class Game {
     }
 
     this.trafficView = new TrafficView(this.world, road, cfg.catalog);
-    this.hud = new Hud(document.body, road, this.busZones);
-    this.view = new PlayerView(this.world, type, PLAYER_COLOR, this.hud.root);
+    this.hud = new Hud(document.body, road, this.busZones, {
+      finishS: setup.finishS,
+      destName: setup.destName,
+      startS: s0,
+      hour: settings.hour,
+      maxKmh: type.maxSpeed > 200 ? 260 : type.maxSpeed > 150 ? 200 : 140,
+      redline: this.spec.redline,
+      idleRpm: this.spec.idleRpm,
+      heavy: heavySpeed,
+      net: setup.net,
+    });
+    this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
     this.view.setNight(sun.night);
     this.input = new Input(this.world.renderer.domElement);
 
     this.rules = new RuleEngine(road, cfg.rules, this.busZones);
+    this.rules.vehicleClass = this.spec.vehicleClass;
+    this.rules.heavySpeed = heavySpeed;
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.recorder.start({
       roadId: road.id,
       roadRef: road.ref,
       roadName: road.name,
-      direction: `${road.from}→${road.to}`,
+      direction: `${setup.originName}→${setup.destName}`,
       startS: Math.round(s0),
+      vehicle: type.id,
+      route: road.isRoute ? road.legs : null,
       preset: `${settings.preset}:${tr.source}:${tr.density.toFixed(1)}`,
       simHour: settings.hour + (settings.weekend ? 100 : 0),
       seed: settings.seed,
@@ -130,6 +171,7 @@ export class Game {
     });
 
     this.sound.enabled = settings.sound;
+    this.sound.setPowertrain(this.spec.powertrain);
     this.world.origin.e = 0;
     this.updateOrigin();
     this.chunks.prime(this.player.s);
@@ -155,13 +197,19 @@ export class Game {
   /** 출발 안내 */
   ready(onStart?: () => void) {
     const road = this.road;
-    const lanes = road.lanesAt(this.player.s);
+    const s = this.player.s;
+    const lanes = road.lanesAt(s);
+    const remain = (this.setup.finishS - s) / 1000;
+    const notes: string[] = [];
+    if (this.busZones.some((z) => z.s1 > s)) notes.push("경로에 버스전용차로 구간이 있습니다(파란 선, 1차로).");
+    if (this.spec.vehicleClass !== "car") notes.push("화물·대형승합은 지정차로(오른쪽 차로)로 달려야 합니다. 앞지르기 때만 바로 왼쪽 차로를 쓸 수 있습니다.");
     showDialog(
-      "출발 준비",
-      `${road.name} ${road.from} → ${road.to}, ${(this.player.s / 1000).toFixed(1)}km 지점 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다.` +
-        (this.busZones.length ? " 이 시간대에는 1차로가 버스전용차로입니다(파란 선)." : "") +
-        "<br>주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다.",
+      `${this.setup.originName} → ${this.setup.destName}`,
+      `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
+        (notes.length ? `<br>${notes.join(" ")}` : "") +
+        "<br><span class='muted'>위쪽 안내를 따라 분기점에서 갈아타세요. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>",
       [
+        { label: "조작법 (F1)", key: "F1", keep: true, onClick: () => showControls() },
         {
           label: "출발 (Enter)",
           primary: true,
@@ -180,10 +228,16 @@ export class Game {
     if (this.state !== "run") return;
     this.state = "pause";
     this.sound.suspend();
-    showDialog("일시정지", "주행 기록은 멈춘 동안 쌓이지 않습니다.", [
+    this.pauseMenu();
+  }
+
+  private pauseMenu() {
+    const remain = Math.max(0, this.setup.finishS - this.player.s) / 1000;
+    showDialog("일시정지", `${this.setup.destName}까지 ${remain.toFixed(1)}km 남았습니다. 주행 기록은 멈춘 동안 쌓이지 않습니다.`, [
       { label: "계속 (Esc)", primary: true, key: "Escape", onClick: () => this.resume() },
+      { label: "조작법", onClick: () => showControls(() => this.pauseMenu()) },
       { label: "주행 끝내기", onClick: () => this.finish("user") },
-      { label: "노선 고르기", onClick: () => location.reload() },
+      { label: "경로 다시 고르기", onClick: () => location.reload() },
     ]);
   }
 
@@ -222,6 +276,12 @@ export class Game {
     if (actions.camera) this.hud.toast(`시점: ${CAMERA_LABELS[this.view.cycleMode()]}`, 1.2);
     if (actions.mirrors) this.view.toggleMirrors();
     if (actions.horn) this.sound.horn();
+    if (actions.help) {
+      this.state = "pause";
+      this.sound.suspend();
+      showControls(() => this.resume());
+      return;
+    }
 
     const c = this.autopilot ? this.autoControls() : this.input.update(dt, p.speed);
     if (!this.autopilot) this.keyboardAssist(c, dt);
@@ -265,10 +325,11 @@ export class Game {
     }
     this.recorder.tick(dt);
 
-    this.sound.update(p.rpm, c.throttle, p.speed, road.structureAt(p.s) === Structure.Tunnel);
+    this.sound.update(p.rpm, c.throttle, p.speed, road.structureAt(p.s) === Structure.Tunnel, c.brake);
     this.sound.signal(this.signal !== 0 || this.hazard, this.t);
 
-    if (p.s >= road.length - 40) this.finish("road_end");
+    if (p.s >= this.setup.finishS - 30) this.finish("arrived");
+    else if (p.s >= road.length - 40) this.finish("road_end");
   }
 
   private setSignal(dir: -1 | 0 | 1) {
@@ -412,10 +473,10 @@ export class Game {
         summary,
         events: this.rules.events,
         reason,
-        roadLabel: `${this.road.name} ${this.road.from} → ${this.road.to}`,
+        roadLabel: `${this.setup.originName} → ${this.setup.destName}`,
         upload,
         exportJson: () => this.recorder.exportJson(summary),
-        fileName: `drip_${this.road.id}_${stamp}.json`,
+        fileName: `drip_${this.road.id.replace(/[^\w가-힣-]+/g, "_")}_${stamp}.json`,
       },
       () => {
         sessionStorage.setItem("drip_retry", JSON.stringify(this.settings));
@@ -528,13 +589,19 @@ export class Game {
     this.hud.update(
       {
         kmh: p.speed * 3.6 * Math.sign(p.vx || 1),
-        gear: this.controls.reverse ? "R" : `D${p.gear}`,
-        rpmRatio: p.rpm / p.spec.redline,
+        gear: this.controls.reverse ? "R" : p.vx < 0.3 && this.controls.brake > 0.1 ? "D" : `D${this.spec.gears.length > 1 ? p.gear : ""}`,
+        rpm: p.rpm,
         signal: this.signal,
         hazard: this.hazard,
         s: p.s,
+        d: p.d,
+        theta: p.theta,
         lane,
         time: this.t,
+        throttle: this.controls.throttle,
+        brake: this.controls.brake,
+        steer: this.controls.steer,
+        night: this.world.night > 0.5,
         recStatus: !this.settings.consent ? "기록 (브라우저에만)" : this.recorder.online ? (this.recorder.status === "error" ? "기록 (서버 오류)" : "기록 중") : "기록 (오프라인)",
         camera: CAMERA_LABELS[this.view.mode],
         inputMode: this.autopilot ? "자동 운전" : INPUT_LABELS[this.input.mode],

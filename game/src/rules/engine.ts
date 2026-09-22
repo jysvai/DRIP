@@ -3,7 +3,7 @@
 
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
-import type { Rules } from "../sim/config";
+import { designatedLanes, type Rules } from "../sim/config";
 import type { Agent, BusLaneZone } from "../sim/traffic";
 
 export type EventType =
@@ -19,6 +19,7 @@ export type EventType =
   | "hard_brake"
   | "passing_lane"
   | "bus_lane"
+  | "designated_lane"
   | "near_miss"
   | "crash";
 
@@ -45,6 +46,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   hard_brake: "급감속",
   passing_lane: "1차로 계속 주행",
   bus_lane: "버스전용차로 통행",
+  designated_lane: "지정차로 위반 (화물·대형승합은 오른쪽 차로)",
   near_miss: "아차사고",
   crash: "충돌",
 };
@@ -59,6 +61,7 @@ export const VIOLATIONS: EventType[] = [
   "headway_critical",
   "passing_lane",
   "bus_lane",
+  "designated_lane",
 ];
 
 export interface PlayerFrame {
@@ -128,6 +131,11 @@ export class RuleEngine {
   private lastHardBrake = -10;
   private lastNearMiss = -10;
   onEvent: (e: DriveEvent) => void = () => {};
+  /** 플레이어 차 구분: 화물·대형승합은 지정차로, 버스는 버스전용차로 통행 가능 */
+  vehicleClass: "car" | "bus" | "truck" = "car";
+  /** 1.5톤 넘는 화물차는 화물차 제한속도 */
+  heavySpeed = false;
+  private designatedSince = -1;
 
   constructor(
     private road: Road,
@@ -142,7 +150,7 @@ export class RuleEngine {
       s: Math.round(f.s * 10) / 10,
       lane,
       speedKmh: Math.round(f.speed * 3.6 * 10) / 10,
-      limitKmh: this.road.speedAt(f.s),
+      limitKmh: this.road.speedAt(f.s, this.heavySpeed),
       detail,
     };
     this.events.push(e);
@@ -154,7 +162,7 @@ export class RuleEngine {
     const r = this.rules.rules;
     const road = this.road;
     const kmh = f.speed * 3.6;
-    const limit = road.speedAt(f.s);
+    const limit = road.speedAt(f.s, this.heavySpeed);
     const lane = road.laneOf(f.d, f.s);
     const lanes = road.lanesAt(f.s);
     const sum = this.summary;
@@ -293,8 +301,21 @@ export class RuleEngine {
       } else this.lane1Start = -1;
     }
 
+    // ---- 지정차로 (별표9): 편도 3차로 이상에서 화물·대형승합은 오른쪽 차로. 바로 왼쪽 차로는 앞지르기 때만 ----
+    if (r.designatedLanes.enabled && this.vehicleClass !== "car" && lanes >= 3 && lane >= 1 && lane <= lanes && kmh > 20) {
+      const { right } = designatedLanes(lanes);
+      const passing = lane === right[0] - 1;
+      if (!right.includes(lane)) {
+        if (this.designatedSince < 0) this.designatedSince = f.t;
+        if (f.t - this.designatedSince >= (passing ? 30 : 10)) {
+          this.emit(f, "designated_lane", { lane, allowed: right }, lane);
+          this.designatedSince = f.t + 1e9; // 돌아갈 때까지 한 번만
+        }
+      } else this.designatedSince = -1;
+    }
+
     // ---- 버스전용차로 ----
-    if (r.busLane.enabled) {
+    if (r.busLane.enabled && this.vehicleClass !== "bus") {
       const inZone = this.busZones.some((z) => lane === z.lane && f.s >= z.s0 && f.s <= z.s1);
       if (inZone && !this.busLaneOn && kmh > 5) this.emit(f, "bus_lane", {}, lane);
       this.busLaneOn = inZone;

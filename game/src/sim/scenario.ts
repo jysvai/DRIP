@@ -1,6 +1,6 @@
 // 주행 조건: 버스전용차로 구간, 교통량. 규칙·교통 데이터 파일을 이 주행선에 맞춘다.
 
-import type { Road } from "../road/road";
+import { Road, type RoadFile } from "../road/road";
 import type { GameConfig, Rules } from "./config";
 import type { BusLaneZone } from "./traffic";
 
@@ -40,6 +40,29 @@ export function busLaneZones(road: Road, rules: Rules, weekend: boolean, hour: n
     const sa = a ? a.s : endFor(sec.fromPlace, b!.s);
     const sb = b ? b.s : endFor(sec.toPlace, a!.s);
     out.push({ s0: Math.min(sa, sb), s1: Math.max(sa, sb), lane: sec.lane });
+  }
+  return out;
+}
+
+/** 이어 붙인 경로의 버스전용차로: 조각마다 원래 주행선에서 구간을 찾아 경로 위치로 옮긴다 */
+export function routeBusZones(route: Road, sources: Map<string, RoadFile>, rules: Rules, weekend: boolean, hour: number): BusLaneZone[] {
+  if (!route.isRoute) return busLaneZones(route, rules, weekend, hour);
+  const cache = new Map<string, BusLaneZone[]>();
+  const out: BusLaneZone[] = [];
+  for (const leg of route.legs) {
+    let zones = cache.get(leg.road);
+    if (!zones) {
+      const f = sources.get(leg.road);
+      // 규칙 파일에 이 노선 번호가 없으면 주행선을 만들 필요도 없다
+      zones = f && rules.rules.busLane.sections.some((sec) => sec.ref === f.ref) ? busLaneZones(new Road(f), rules, weekend, hour) : [];
+      cache.set(leg.road, zones);
+    }
+    for (const z of zones) {
+      const a = Math.max(z.s0, leg.src0);
+      const b = Math.min(z.s1, leg.src1);
+      if (b - a < 200) continue;
+      out.push({ s0: leg.s0 + (a - leg.src0), s1: leg.s0 + (b - leg.src0), lane: z.lane });
+    }
   }
   return out;
 }

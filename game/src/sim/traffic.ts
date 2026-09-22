@@ -98,6 +98,8 @@ export class Traffic {
   density = 15; // 대/km/차로
   /** 실측 교통이 막히는 시간대면 그 흐름 속도(m/s). 같은 방향 차의 희망속도를 이 근처로 묶는다 */
   flowSpeed: number | null = null;
+  /** 차간시간 배율: 밤에는 1.1 (야간 안전거리 준수율이 더 높다) */
+  headwayScale = 1;
   private nextId = 1;
   private rng: Rng;
   private typeWeights: { idx: number; w: number }[] = [];
@@ -171,7 +173,7 @@ export class Traffic {
       lane1Time: 0,
       wander: this.rng.next() * 100,
       speedFactor: this.draw(pr.speedFactor, 0.6),
-      T: this.draw(pr.timeHeadway, 0.5),
+      T: this.draw(pr.timeHeadway, 0.5) * this.headwayScale,
       s0: this.draw(pr.minGap, 1),
       aMax: Math.min(type.accel, this.draw(pr.accelScale, 0.3) * type.accel * 1.4),
       b: this.draw(pr.comfortDecel, 1),

@@ -22,6 +22,13 @@ create table if not exists public.drip_sessions (
   check (pg_column_size(device) < 4000)
 );
 
+-- 출발지·도착지 경로 주행 (2026-09): 고른 차종과, 여러 주행선을 이어 붙인 경로의 조각들.
+-- route는 [원래 주행선 id, 경로 s0, s1, 원래 주행선 src0, src1, 지난 분기점] 목록. 한 주행선만 달리면 null이고 s는 그 주행선의 s다.
+alter table public.drip_sessions add column if not exists vehicle text;
+alter table public.drip_sessions add column if not exists route jsonb;
+alter table public.drip_sessions drop constraint if exists drip_sessions_route_size;
+alter table public.drip_sessions add constraint drip_sessions_route_size check (pg_column_size(route) < 8000);
+
 create table if not exists public.drip_events (
   id bigint generated always as identity primary key,
   session_id uuid not null references public.drip_sessions(id) on delete cascade,

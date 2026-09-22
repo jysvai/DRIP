@@ -588,8 +588,8 @@ function dedupe<T>(runs: Run<T>[]): Run<T>[] {
   return out;
 }
 
-/** 경로에 필요한 주행선 파일을 받아 이어 붙인다 */
-export async function loadRoute(plan: RoutePlan, base = "./roads/"): Promise<RoadFile> {
+/** 경로에 필요한 주행선 파일을 받아 이어 붙인다. sources는 원래 주행선 파일들 (버스전용차로 등 원래 위치로 계산할 때) */
+export async function loadRoute(plan: Pick<RoutePlan, "legs"> & { from: { name: string }; to: { name: string } }, base = "./roads/"): Promise<{ file: RoadFile; sources: Map<string, RoadFile> }> {
   const ids = [...new Set(plan.legs.map((l) => l.road))];
   const files = new Map<string, RoadFile>();
   await Promise.all(
@@ -599,5 +599,22 @@ export async function loadRoute(plan: RoutePlan, base = "./roads/"): Promise<Roa
       files.set(id, (await res.json()) as RoadFile);
     }),
   );
-  return joinRoute(plan, files);
+  return { file: joinRoute(plan as RoutePlan, files), sources: files };
+}
+
+/** 지도 좌표 (network.origin 기준 m): 주행선 road의 s 위치 */
+export function netPoint(net: Network, roadId: string, s: number): [number, number] | null {
+  const r = net.roads.find((x) => x.id === roadId);
+  if (!r || r.p.length < 4) return null;
+  const n = r.p.length / 2;
+  const f = Math.max(0, Math.min(n - 1.000001, (s / Math.max(1, r.length)) * (n - 1)));
+  const i = Math.floor(f);
+  const t = f - i;
+  return [(r.p[2 * i] + (r.p[2 * i + 2] - r.p[2 * i]) * t) * 10, (r.p[2 * i + 1] + (r.p[2 * i + 3] - r.p[2 * i + 1]) * t) * 10];
+}
+
+/** 장소의 대표 지도 좌표 */
+export function placePoint(net: Network, p: Place): [number, number] | null {
+  const at = p.starts[0] ?? p.ends[0];
+  return at ? netPoint(net, at.road, at.s) : null;
 }

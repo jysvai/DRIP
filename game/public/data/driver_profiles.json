@@ -1,9 +1,9 @@
 {
-  "status": "가정값",
-  "note": "주변 차들의 운전 습관. 지금 값은 교통공학 문헌의 일반적인 IDM·MOBIL 범위에서 잡은 가정값이다. 한국 운전 특징(차종별 차간시간, 끼어들기 간격, 방향지시등 사용률, 1차로 정속 주행, 지정차로 준수율 등)을 측정하거나 게임 기록으로 추정하면 이 파일만 바꾸면 된다. 평균·표준편차 쌍은 [mean, sd].",
+  "status": "문헌·통계 기반 (일부 가정)",
+  "note": "주변 차들의 운전 습관. 2026-09-22에 한국 교통 통계·연구(아래 sources)와 이 저장소의 도로공사 AVC 분석(2026-09-21 하루치)으로 다시 잡았다. profile별 근거는 basis (D=측정 자료, R=자료에서 유도, A=가정). 날짜가 쌓이면 pipeline/habits_avc.py --apply로 속도·지정차로 값을 다시 맞춘다. 평균·표준편차 쌍은 [mean, sd].",
   "fields": {
     "speedFactor": "희망속도 = 제한속도 × 이 값 (차의 최고속도를 넘지 않음)",
-    "timeHeadway": "앞차와 유지하려는 시간 간격 (초, IDM T)",
+    "timeHeadway": "앞차와 유지하려는 시간 간격 (초, IDM T) — 밤에는 게임이 1.1배로 늘린다 (야간 안전거리 준수율이 더 높음, sources 11)",
     "minGap": "정지 시 앞차와의 간격 (m, IDM s0)",
     "accelScale": "차종 최대 가속도에 곱하는 값",
     "comfortDecel": "편하게 쓰는 감속도 (m/s², IDM b)",
@@ -19,34 +19,617 @@
     "passingLaneStay": "1차로에서 앞지르기 뒤 오른쪽으로 돌아가기까지 머무는 시간 (초)"
   },
   "profiles": {
-    "standard": { "name": "보통", "speedFactor": [1.04, 0.06], "timeHeadway": [1.5, 0.3], "minGap": [2.2, 0.4], "accelScale": [0.75, 0.1], "comfortDecel": [2.0, 0.3], "politeness": [0.3, 0.1], "changeThreshold": [0.2, 0.05], "keepRightBias": [0.25, 0.1], "safeDecel": [3.0, 0.5], "signalUse": 0.85, "signalLead": [2.0, 0.8], "laneChangeTime": [4.2, 0.8], "designatedLaneCompliance": 1, "busLaneCompliance": 0.97, "passingLaneStay": [12, 6] },
-    "calm": { "name": "여유", "speedFactor": [0.96, 0.05], "timeHeadway": [2.0, 0.4], "minGap": [2.8, 0.5], "accelScale": [0.6, 0.1], "comfortDecel": [1.7, 0.3], "politeness": [0.5, 0.1], "changeThreshold": [0.35, 0.08], "keepRightBias": [0.45, 0.1], "safeDecel": [2.2, 0.4], "signalUse": 0.95, "signalLead": [3.0, 0.8], "laneChangeTime": [5.0, 0.8], "designatedLaneCompliance": 1, "busLaneCompliance": 0.99, "passingLaneStay": [6, 3] },
-    "aggressive": { "name": "공격적", "speedFactor": [1.16, 0.07], "timeHeadway": [0.9, 0.25], "minGap": [1.6, 0.3], "accelScale": [0.95, 0.1], "comfortDecel": [2.8, 0.4], "politeness": [0.05, 0.05], "changeThreshold": [0.1, 0.04], "keepRightBias": [0.05, 0.05], "safeDecel": [4.5, 0.8], "signalUse": 0.55, "signalLead": [0.8, 0.5], "laneChangeTime": [2.8, 0.6], "designatedLaneCompliance": 1, "busLaneCompliance": 0.9, "passingLaneStay": [40, 20] },
-    "novice": { "name": "초보", "speedFactor": [0.92, 0.06], "timeHeadway": [2.2, 0.5], "minGap": [3.0, 0.6], "accelScale": [0.55, 0.1], "comfortDecel": [1.6, 0.3], "politeness": [0.6, 0.1], "changeThreshold": [0.5, 0.1], "keepRightBias": [0.3, 0.1], "safeDecel": [1.8, 0.3], "signalUse": 0.97, "signalLead": [3.5, 1.0], "laneChangeTime": [5.5, 1.0], "designatedLaneCompliance": 1, "busLaneCompliance": 0.99, "passingLaneStay": [8, 4] },
-    "taxi": { "name": "택시", "speedFactor": [1.12, 0.07], "timeHeadway": [1.0, 0.25], "minGap": [1.8, 0.3], "accelScale": [0.9, 0.1], "comfortDecel": [2.6, 0.4], "politeness": [0.1, 0.05], "changeThreshold": [0.12, 0.04], "keepRightBias": [0.1, 0.05], "safeDecel": [4.0, 0.6], "signalUse": 0.6, "signalLead": [1.0, 0.5], "laneChangeTime": [3.0, 0.6], "designatedLaneCompliance": 1, "busLaneCompliance": 0.92, "passingLaneStay": [25, 10] },
-    "bus_driver": { "name": "버스 운전자", "speedFactor": [0.98, 0.04], "timeHeadway": [1.6, 0.3], "minGap": [3.0, 0.4], "accelScale": [0.8, 0.1], "comfortDecel": [1.8, 0.3], "politeness": [0.2, 0.1], "changeThreshold": [0.3, 0.08], "keepRightBias": [0.2, 0.1], "safeDecel": [3.0, 0.5], "signalUse": 0.9, "signalLead": [2.5, 0.7], "laneChangeTime": [5.0, 0.8], "designatedLaneCompliance": 0.9, "busLaneCompliance": 1, "passingLaneStay": [10, 5] },
-    "truck_heavy": { "name": "대형 화물", "speedFactor": [0.97, 0.05], "timeHeadway": [1.7, 0.4], "minGap": [3.5, 0.6], "accelScale": [0.85, 0.1], "comfortDecel": [1.6, 0.3], "politeness": [0.2, 0.1], "changeThreshold": [0.25, 0.08], "keepRightBias": [0.3, 0.1], "safeDecel": [2.6, 0.5], "signalUse": 0.8, "signalLead": [2.5, 0.8], "laneChangeTime": [5.5, 1.0], "designatedLaneCompliance": 0.75, "busLaneCompliance": 0.97, "passingLaneStay": [15, 8] },
-    "light_commercial": { "name": "소형 화물·승합", "speedFactor": [1.08, 0.07], "timeHeadway": [1.1, 0.3], "minGap": [2.0, 0.4], "accelScale": [0.9, 0.1], "comfortDecel": [2.4, 0.4], "politeness": [0.15, 0.08], "changeThreshold": [0.15, 0.05], "keepRightBias": [0.15, 0.08], "safeDecel": [3.8, 0.6], "signalUse": 0.65, "signalLead": [1.2, 0.6], "laneChangeTime": [3.4, 0.6], "designatedLaneCompliance": 1, "busLaneCompliance": 0.93, "passingLaneStay": [20, 10] }
+    "standard": {
+      "name": "보통",
+      "speedFactor": [
+        1.0,
+        0.07
+      ],
+      "timeHeadway": [
+        1.35,
+        0.3
+      ],
+      "minGap": [
+        2.2,
+        0.4
+      ],
+      "accelScale": [
+        0.75,
+        0.1
+      ],
+      "comfortDecel": [
+        1.8,
+        0.3
+      ],
+      "politeness": [
+        0.3,
+        0.1
+      ],
+      "changeThreshold": [
+        0.2,
+        0.05
+      ],
+      "keepRightBias": [
+        0.2,
+        0.1
+      ],
+      "safeDecel": [
+        3.0,
+        0.5
+      ],
+      "signalUse": 0.8,
+      "signalLead": [
+        3.0,
+        1.2
+      ],
+      "laneChangeTime": [
+        3.2,
+        0.7
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.98,
+      "passingLaneStay": [
+        18,
+        15
+      ]
+    },
+    "calm": {
+      "name": "여유",
+      "speedFactor": [
+        0.93,
+        0.05
+      ],
+      "timeHeadway": [
+        1.9,
+        0.4
+      ],
+      "minGap": [
+        2.8,
+        0.5
+      ],
+      "accelScale": [
+        0.6,
+        0.1
+      ],
+      "comfortDecel": [
+        1.5,
+        0.25
+      ],
+      "politeness": [
+        0.5,
+        0.1
+      ],
+      "changeThreshold": [
+        0.35,
+        0.08
+      ],
+      "keepRightBias": [
+        0.45,
+        0.1
+      ],
+      "safeDecel": [
+        2.0,
+        0.4
+      ],
+      "signalUse": 0.93,
+      "signalLead": [
+        4.0,
+        1.0
+      ],
+      "laneChangeTime": [
+        3.8,
+        0.8
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.995,
+      "passingLaneStay": [
+        6,
+        3
+      ]
+    },
+    "aggressive": {
+      "name": "공격적",
+      "speedFactor": [
+        1.12,
+        0.07
+      ],
+      "timeHeadway": [
+        0.9,
+        0.2
+      ],
+      "minGap": [
+        1.6,
+        0.3
+      ],
+      "accelScale": [
+        0.95,
+        0.1
+      ],
+      "comfortDecel": [
+        2.4,
+        0.4
+      ],
+      "politeness": [
+        0.05,
+        0.05
+      ],
+      "changeThreshold": [
+        0.1,
+        0.04
+      ],
+      "keepRightBias": [
+        0.05,
+        0.05
+      ],
+      "safeDecel": [
+        4.5,
+        0.8
+      ],
+      "signalUse": 0.5,
+      "signalLead": [
+        1.2,
+        0.6
+      ],
+      "laneChangeTime": [
+        2.4,
+        0.5
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.9,
+      "passingLaneStay": [
+        45,
+        25
+      ]
+    },
+    "novice": {
+      "name": "초보",
+      "speedFactor": [
+        0.9,
+        0.06
+      ],
+      "timeHeadway": [
+        2.0,
+        0.45
+      ],
+      "minGap": [
+        3.0,
+        0.6
+      ],
+      "accelScale": [
+        0.55,
+        0.1
+      ],
+      "comfortDecel": [
+        1.5,
+        0.3
+      ],
+      "politeness": [
+        0.6,
+        0.1
+      ],
+      "changeThreshold": [
+        0.5,
+        0.1
+      ],
+      "keepRightBias": [
+        0.3,
+        0.1
+      ],
+      "safeDecel": [
+        1.8,
+        0.3
+      ],
+      "signalUse": 0.92,
+      "signalLead": [
+        4.0,
+        1.2
+      ],
+      "laneChangeTime": [
+        4.2,
+        1.0
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.99,
+      "passingLaneStay": [
+        10,
+        5
+      ]
+    },
+    "taxi": {
+      "name": "택시",
+      "speedFactor": [
+        1.08,
+        0.07
+      ],
+      "timeHeadway": [
+        1.0,
+        0.25
+      ],
+      "minGap": [
+        1.8,
+        0.3
+      ],
+      "accelScale": [
+        0.95,
+        0.1
+      ],
+      "comfortDecel": [
+        2.0,
+        0.3
+      ],
+      "politeness": [
+        0.1,
+        0.05
+      ],
+      "changeThreshold": [
+        0.12,
+        0.04
+      ],
+      "keepRightBias": [
+        0.1,
+        0.05
+      ],
+      "safeDecel": [
+        4.0,
+        0.6
+      ],
+      "signalUse": 0.55,
+      "signalLead": [
+        1.2,
+        0.6
+      ],
+      "laneChangeTime": [
+        2.5,
+        0.5
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.95,
+      "passingLaneStay": [
+        25,
+        10
+      ]
+    },
+    "bus_driver": {
+      "name": "버스 운전자",
+      "speedFactor": [
+        0.96,
+        0.04
+      ],
+      "timeHeadway": [
+        1.6,
+        0.3
+      ],
+      "minGap": [
+        3.0,
+        0.4
+      ],
+      "accelScale": [
+        0.8,
+        0.1
+      ],
+      "comfortDecel": [
+        1.6,
+        0.25
+      ],
+      "politeness": [
+        0.2,
+        0.1
+      ],
+      "changeThreshold": [
+        0.3,
+        0.08
+      ],
+      "keepRightBias": [
+        0.2,
+        0.1
+      ],
+      "safeDecel": [
+        3.0,
+        0.5
+      ],
+      "signalUse": 0.6,
+      "signalLead": [
+        2.0,
+        0.8
+      ],
+      "laneChangeTime": [
+        4.0,
+        0.8
+      ],
+      "designatedLaneCompliance": 0.94,
+      "busLaneCompliance": 1,
+      "passingLaneStay": [
+        10,
+        5
+      ]
+    },
+    "truck_heavy": {
+      "name": "대형 화물",
+      "speedFactor": [
+        1.05,
+        0.05
+      ],
+      "timeHeadway": [
+        1.8,
+        0.4
+      ],
+      "minGap": [
+        3.5,
+        0.6
+      ],
+      "accelScale": [
+        0.85,
+        0.1
+      ],
+      "comfortDecel": [
+        1.4,
+        0.25
+      ],
+      "politeness": [
+        0.2,
+        0.1
+      ],
+      "changeThreshold": [
+        0.25,
+        0.08
+      ],
+      "keepRightBias": [
+        0.3,
+        0.1
+      ],
+      "safeDecel": [
+        2.5,
+        0.5
+      ],
+      "signalUse": 0.6,
+      "signalLead": [
+        2.5,
+        1.0
+      ],
+      "laneChangeTime": [
+        4.5,
+        1.0
+      ],
+      "designatedLaneCompliance": 0.9,
+      "busLaneCompliance": 0.99,
+      "passingLaneStay": [
+        12,
+        6
+      ]
+    },
+    "light_commercial": {
+      "name": "소형 화물·승합",
+      "speedFactor": [
+        0.95,
+        0.07
+      ],
+      "timeHeadway": [
+        1.2,
+        0.3
+      ],
+      "minGap": [
+        2.0,
+        0.4
+      ],
+      "accelScale": [
+        0.85,
+        0.1
+      ],
+      "comfortDecel": [
+        2.0,
+        0.35
+      ],
+      "politeness": [
+        0.15,
+        0.08
+      ],
+      "changeThreshold": [
+        0.15,
+        0.05
+      ],
+      "keepRightBias": [
+        0.35,
+        0.1
+      ],
+      "safeDecel": [
+        3.5,
+        0.6
+      ],
+      "signalUse": 0.55,
+      "signalLead": [
+        1.2,
+        0.6
+      ],
+      "laneChangeTime": [
+        2.8,
+        0.6
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.95,
+      "passingLaneStay": [
+        12,
+        8
+      ]
+    },
+    "van_family": {
+      "name": "9인승 승합",
+      "speedFactor": [
+        1.0,
+        0.07
+      ],
+      "timeHeadway": [
+        1.35,
+        0.3
+      ],
+      "minGap": [
+        2.2,
+        0.4
+      ],
+      "accelScale": [
+        0.75,
+        0.1
+      ],
+      "comfortDecel": [
+        1.8,
+        0.3
+      ],
+      "politeness": [
+        0.3,
+        0.1
+      ],
+      "changeThreshold": [
+        0.2,
+        0.05
+      ],
+      "keepRightBias": [
+        0.2,
+        0.1
+      ],
+      "safeDecel": [
+        3.0,
+        0.5
+      ],
+      "signalUse": 0.8,
+      "signalLead": [
+        3.0,
+        1.2
+      ],
+      "laneChangeTime": [
+        3.2,
+        0.7
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.5,
+      "passingLaneStay": [
+        18,
+        15
+      ]
+    }
   },
   "assignment": {
-    "승용": { "standard": 0.6, "calm": 0.17, "aggressive": 0.15, "novice": 0.08 },
-    "SUV": { "standard": 0.6, "calm": 0.15, "aggressive": 0.18, "novice": 0.07 },
-    "전기차": { "standard": 0.62, "calm": 0.22, "aggressive": 0.1, "novice": 0.06 },
-    "택시": { "taxi": 0.85, "standard": 0.15 },
-    "버스": { "bus_driver": 1 },
-    "화물": { "truck_heavy": 1 },
-    "특수": { "standard": 1 }
+    "승용": {
+      "standard": 0.6,
+      "calm": 0.17,
+      "aggressive": 0.15,
+      "novice": 0.08
+    },
+    "SUV": {
+      "standard": 0.6,
+      "calm": 0.15,
+      "aggressive": 0.18,
+      "novice": 0.07
+    },
+    "전기차": {
+      "standard": 0.62,
+      "calm": 0.22,
+      "aggressive": 0.1,
+      "novice": 0.06
+    },
+    "택시": {
+      "taxi": 0.85,
+      "standard": 0.15
+    },
+    "버스": {
+      "bus_driver": 1
+    },
+    "화물": {
+      "truck_heavy": 1
+    },
+    "특수": {
+      "standard": 1
+    }
   },
   "typeOverrides": {
-    "truck_1t_cargo": { "light_commercial": 0.75, "standard": 0.25 },
-    "truck_1t_box": { "light_commercial": 0.75, "standard": 0.25 },
-    "truck_1t_fridge": { "light_commercial": 0.7, "standard": 0.3 },
-    "truck_1t_parcel": { "light_commercial": 0.8, "standard": 0.2 },
-    "van": { "light_commercial": 0.4, "standard": 0.6 },
-    "bus_small": { "light_commercial": 0.5, "standard": 0.5 },
-    "sports_car": { "aggressive": 0.6, "standard": 0.4 },
-    "coupe_sport": { "aggressive": 0.5, "standard": 0.5 },
-    "police_patrol": { "standard": 1 },
-    "ex_patrol": { "calm": 1 }
-  }
+    "truck_1t_cargo": {
+      "light_commercial": 0.75,
+      "standard": 0.25
+    },
+    "truck_1t_box": {
+      "light_commercial": 0.75,
+      "standard": 0.25
+    },
+    "truck_1t_fridge": {
+      "light_commercial": 0.7,
+      "standard": 0.3
+    },
+    "truck_1t_parcel": {
+      "light_commercial": 0.8,
+      "standard": 0.2
+    },
+    "van": {
+      "light_commercial": 0.4,
+      "van_family": 0.6
+    },
+    "bus_small": {
+      "light_commercial": 0.5,
+      "standard": 0.5
+    },
+    "sports_car": {
+      "aggressive": 0.6,
+      "standard": 0.4
+    },
+    "coupe_sport": {
+      "aggressive": 0.5,
+      "standard": 0.5
+    },
+    "police_patrol": {
+      "standard": 1
+    },
+    "ex_patrol": {
+      "calm": 1
+    },
+    "mpv": {
+      "van_family": 0.5,
+      "standard": 0.35,
+      "calm": 0.15
+    }
+  },
+  "basis": {
+    "standard": "speedFactor R(승용 가중평균 0.998 ≈ AVC 0.985), timeHeadway R(용량 2,200pcphpl → 평균 차두 1.64초), comfortDecel R(DTG 급감속 기준 2.08m/s² 아래), signalUse R(차로변경 미점등 42.4% 중 늦게 켬 37% → 켬 약 73~81%), signalLead R(켠 차의 약 21%가 직전 2초 미만), 나머지 A",
+    "calm": "speedFactor·signalUse R, 나머지 A",
+    "aggressive": "speedFactor·signalUse·signalLead R, 나머지 A",
+    "novice": "speedFactor·signalUse R, 나머지 A",
+    "taxi": "accelScale R(DTG 급가속 많음), comfortDecel R(급감속 적음), signalUse R(사업용 좌회전 방향지시등 위반 71%), speedFactor R",
+    "bus_driver": "speedFactor D(AVC 버스 0.958), designatedLaneCompliance D(1차로 위반율 6.34%), comfortDecel R, signalUse R",
+    "truck_heavy": "speedFactor D(AVC 대형화물 1.051, 화물 제한속도 기준, 90km/h 속도제한장치로 상한), designatedLaneCompliance D(AVC 0.903), comfortDecel R",
+    "light_commercial": "speedFactor R(AVC 소형화물 0.914에 1.5톤 초과 화물이 섞인 것으로 보고 올림), keepRightBias R(2005 관측: 1.5톤 이하 화물 1차로 12.0%, 승용 29.9%)",
+    "van_family": "standard와 같고 busLaneCompliance만 0.5 (전용차로 승합차 약 99%가 탑승 기준 미달, 비율 자체는 가정)",
+    "assignment": "승용 성향 비율(보통 0.6·여유 0.17·공격적 0.15·초보 0.08)은 직접 근거를 못 찾은 가정값. validationTargets로 거꾸로 맞춘다"
+  },
+  "validationTargets": {
+    "car_lane1_share": {
+      "3lanes": 0.44,
+      "4lanes": 0.34,
+      "source": "AVC 2026-09-21"
+    },
+    "gap_ge_0_6_speed_share": {
+      "day": 0.33,
+      "night": 0.5,
+      "source": "11"
+    },
+    "signal_use": {
+      "value": 0.72,
+      "source": "3, 4"
+    },
+    "heavy_designated_compliance": {
+      "value": 0.9,
+      "source": "AVC 2026-09-21"
+    }
+  },
+  "sources": [
+    "1 교통문화지수 2024 (방향지시등 점등률 75.59%): https://www.tamsa.co.kr/news/articleView.html?idxno=196807",
+    "2 한국교통안전공단 2024 교통문화지수 실태조사 사무편람: https://www.kotsa.or.kr/resources/upload/202408/2024%EB%85%84%20%EA%B5%90%ED%86%B5%EB%AC%B8%ED%99%94%EC%A7%80%EC%88%98%20%EC%8B%A4%ED%83%9C%EC%A1%B0%EC%82%AC%20%EC%82%AC%EB%AC%B4%ED%8E%B8%EB%9E%8C.pdf",
+    "3 안실련·삼성교통안전문화연구소 2026.3 (차로변경 방향지시등 미준수 42.4%, 사업용 좌회전 위반 71%): https://www.newspim.com/news/view/20260317000307",
+    "4 국토부 2017 (차로변경 방향지시등 71%): https://edaily.co.kr/News/Read?mediaCodeNo=257&newsId=02302566616162128",
+    "6 국토부·TS DTG 위험운전 분석 (2021 자료): https://www.korea.kr/news/policyNewsView.do?newsId=148901825",
+    "7 DTG 위험운전 판정 기준 (급가속 11km/h/s, 급감속 7.5km/h/s): https://www.swwu.ac.kr/download/1505717896467/index.xhtml",
+    "9 국토부 교통량 조사 2022 (고속국도 승용 69.5·버스 2.0·화물 28.5%): https://itskorea.kr/downloadFile.do?fileId=FILE_000000000058612&fileSn=0",
+    "11 현대해상 교통기후환경연구소 2018 (안전거리 준수 주간 약 1/3, 야간 약 50%): https://edaily.co.kr/News/Read?mediaCodeNo=257&newsId=01157846619110848",
+    "12 도로용량편람 2013 (기본구간 용량 2,200pcphpl): https://www.codil.or.kr/filebank/moct2014/201302/MOCT1092_1.PDF?nserialno=1092",
+    "13 SBS 2023 (추월 없이 1차로 주행 편도 3차로 35%): https://news.sbs.co.kr/news/endPage.do?news_id=N1007397536",
+    "14 경찰대 2006 지정차로제 보완 필요성 검토 (차로 이용률·1차로 위반율): https://press.police.ac.kr/pds/%EC%A7%80%EC%A0%95%EC%B0%A8%EB%A1%9C%EC%A0%9C%20%EB%B3%B4%EC%99%84%20%ED%95%84%EC%9A%94%EC%84%B1%20%EA%B2%80%ED%86%A0.pdf",
+    "16 장진환 2022 한국ITS학회 (버스전용차로 승합차 탑승 기준 미달 약 99%): https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART002892063",
+    "27 대한교통학회지 2002 (차로변경 소요 약 2.22초, 최소 차두 1.34초): https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART000863208",
+    "AVC 한국도로공사 15분 차종별 교통량 2026-09-21 (이 저장소 pipeline/habits_avc.py)"
+  ]
 }
