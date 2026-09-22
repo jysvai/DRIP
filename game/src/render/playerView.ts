@@ -421,7 +421,8 @@ export class PlayerView {
     r.shadowMap.needsUpdate = true;
     r.clear();
     const glow = Math.max(this.world.night, this.world.tunnel * 0.7);
-    if (!this.world.post.render(scene, this.world.camera, glow)) r.render(scene, this.world.camera);
+    r.render(scene, this.world.camera);
+    this.world.post.addGlow(scene, this.world.camera, glow);
     if (show) {
       r.clearDepth();
       r.render(this.overlay, this.overlayCam);

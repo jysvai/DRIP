@@ -19,18 +19,21 @@ const GLOW_CAPACITY = 8000;
 /** 밤의 전조등·미등 빛 번짐. 가까우면 크기가 m 단위로, 멀어도 몇 픽셀은 남는다 */
 function glowMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { scale: { value: 800 } },
+    // height: 그리는 곳(화면·거울·빛 번짐용 작은 화면)의 세로 픽셀, minPx: 가장 작은 점 크기
+    uniforms: { height: { value: 800 }, minPx: { value: 3 } },
     vertexShader: `
       attribute float size;
       attribute vec3 color;
-      uniform float scale;
+      uniform float height;
+      uniform float minPx;
       varying vec3 vColor;
       void main() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
-        float px = size * scale / max(0.1, -mv.z);
-        gl_PointSize = max(px, 3.0);
-        vColor = color * clamp(px / 3.0, 0.4, 1.0);
+        // 거리 1m에서 1m가 몇 픽셀인지 = 세로 픽셀 / 2 / tan(fov/2)
+        float px = size * 0.5 * height * projectionMatrix[1][1] / max(0.1, -mv.z);
+        gl_PointSize = max(px, minPx);
+        vColor = color * clamp(px / minPx, 0.4, 1.0);
       }`,
     fragmentShader: `
       varying vec3 vColor;
@@ -153,6 +156,15 @@ export class TrafficView {
     this.glow = new THREE.Points(g, glowMaterial());
     this.glow.frustumCulled = false;
     this.glow.renderOrder = 10;
+    // 그리는 곳마다 점 크기를 맞춘다 (거울·작은 화면에서 너무 커지지 않게)
+    this.glow.onBeforeRender = (r) => {
+      const mat = this.glow.material as THREE.ShaderMaterial;
+      const full = r.domElement.height;
+      const h = r.getRenderTarget()?.height ?? full;
+      mat.uniforms.height.value = h;
+      mat.uniforms.minPx.value = Math.max(1, (3 * h) / full);
+      mat.uniformsNeedUpdate = true;
+    };
     world.scene.add(this.glow);
     // 거울에는 뒤차만 넘긴다 (앞차까지 꼭짓점 계산을 하지 않게)
     world.onMirrorPass((on) => {
@@ -414,10 +426,6 @@ export class TrafficView {
         attr.addUpdateRange(0, this.ng * attr.itemSize);
         attr.needsUpdate = true;
       }
-      // 거리 1m에서 1m가 몇 픽셀인지
-      const cam = this.world.camera;
-      const h = this.world.renderer.domElement.height;
-      (this.glow.material as THREE.ShaderMaterial).uniforms.scale.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2));
     }
   }
 
