@@ -5,6 +5,7 @@ import { Structure } from "./road/road";
 import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
 import { PlayerView, CAMERA_LABELS, type CameraMode } from "./render/playerView";
+import { SprayView, type SpraySource } from "./render/spray";
 import { TrafficView } from "./render/trafficView";
 import { World } from "./render/world";
 import { WeatherView } from "./render/weather";
@@ -60,6 +61,9 @@ export class Game {
   readonly traffic: Traffic;
   readonly view: PlayerView;
   readonly trafficView: TrafficView;
+  /** 비 오는 날 차들이 튀기는 물보라 */
+  readonly spray: SprayView;
+  private spraySources: SpraySource[] = [];
   readonly chunks: RoadChunks;
   readonly rules: RuleEngine;
   readonly recorder: Recorder;
@@ -185,6 +189,7 @@ export class Game {
     }
 
     this.trafficView = new TrafficView(this.world, road, cfg.catalog);
+    this.spray = new SprayView(this.world);
     this.hud = new Hud(document.body, road, this.busZones, {
       finishS: setup.finishS,
       destName: setup.destName,
@@ -241,6 +246,7 @@ export class Game {
     this.sound.rain = weather.rain;
     this.sound.wetRoad = weather.wet;
     this.view.windshield.rain = weather.rain;
+    this.spray.wet = weather.rain;
     this.view.windshield.onStroke = () => {
       if (this.view.mode === "cockpit") this.sound.wiper();
     };
@@ -721,6 +727,21 @@ export class Game {
     };
   }
 
+  /** 물보라: 가까운 차(180m 안)와 내 차 뒷바퀴에서 */
+  private updateSpray(dt: number, inTunnel: boolean) {
+    const src = this.spraySources;
+    src.length = 0;
+    if (this.spray.wet > 0 && !inTunnel) {
+      this.trafficView.nearby(180, (m, a) => {
+        if (!a.parked) src.push({ m, v: a.v, len: a.len, width: a.width, big: a.heavy || a.len > 7 });
+      });
+      const p = this.player;
+      src.push({ m: this.view.car.matrixWorld, v: Math.abs(p.vx), len: p.spec.length, width: p.spec.width, big: this.setup.vehicle.length > 7 });
+    }
+    const light = Math.max(0.15, Math.min(1, this.world.daylight) * (1 - this.world.night));
+    this.spray.update(dt, src, inTunnel, light);
+  }
+
   private draw(dt: number) {
     const p = this.player;
     const road = this.road;
@@ -733,6 +754,7 @@ export class Game {
     this.world.tunnel += ((inTunnel ? 1 : 0) - this.world.tunnel) * Math.min(1, dt * 2);
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
+    this.updateSpray(dt, inTunnel);
     this.world.update(this.view.car.position);
     this.weatherView.update(dt, this.view.car, road.sample(p.s).heading + p.theta, p.spec.length, p.spec.width, this.setup.vehicle.height, inTunnel);
     this.view.render();

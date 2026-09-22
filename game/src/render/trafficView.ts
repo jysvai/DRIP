@@ -429,6 +429,12 @@ export class TrafficView {
     }
   }
 
+  /** 이번 프레임에 자리 잡은 차 중 카메라에서 maxDist 안 (물보라 등). m은 노면 위 자리·방향 */
+  nearby(maxDist: number, fn: (m: THREE.Matrix4, a: Agent) => void) {
+    const max2 = maxDist * maxDist;
+    for (const sl of this.list) if (sl.d2 <= max2) fn(sl.m, sl.a);
+  }
+
   private put(inst: Inst, m: THREE.Matrix4, color: THREE.Color, brake: number, sigL: number, sigR: number) {
     const i = inst.n++;
     if (this.back) inst.nb = inst.n;
