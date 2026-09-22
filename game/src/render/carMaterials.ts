@@ -113,6 +113,8 @@ export function createVehicleMaterial(opts: VehicleMaterialOptions = {}): THREE.
     uFill: { value: new THREE.Color(0, 0, 0) },
   };
   mat.userData.u = u;
+  // 클리어코트를 끈 재질은 품질을 바꿔도 켜지 않는다 (실내 등)
+  if (opts.clearcoat === false) mat.userData.coat = false;
   if (opts.lamps) mat.defines = { DRIP_LAMPS: "" };
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, u);

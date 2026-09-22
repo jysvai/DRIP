@@ -1250,7 +1250,7 @@ function buildBus(t: VehicleType, b: VB) {
   for (const p of pillars) stations.push(p - 0.05, p + 0.05);
   archStations(stations, arches, [30, 60, 90, 120, 150]);
   const body = new Loft({ stations, section, surf: surfAt, capFront: capF, capRear: capR, creases: [J.LIP, J.SHELF, J.G1, J.RAIL] });
-  body.build(b.m, { m: b.inner, x0: xF - 0.03, x1: xF - 2.6, surf: innerSurfOf(false) });
+  body.build(b.m, { m: b.inner, x0: xF - 0.03, x1: xF - 2.6, surf: innerSurfOf(true) });
   const midSt = [xF, xF - 0.03, xF - 0.12, xF - 0.35, xF - 0.6, -xF, -xF + 0.05, -xF + 0.2, winF, winR];
   archStations(midSt, arches, [60, 120]);
   new Loft({
@@ -1369,7 +1369,7 @@ function buildBus(t: VehicleType, b: VB) {
     mirrorR: glass[1].c.clone().setZ(glass[1].c.z + 0.05),
     mirrorC: rm,
     glass: [{ c: rm.clone().setX(rm.x - 0.001), w: 0.3, h: 0.09 }, glass[0], glass[1]],
-    light: false,
+    light: true,
   };
 }
 
@@ -1449,7 +1449,8 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
         return S.clad;
       case J.G1:
       case J.G2:
-        return !ws && f > fDoor0 && f < fDoor1 ? S.glass : S.paint;
+        // 문 창은 앞유리 바로 옆까지 (A필러가 가늘다)
+        return f < fDoor1 && f > 0.02 ? S.glass : S.paint;
       case J.ROOF:
         return ws ? S.glass : S.paint;
       default:
@@ -1464,7 +1465,7 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
   stations.push(X(fDoor0), X(fDoor1), X((fDoor0 + fDoor1) / 2));
   archStations(stations, arches, [30, 60, 90, 120, 150]);
   const body = new Loft({ stations, section, surf: surfAt, capFront: cap, capRear: cap, creases: [J.LIP, J.G1, J.RAIL] });
-  body.build(b.m, { m: b.inner, x0: front - 0.03, x1: front - len + 0.03, surf: innerSurfOf(false) });
+  body.build(b.m, { m: b.inner, x0: front - 0.03, x1: front - len + 0.03, surf: innerSurfOf(true) });
   const midSt = [front, front - 0.015, front - 0.07, front - 0.2, front - wsLen, X(fDoor0), X(fDoor1), front - len, front - len + 0.05];
   archStations(midSt, arches, [60, 120]);
   new Loft({
@@ -1556,7 +1557,7 @@ function truckCab(b: VB, t: VehicleType, o: CabOpts): { body: Loft; yBelt: numbe
     mirrorR: glass[1].c.clone().setZ(glass[1].c.z + 0.05),
     mirrorC: rm,
     glass: [{ c: rm.clone().setX(rm.x - 0.001), w: 0.24, h: 0.07 }, glass[0], glass[1]],
-    light: false,
+    light: true,
   };
   return { body, yBelt, yTop };
 }

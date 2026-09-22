@@ -259,7 +259,7 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   if (!model.interior.getAttribute("position")?.count) cabinWalls(m, cab);
 
   // ---- 운전대 ----
-  const wheelMat = createVehicleMaterial({});
+  const wheelMat = createVehicleMaterial({ clearcoat: false });
   const wheelGroup = new THREE.Group();
   wheelGroup.position.copy(cab.wheel.pos);
   wheelGroup.rotation.z = -cab.wheel.tilt;
@@ -282,7 +282,8 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   cyl(m, 0.035, 0.34, cab.wheel.pos.x + 0.16, cab.wheel.pos.y - 0.07, cab.wheel.pos.z, "x", IN.plastic, 10, 0.045);
   group.add(wheelGroup);
 
-  const material = createVehicleMaterial({ lamps: true });
+  // 실내는 클리어코트 없이 (화면을 넓게 덮으니 가볍게)
+  const material = createVehicleMaterial({ lamps: true, clearcoat: false });
   const mesh = new THREE.Mesh(m.build(), material);
   mesh.receiveShadow = true;
   mesh.castShadow = false;

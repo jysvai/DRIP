@@ -169,8 +169,10 @@ export class PlayerView {
     const side = cab.kind === "bus" || cab.kind === "truck" ? 0.16 : 0.11;
     const ga = (i: number) => cab.glass[i].w / cab.glass[i].h;
     this.mirrors.push(mk(cab.mirrorC.clone(), new THREE.Vector3(-1, -0.035, 0), 17, ga(0), 512));
-    this.mirrors.push(mk(cab.mirrorL.clone(), new THREE.Vector3(-1, -0.03, -side), 19, ga(1), 360));
-    this.mirrors.push(mk(cab.mirrorR.clone(), new THREE.Vector3(-1, -0.03, side + 0.03), 19, ga(2), 360));
+    // 큰 차는 거울이 높아서 조금 더 아래를 본다
+    const down = side > 0.12 ? -0.1 : -0.03;
+    this.mirrors.push(mk(cab.mirrorL.clone(), new THREE.Vector3(-1, down, -side), 19, ga(1), 360));
+    this.mirrors.push(mk(cab.mirrorR.clone(), new THREE.Vector3(-1, down, side + 0.03), 19, ga(2), 360));
     // 거울 유리에 비친 모습 (거울이라 좌우를 뒤집는다)
     this.mirrors.forEach((mr, i) => {
       const g = cab.glass[i];
@@ -227,12 +229,13 @@ export class PlayerView {
     const H = innerHeight;
     const show = this.showMirrors;
     const rw = Math.min(380, W * 0.28);
-    const sw = Math.min(250, W * 0.17);
     const [a0, a1, a2] = this.mirrors.map((m) => m.aspect);
+    // 큰 차 거울은 세로로 길다: 폭을 줄인다
+    const sw = Math.min(250, W * 0.17) * (a1 < 1 ? 0.6 : 1);
     const rects = [
       { x: (W - rw) / 2, y: 10, w: rw, h: rw / a0 },
-      { x: 12, y: H * 0.46, w: sw, h: sw / a1 },
-      { x: W - 12 - sw, y: H * 0.46, w: sw, h: sw / a2 },
+      { x: 12, y: H * (a1 < 1 ? 0.38 : 0.46), w: sw, h: sw / a1 },
+      { x: W - 12 - sw, y: H * (a2 < 1 ? 0.38 : 0.46), w: sw, h: sw / a2 },
     ];
     this.overlayCam.left = 0;
     this.overlayCam.right = W;
