@@ -23,7 +23,7 @@ export function controlsHtml(): string {
       <span>${key("H")}</span><span>경적</span>
       <span>${key("R")}</span><span>후진 기어 켜기/끄기</span>
       <span>${key("C")}</span><span>시점 바꾸기 (운전석 · 보닛 · 차 뒤)</span>
-      <span>${key("V")}</span><span>사이드미러·룸미러 켜기/끄기</span>
+      <span>${key("V")}</span><span>거울 크게 보기 (화면 가장자리 창) 켜기/끄기</span>
       <span>${key("M")}</span><span>마우스 조향 켜기/끄기 (마우스를 좌우로)</span>
       <span>${key("Tab")}</span><span>계기판·내비 크게/작게</span>
       <span>${key("F1")}</span><span>조작법 보기</span>

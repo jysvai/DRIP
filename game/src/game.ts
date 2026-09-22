@@ -105,7 +105,7 @@ export class Game {
     const road = setup.road;
     this.road = road;
     this.world = new World(app);
-    (this.world as World & { setQuality?: (q: DriveSettings["quality"]) => void }).setQuality?.(settings.quality);
+    this.world.setQuality(settings.quality);
     this.world.renderer.shadowMap.autoUpdate = false;
     const sun = sunFor(settings.hour);
     // 밤에는 하늘을 그리지 않고, 빛 방향은 높이 뜬 달
@@ -380,7 +380,10 @@ export class Game {
     if (actions.signalRight) this.setSignal(this.signal === 1 ? 0 : 1);
     if (actions.hazard) this.hazard = !this.hazard;
     if (actions.camera) this.hud.toast(`시점: ${CAMERA_LABELS[this.view.cycleMode()]}`, 1.2);
-    if (actions.mirrors) this.view.toggleMirrors();
+    if (actions.mirrors) {
+      this.view.toggleMirrors();
+      this.hud.toast(this.view.mirrorsOn ? "거울 크게 보기" : "거울 창 닫기", 1.2);
+    }
     if (actions.horn) this.sound.horn();
     if (actions.help) {
       this.state = "pause";
@@ -722,7 +725,6 @@ export class Game {
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
     this.world.update(this.view.car.position);
-    this.weatherView.light();
     this.weatherView.update(dt, this.view.car, road.sample(p.s).heading + p.theta, p.spec.length, p.spec.width, this.setup.vehicle.height, inTunnel);
     this.view.render();
     const lane = road.laneOf(p.d, p.s);

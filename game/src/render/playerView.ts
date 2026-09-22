@@ -97,7 +97,8 @@ export class PlayerView {
   private v2 = new THREE.Vector3();
   private q = new THREE.Quaternion();
   mode: CameraMode = "cockpit";
-  mirrorsOn = true;
+  /** 화면 가장자리 거울 창 (차의 거울 유리에도 비치므로 기본은 끔, V로 켠다) */
+  mirrorsOn = false;
 
   constructor(
     private world: World,

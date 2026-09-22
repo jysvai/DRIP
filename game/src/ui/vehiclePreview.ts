@@ -2,7 +2,7 @@
 
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { buildVehicleModel, type VehicleType } from "../render/vehicleModels";
+import { createVehicleObject, type VehicleType } from "../render/vehicleModels";
 
 export class VehiclePreview {
   readonly canvas: HTMLCanvasElement;
@@ -101,15 +101,8 @@ export class VehiclePreview {
         }
       });
     }
-    const model = buildVehicleModel(type, 7);
-    const g = new THREE.Group();
-    const paint = new THREE.Mesh(model.paint, new THREE.MeshPhysicalMaterial({ vertexColors: true, color, roughness: 0.3, metalness: 0.5, clearcoat: 1, clearcoatRoughness: 0.08 }));
-    const fixed = new THREE.Mesh(model.fixed, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.2 }));
-    for (const m of [paint, fixed]) {
-      m.castShadow = true;
-      m.receiveShadow = true;
-    }
-    g.add(paint, fixed);
+    // 주행·도감과 같은 차 (재질·바퀴까지)
+    const g = createVehicleObject(type, color, { seed: 7 });
     // 모델 앞(+x)을 가운데로
     const box = new THREE.Box3().setFromObject(g);
     g.position.x = -(box.min.x + box.max.x) / 2;

@@ -72,6 +72,9 @@ export class World {
   night = 0;
   /** 터널 안 정도 (0~1). 터널은 밤에도 조명으로 밝다 */
   tunnel = 0;
+  /** 흐린 정도 (0~1, 날씨). 해가 약해지고, 0.5부터는 하늘 대신 잿빛 배경에 차에 비치는 하늘도 잿빛 */
+  overcast = 0;
+  private overcastSky = new THREE.Color();
   /** 플레이어 차가 향한 방향 (화면 좌표 y축 회전). 터널 반사를 길 방향에 맞춘다 */
   heading = 0;
   quality: Quality = defaultQuality();
@@ -159,6 +162,17 @@ export class World {
     this.envDirty = true;
   }
 
+  /** 흐린 날씨: sky는 하늘(안개)색. setNight 뒤에 부른다 */
+  setOvercast(k: number, sky: THREE.Color) {
+    this.overcast = Math.max(0, Math.min(1, k));
+    this.overcastSky.copy(sky);
+    if (this.overcast >= 0.5) {
+      this.sky.visible = false;
+      this.scene.background = (this.scene.fog as THREE.Fog).color;
+    }
+    this.envDirty = true;
+  }
+
   /**
    * 그래픽 품질을 바꾼다 (해상도·그림자·도장 코팅·차 그리는 거리·거울·후처리).
    * 언제 불러도 되지만 그림자를 켜고 끄면 셰이더를 다시 만들어 잠깐 멈출 수 있다.
@@ -233,8 +247,8 @@ export class World {
     this.sun.color.copy(SUN_COLOR).lerp(MOON_COLOR, n);
     this.hemi.color.copy(HEMI_SKY).lerp(HEMI_SKY_NIGHT, n);
     // 밤에는 해 대신 약한 달빛. 터널 안은 밤에도 조명 때문에 낮의 터널과 같다
-    this.sun.intensity = 2.4 * k * (1 - n) + 0.3 * n;
-    this.hemi.intensity = (0.25 + 1.0 * k) * (1 - n) + (0.013 + 1.79 * k) * n;
+    this.sun.intensity = (2.4 * k * (1 - n) + 0.3 * n) * (1 - 0.8 * this.overcast);
+    this.hemi.intensity = ((0.25 + 1.0 * k) * (1 - n) + (0.013 + 1.79 * k) * n) * (1 + 0.15 * this.overcast);
     this.renderer.toneMappingExposure = (0.9 + (1 - k) * 0.5) * (1 - n) + 1.15 * n;
     this.applyEnv(false);
   }
@@ -271,6 +285,12 @@ export class World {
 
   private dayEnvScene(): THREE.Scene {
     const s = new THREE.Scene();
+    // 흐린 날은 잿빛 하늘이 비친다
+    if (this.overcast >= 0.5) {
+      const c = this.overcastSky;
+      s.add(gradientDome(c.getHex(), c.clone().multiplyScalar(0.9).getHex(), c.clone().multiplyScalar(0.2).getHex()));
+      return s;
+    }
     const src = this.sky.material.uniforms;
     const u = this.envSky.material.uniforms;
     for (const k of Object.keys(src)) {

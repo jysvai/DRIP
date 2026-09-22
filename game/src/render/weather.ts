@@ -84,11 +84,7 @@ export class WeatherView {
     // 가시거리: 물체가 거의 다 흐려지는 거리가 가시거리쯤이 되게
     fog.far = Math.min(fog.far, w.visibilityM * 1.15);
     fog.near = Math.min(fog.near, w.visibilityM * 0.08);
-    if (w.overcast >= 0.5) {
-      const sky = scene.children.find((o) => (o as { isSky?: boolean }).isSky);
-      if (sky) sky.visible = false;
-      scene.background = fog.color;
-    }
+    this.world.setOvercast(w.overcast, fog.color);
     const u = this.uniforms;
     const dark = Math.min(1, night);
     u.uColor.value.setRGB(0.78, 0.82, 0.86).multiplyScalar(1 - 0.55 * dark);
@@ -118,14 +114,6 @@ export class WeatherView {
     pmrem.dispose();
     g.dispose();
     return rt.texture;
-  }
-
-  /** 흐리면 해를 약하게, 하늘빛(반구광)은 조금 강하게. World.update 뒤에 매 프레임 */
-  light() {
-    const o = this.weather.overcast;
-    if (!o) return;
-    this.world.sun.intensity *= 1 - 0.8 * o;
-    this.world.hemi.intensity *= 1 + 0.15 * o;
   }
 
   /** 빗줄기: 원점(플레이어 위치)·카메라·차 위치로 맞춘다. dt 초 */
