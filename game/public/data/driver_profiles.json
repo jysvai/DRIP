@@ -594,7 +594,15 @@
       "calm": 0.15
     }
   },
+  "weather": {
+    "clear": { "speedScale": 1, "headwayScale": 1 },
+    "cloudy": { "speedScale": 1, "headwayScale": 1 },
+    "rain": { "speedScale": 1, "headwayScale": 1.05 },
+    "heavy_rain": { "speedScale": 0.8, "headwayScale": 1.25 },
+    "fog": { "speedScale": 0.75, "headwayScale": 1.05 }
+  },
   "basis": {
+    "weather": "rain speedScale D: 경부고속도로 24개 지점 평균 속도가 비 100.5km/h, 맑음 100.4km/h로 같다 (sources 17). 법은 20% 감속인데 거의 줄이지 않는다. 나머지(차간시간, 폭우·안개 감속)는 가정 A: 폭우·안개는 앞이 안 보여 느려지고, 안개에서는 앞차 미등을 놓치지 않으려 차간시간을 크게 늘리지 않는다고 봤다",
     "standard": "speedFactor R(승용 가중평균 0.998 ≈ AVC 0.985), timeHeadway R(용량 2,200pcphpl → 평균 차두 1.64초), comfortDecel R(DTG 급감속 기준 2.08m/s² 아래), signalUse R(차로변경 미점등 42.4% 중 늦게 켬 37% → 켬 약 73~81%), signalLead R(켠 차의 약 21%가 직전 2초 미만), 나머지 A",
     "calm": "speedFactor·signalUse R, 나머지 A",
     "aggressive": "speedFactor·signalUse·signalLead R, 나머지 A",
@@ -641,6 +649,8 @@
     "14 경찰대 2006 지정차로제 보완 필요성 검토 (차로 이용률·1차로 위반율): https://press.police.ac.kr/pds/%EC%A7%80%EC%A0%95%EC%B0%A8%EB%A1%9C%EC%A0%9C%20%EB%B3%B4%EC%99%84%20%ED%95%84%EC%9A%94%EC%84%B1%20%EA%B2%80%ED%86%A0.pdf",
     "16 장진환 2022 한국ITS학회 (버스전용차로 승합차 탑승 기준 미달 약 99%): https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART002892063",
     "27 대한교통학회지 2002 (차로변경 소요 약 2.22초, 최소 차두 1.34초): https://www.kci.go.kr/kciportal/ci/sereArticleSearch/ciSereArtiView.kci?sereArticleSearchBean.artiId=ART000863208",
+    "17 삼성교통안전문화연구소 2010 (경부고속도로 24개 지점 우천 평균 100.5km/h, 맑은 날 100.4km/h): https://www.newspim.com/news/view/20100801000074",
+    "18 한국도로공사 2026.7 (고속도로 사고 100건당 사망 비 4.7·맑음 3.4): https://www.auto-today.co.kr/news/articleView.html?idxno=10669",
     "AVC 한국도로공사 15분 차종별 교통량 2026-09-21 (이 저장소 pipeline/habits_avc.py)"
   ]
 }

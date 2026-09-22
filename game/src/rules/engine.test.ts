@@ -182,3 +182,30 @@ describe("공사 구간", () => {
     expect(e.events.filter((x) => x.type === "work_zone_merge")).toHaveLength(0);
   });
 });
+
+describe("악천후 감속", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ lanes: 3, speed: 100 });
+
+  it("젖은 노면이면 제한속도 80으로 과속을 보고, 카메라는 표지판 속도로 찍는다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.weatherFactor = 0.8;
+    e.enforcement = { fixed: [{ s: 1100, limit: 0 }], sections: [] };
+    expect(e.limitAt(1000)).toBe(80);
+    const v = 95 / 3.6;
+    drive(e, (t) => ({ s: 1000 + t * v, speed: t < 6 ? v : 75 / 3.6, d: road.laneCenter(2, 1000) }), 8);
+    const ev = e.events.filter((x) => x.type === "speeding");
+    expect(ev).toHaveLength(1);
+    expect(ev[0].limitKmh).toBe(80);
+    expect(e.events.filter((x) => x.type === "camera_speeding")).toHaveLength(0);
+  });
+
+  it("안개로 절반 감속이면 최저속도도 절반으로 본다", () => {
+    const e = new RuleEngine(road, cfg.rules, []);
+    e.weatherFactor = 0.5;
+    const v = 40 / 3.6;
+    drive(e, (t) => ({ s: 1000 + t * v, speed: t < 15 ? v : 20 / 3.6, d: road.laneCenter(2, 1000) }), 20);
+    expect(e.events.filter((x) => x.type === "min_speed")).toHaveLength(0);
+    expect(e.events.filter((x) => x.type === "speeding")).toHaveLength(0);
+  });
+});

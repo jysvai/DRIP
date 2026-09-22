@@ -96,6 +96,8 @@ export class PlayerCar {
   ay = 0;
   /** 이번 스텝에 난 가드레일 충돌 */
   hits: GuardrailHit[] = [];
+  /** 노면 마찰 배율 (마른 노면 1). 날씨가 속도에 따라 정한다 (weather.gripAt) */
+  grip: (kmh: number) => number = () => 1;
   private shiftCooldown = 0;
 
   constructor(spec: CarSpec = DEFAULT_CAR) {
@@ -186,7 +188,10 @@ export class PlayerCar {
     fx -= sp.mass * G * p.grade * Math.cos(this.theta);
     // 엔진 브레이크
     if (!c.reverse && c.throttle < 0.05 && v > 1) fx -= (250 + this.rpm * 0.08) * Math.sqrt(sp.mass / 1550);
-    const brakeF = c.brake * sp.maxBrakeDecel * sp.mass;
+    // 노면이 미끄러우면 타이어가 낼 수 있는 힘이 준다: 옆 힘 한계와 제동(ABS가 미끄럼 직전까지만 잡는다)
+    const grip = this.grip(Math.abs(v) * 3.6);
+    const mu = sp.mu * grip;
+    const brakeF = c.brake * sp.maxBrakeDecel * grip * sp.mass;
 
     // 옆 방향: 타이어 힘
     let ay: number;
@@ -202,8 +207,8 @@ export class PlayerCar {
       const alphaR = Math.atan2(this.vy - sp.lr * this.r, v);
       const fzF = (sp.mass * G * sp.lr) / L;
       const fzR = (sp.mass * G * sp.lf) / L;
-      const fyF = clamp(-sp.cf * alphaF, -sp.mu * fzF, sp.mu * fzF);
-      const fyR = clamp(-sp.cr * alphaR, -sp.mu * fzR, sp.mu * fzR);
+      const fyF = clamp(-sp.cf * alphaF, -mu * fzF, mu * fzF);
+      const fyR = clamp(-sp.cr * alphaR, -mu * fzR, mu * fzR);
       ay = (fyF * Math.cos(this.steerAngle) + fyR) / sp.mass;
       rdot = (sp.lf * fyF * Math.cos(this.steerAngle) - sp.lr * fyR) / sp.inertia;
       this.vy += (ay - v * this.r) * dt;

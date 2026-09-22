@@ -1,5 +1,5 @@
 // 합성음: 엔진(가솔린·디젤·대형 디젤·전기 모터), 타이어 노면음, 바람, 터널 울림, 방향지시등 딸깍 소리,
-// 충돌, 경적, 대형차 에어브레이크. 파일 없이 Web Audio로 만든다.
+// 충돌, 경적, 대형차 에어브레이크, 빗소리와 젖은 노면 타이어 소리. 파일 없이 Web Audio로 만든다.
 // 내비 음성 안내는 브라우저 음성 합성(ko-KR)을 쓰고, 한국어 음성이 없는 브라우저에서는 말하지 않는다.
 
 export type SoundPowertrain = "gasoline" | "diesel_light" | "diesel_heavy" | "electric";
@@ -26,6 +26,9 @@ export class Sound {
   private tireFilter!: BiquadFilterNode;
   private wet!: GainNode;
   private noise!: AudioBuffer;
+  private rainGain!: GainNode;
+  private hissGain!: GainNode;
+  private hissFilter!: BiquadFilterNode;
   private lastTick = -1;
   private pt: SoundPowertrain = "gasoline";
   private lastBrake = 0;
@@ -34,6 +37,10 @@ export class Sound {
   enabled = true;
   /** 내비 음성 안내 */
   voiceOn = true;
+  /** 빗소리 세기 0~1 */
+  rain = 0;
+  /** 젖은 노면: 타이어가 물을 가르는 쉭 소리 */
+  wetRoad = false;
 
   /** 사용자 입력(시작 버튼) 뒤에 불러야 소리가 난다 */
   start() {
@@ -105,6 +112,31 @@ export class Sound {
     this.tireGain = ctx.createGain();
     this.tireGain.gain.value = 0;
     noiseSrc().connect(this.tireFilter).connect(this.tireGain).connect(this.bus);
+    // 비: 흰 잡음을 높은 대역으로 (지붕·유리에 떨어지는 소리), 젖은 노면: 속도에 따라 커지는 쉭 소리
+    const white = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const wd = white.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = Math.random() * 2 - 1;
+    const whiteSrc = () => {
+      const src = ctx.createBufferSource();
+      src.buffer = white;
+      src.loop = true;
+      src.start(0, Math.random() * 1.5);
+      return src;
+    };
+    const rainFilter = ctx.createBiquadFilter();
+    rainFilter.type = "bandpass";
+    rainFilter.frequency.value = 3200;
+    rainFilter.Q.value = 0.4;
+    this.rainGain = ctx.createGain();
+    this.rainGain.gain.value = 0;
+    whiteSrc().connect(rainFilter).connect(this.rainGain).connect(this.bus);
+    this.hissFilter = ctx.createBiquadFilter();
+    this.hissFilter.type = "bandpass";
+    this.hissFilter.frequency.value = 1500;
+    this.hissFilter.Q.value = 0.7;
+    this.hissGain = ctx.createGain();
+    this.hissGain.gain.value = 0;
+    whiteSrc().connect(this.hissFilter).connect(this.hissGain).connect(this.bus);
   }
 
   private pickVoice() {
@@ -150,6 +182,11 @@ export class Sound {
     this.tireFilter.frequency.setTargetAtTime(140 + kmh * 2.2, t, 0.3);
     this.tireGain.gain.setTargetAtTime(on * Math.min(0.4, (kmh / 120) ** 1.4 * 0.28), t, 0.3);
     this.wet.gain.setTargetAtTime(inTunnel ? 0.55 : 0, t, 0.4);
+    // 터널 안에는 비가 들이치지 않고, 노면도 곧 마른다
+    this.rainGain.gain.setTargetAtTime(on * this.rain * (inTunnel ? 0.08 : 0.16), t, 0.5);
+    const wet = this.wetRoad && !inTunnel ? 1 : 0;
+    this.hissFilter.frequency.setTargetAtTime(900 + kmh * 12, t, 0.3);
+    this.hissGain.gain.setTargetAtTime(on * wet * Math.min(0.14, (kmh / 110) ** 1.5 * 0.11), t, 0.4);
     // 대형 디젤: 세게 밟던 브레이크를 떼면 에어브레이크 소리
     if (this.pt === "diesel_heavy" && this.lastBrake > 0.5 && brake < 0.1) this.air();
     this.lastBrake = brake;

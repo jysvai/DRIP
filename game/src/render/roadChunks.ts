@@ -215,6 +215,21 @@ export class RoadChunks {
     this.signs = [...this.signs, ...workZoneSigns(zones, this.road)].sort((a, b) => a.s - b.s);
   }
 
+  /** 젖은 노면 (0~1): 아스팔트가 짙어지고 물기에 하늘이 비친다 (멀리 볼수록 번들거린다). 차선도 조금 어두워진다 */
+  setWet(k: number, sky: THREE.Texture | null) {
+    const surface = this.mats.surface as THREE.MeshStandardMaterial;
+    const marks = this.mats.marks as THREE.MeshStandardMaterial;
+    surface.color.setScalar(1 - 0.4 * k);
+    surface.roughness = 0.95 - 0.6 * k;
+    surface.envMap = k > 0 ? sky : null;
+    surface.envMapIntensity = 0.7 * k;
+    marks.color.setScalar(1 - 0.15 * k);
+    marks.roughness = 0.7 - 0.35 * k;
+    marks.envMap = surface.envMap;
+    marks.envMapIntensity = 0.5 * k;
+    surface.needsUpdate = marks.needsUpdate = true;
+  }
+
   /** 단속 카메라와 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setEnforcement(e: Enforcement) {
     this.enforcement = e;

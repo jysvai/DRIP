@@ -107,8 +107,10 @@ export class Traffic {
   density = 15; // 대/km/차로
   /** 실측 교통이 막히는 시간대면 그 흐름 속도(m/s). 같은 방향 차의 희망속도를 이 근처로 묶는다 */
   flowSpeed: number | null = null;
-  /** 차간시간 배율: 밤에는 1.1 (야간 안전거리 준수율이 더 높다) */
+  /** 차간시간 배율: 밤에는 1.1 (야간 안전거리 준수율이 더 높다), 날씨 반응도 곱한다 */
   headwayScale = 1;
+  /** 날씨에 따른 희망속도 배율 (driver_profiles.json weather). 비에는 거의 안 줄인다 */
+  weatherSpeed = 1;
   private nextId = 1;
   private rng: Rng;
   private typeWeights: { idx: number; w: number }[] = [];
@@ -213,7 +215,7 @@ export class Traffic {
     const road = this.road;
     const look = a.opposite ? s - 150 : s + 150;
     const limit = road.speedAt(Math.max(0, Math.min(road.length - 1, look)), a.heavy) / 3.6;
-    let v0 = Math.min(a.type.maxSpeed / 3.6, limit * a.speedFactor);
+    let v0 = Math.min(a.type.maxSpeed / 3.6, limit * a.speedFactor * this.weatherSpeed);
     const k = Math.abs(road.sample(Math.max(0, Math.min(road.length - 1, look))).kappa);
     if (k > 1e-4) v0 = Math.min(v0, Math.sqrt(2.3 / k));
     if (this.flowSpeed && !a.opposite) v0 = Math.min(v0, this.flowSpeed * a.speedFactor);

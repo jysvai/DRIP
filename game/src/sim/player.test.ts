@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeRoad } from "../testing/fixtures";
 import { PlayerCar, type Controls } from "./player";
+import { gripAt, WEATHERS } from "./weather";
 
 const DT = 1 / 120;
 
@@ -77,5 +78,28 @@ describe("PlayerCar", () => {
     }
     expect(hit).toBe(true);
     expect(car.d).toBeLessThan(road.widthAt(car.s) / 2 + 3.5);
+  });
+
+  it("젖은 노면에서는 50km/h 제동거리가 약 1.8배 (한국교통안전공단 시험 9.9m → 18.1m)", () => {
+    const stop = (wet: boolean) => {
+      const car = new PlayerCar();
+      if (wet) car.grip = (kmh) => gripAt(WEATHERS.rain, kmh);
+      car.place(road, 100, 2, 50 / 3.6);
+      const s0 = car.s;
+      run(car, road, { throttle: 0, brake: 1, steer: 0, reverse: false }, 6);
+      return car.s - s0;
+    };
+    const dry = stop(false);
+    const wet = stop(true);
+    expect(dry).toBeGreaterThan(8);
+    expect(dry).toBeLessThan(12);
+    expect(wet / dry).toBeGreaterThan(1.65);
+    expect(wet / dry).toBeLessThan(1.95);
+  });
+
+  it("폭우에 빠르면 수막현상으로 마찰이 더 준다", () => {
+    expect(gripAt(WEATHERS.heavy_rain, 120)).toBeLessThan(gripAt(WEATHERS.heavy_rain, 60) * 0.8);
+    expect(gripAt(WEATHERS.rain, 120)).toBe(gripAt(WEATHERS.rain, 60));
+    expect(gripAt(WEATHERS.rain, 60, true)).toBeGreaterThan(gripAt(WEATHERS.rain, 60));
   });
 });

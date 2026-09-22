@@ -31,6 +31,13 @@
       "sectionToleranceKmh": 10,
       "source": "도로교통법 제17조(속도 제한)의 무인 단속. 고정식은 카메라를 지나는 순간 속도, 구간단속은 시점~종점 평균 속도. 카메라 위치는 경찰청 전국무인교통단속카메라표준데이터(data/cameras.json). 단속이 시작되는 초과 폭은 공개되지 않아 10km/h로 가정"
     },
+    "weather": {
+      "enabled": true,
+      "wetReduction": 0.2,
+      "lowVisibilityReduction": 0.5,
+      "lowVisibilityM": 100,
+      "source": "도로교통법 시행규칙 제19조 제2항: 비가 내려 노면이 젖어 있으면 최고속도의 100분의 20, 폭우·폭설·안개 등으로 가시거리가 100m 이내면 100분의 50을 줄인 속도로 운행. 감속 때는 최저속도도 같은 비율로 낮춰 본다 (최고속도보다 높아지지 않게)"
+    },
     "nearMiss": { "enabled": true, "ttcSec": 1.5, "lateralGapM": 0.4, "inducedBrakeMs2": 4.0, "cooldownSec": 3 },
     "crash": { "enabled": true }
   }

@@ -153,11 +153,24 @@ export class RuleEngine {
   /** 공사 구간: 임시 제한속도와 막힌 차로에서 언제 빠져나왔는지 */
   workZones: WorkZone[] = [];
 
-  /** 이 차가 지켜야 하는 제한속도 (화물차 제한속도, 공사 구간 임시 제한속도) */
-  limitAt(s: number): number {
+  /** 악천후 감속 배율 (weather.legalFactor): 젖은 노면 0.8, 가시거리 100m 이내 0.5 */
+  weatherFactor = 1;
+
+  /** 표지판에 적힌 제한속도 (화물차 제한속도, 공사 구간 임시 제한속도) */
+  postedAt(s: number): number {
     const zl = zoneLimit(this.workZones, s);
     const base = this.road.speedAt(s, this.heavySpeed);
     return zl ? Math.min(zl, base) : base;
+  }
+
+  /** s 위치의 악천후 감속 배율. 터널 안은 노면이 마르고 앞이 보여 감속하지 않는다 */
+  weatherFactorAt(s: number): number {
+    return this.weatherFactor < 1 && this.road.structureAt(s) === Structure.Tunnel ? 1 : this.weatherFactor;
+  }
+
+  /** 이 차가 지켜야 하는 제한속도: 표지판 속도에 악천후 감속까지 */
+  limitAt(s: number): number {
+    return Math.round(this.postedAt(s) * this.weatherFactorAt(s));
   }
 
   constructor(
@@ -231,7 +244,8 @@ export class RuleEngine {
     const road = this.road;
     const kmh = f.speed * 3.6;
     const limit = this.limitAt(f.s);
-    this.checkEnforcement(f, kmh, limit);
+    // 무인 카메라는 표지판 속도로 찍는다 (악천후 감속은 운전자가 지킬 몫)
+    this.checkEnforcement(f, kmh, this.postedAt(f.s));
     const lane = road.laneOf(f.d, f.s);
     const lanes = road.lanesAt(f.s);
     const sum = this.summary;
@@ -274,7 +288,8 @@ export class RuleEngine {
 
     // ---- 최저속도 ----
     if (r.minSpeed.enabled) {
-      const minV = road.minSpeed[road.index(f.s)];
+      // 악천후로 감속해야 하면 최저속도도 같은 비율로 낮춘다
+      const minV = Math.min(Math.round(road.minSpeed[road.index(f.s)] * this.weatherFactorAt(f.s)), limit);
       const blocked = lead && leadGap < 120 && lead.v * 3.6 < r.minSpeed.ignoreWhenLeaderSlowerKmh;
       if (kmh < minV && kmh > 3 && !blocked) {
         if (!this.slow) this.slow = { start: f.t, s0: f.s, max: minV - kmh, limit: minV };

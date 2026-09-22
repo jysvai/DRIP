@@ -29,6 +29,9 @@ alter table public.drip_sessions add column if not exists route jsonb;
 alter table public.drip_sessions drop constraint if exists drip_sessions_route_size;
 alter table public.drip_sessions add constraint drip_sessions_route_size check (pg_column_size(route) < 8000);
 
+-- 날씨 (2026-09): clear·cloudy·rain·heavy_rain·fog. 비·안개는 제한속도 판정(법정 감속)과 노면 마찰이 달라진다.
+alter table public.drip_sessions add column if not exists weather text;
+
 create table if not exists public.drip_events (
   id bigint generated always as identity primary key,
   session_id uuid not null references public.drip_sessions(id) on delete cascade,

@@ -26,11 +26,19 @@ export interface DriverProfile {
   passingLaneCruise?: number;
 }
 
+/** 날씨에 따라 주변 차가 희망속도·차간시간을 바꾸는 배율 */
+export interface WeatherResponse {
+  speedScale: number;
+  headwayScale: number;
+}
+
 export interface DriverProfiles {
   status: string;
   profiles: Record<string, DriverProfile>;
   assignment: Record<string, Record<string, number>>;
   typeOverrides: Record<string, Record<string, number>>;
+  /** 날씨별 반응 (비·폭우·안개 등). 없으면 날씨에 반응하지 않는다 */
+  weather?: Partial<Record<"clear" | "cloudy" | "rain" | "heavy_rain" | "fog", WeatherResponse>>;
 }
 
 export interface TrafficDefaults {
@@ -69,6 +77,8 @@ export interface Rules {
     designatedLanes: { enabled: boolean; source: string };
     /** 무인 단속 카메라: 고정식은 지나는 순간 속도, 구간단속은 시점~종점 평균 속도 */
     enforcement?: { enabled: boolean; cameraToleranceKmh: number; sectionToleranceKmh: number; source: string };
+    /** 악천후 감속: 젖은 노면은 최고속도의 wetReduction, 가시거리 lowVisibilityM 이내면 lowVisibilityReduction만큼 줄인 속도가 제한속도 */
+    weather?: { enabled: boolean; wetReduction: number; lowVisibilityReduction: number; lowVisibilityM: number; source: string };
     nearMiss: { enabled: boolean; ttcSec: number; lateralGapM: number; inducedBrakeMs2: number; cooldownSec: number };
     crash: { enabled: boolean };
   };

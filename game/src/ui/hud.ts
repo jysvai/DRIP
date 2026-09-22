@@ -53,6 +53,8 @@ export interface HudOptions {
   chime?: () => void;
   /** 공사 구간 (planWorkZones) */
   workZones?: WorkZone[];
+  /** 악천후 감속: 날씨 이름과 법정 감속 배율 (weather.legalFactor) */
+  weather?: { label: string; factorAt: (s: number) => number };
 }
 
 const CONE_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 3h4l5 16H5z"/><path fill="#fff" d="M8.6 9h6.8l.8 2.6H7.8zM7.2 13.6h9.6l.7 2.4H6.5z"/><rect x="3" y="19" width="18" height="2" rx="1" fill="currentColor"/></svg>`;
@@ -485,11 +487,14 @@ export class Hud {
     if (this.slowTimer > 0) return;
     this.slowTimer = 0.2;
     const zl = zoneLimit(this.opts.workZones ?? [], s);
-    const limit = zl ? Math.min(zl, road.speedAt(s, this.opts.heavy)) : road.speedAt(s, this.opts.heavy);
-    this.limit.textContent = String(limit);
+    const posted = zl ? Math.min(zl, road.speedAt(s, this.opts.heavy)) : road.speedAt(s, this.opts.heavy);
+    // 표지판은 적힌 속도, 과속 경고는 악천후 감속까지 넣은 속도로
+    const wf = this.opts.weather?.factorAt(s) ?? 1;
+    const limit = Math.round(posted * wf);
+    this.limit.textContent = String(posted);
     // 제한속도가 바뀌면 알린다 (속도가 굽기에 따라 바뀌는 연결로는 빼고)
-    if (this.lastLimit && limit !== this.lastLimit && !road.onConnector(s)) this.opts.say?.(`제한속도 ${limit}킬로미터 구간입니다.`);
-    if (!road.onConnector(s)) this.lastLimit = limit;
+    if (this.lastLimit && posted !== this.lastLimit && !road.onConnector(s)) this.opts.say?.(`제한속도 ${posted}킬로미터 구간입니다.`);
+    if (!road.onConnector(s)) this.lastLimit = posted;
     this.updateEnforcement(f, s, kmh);
     this.limit.classList.toggle("over", kmh > limit + 10);
     this.icons.limit.classList.toggle("on", false);
@@ -499,7 +504,10 @@ export class Hud {
     const leg = road.legAt(s);
     const src = road.sourceAt(s);
     this.meta.textContent = road.onConnector(s) ? `연결로${where}` : `${leg.to} 방향 · ${(src.s / 1000).toFixed(1)}km${where}`;
-    this.limitNote.textContent = this.opts.heavy ? "화물차 제한속도" : "";
+    const notes: string[] = [];
+    if (this.opts.heavy) notes.push("화물차 제한속도");
+    if (wf < 1) notes.push(`${this.opts.weather!.label} · ${Math.round((1 - wf) * 100)}% 감속 ${limit}km/h`);
+    this.limitNote.textContent = notes.join(" · ");
 
     // 내비 안내
     const m = this.maneuver(s);

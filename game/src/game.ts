@@ -7,11 +7,13 @@ import { RoadChunks, type LaneOverride } from "./render/roadChunks";
 import { PlayerView, CAMERA_LABELS, type CameraMode } from "./render/playerView";
 import { TrafficView } from "./render/trafficView";
 import { World } from "./render/world";
+import { WeatherView } from "./render/weather";
 import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
+import { gripAt, legalFactor, trafficResponse, weatherOf, type Weather } from "./sim/weather";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
@@ -64,6 +66,8 @@ export class Game {
   readonly busZones: BusLaneZone[];
   readonly enforcement: Enforcement;
   readonly workZones: WorkZone[];
+  readonly weather: Weather;
+  readonly weatherView: WeatherView;
   readonly road: Road;
   readonly spec: PlayerSpec;
   state: "ready" | "run" | "pause" | "crash" | "end" = "ready";
@@ -103,24 +107,33 @@ export class Game {
     if (sun.night > 0.6) this.world.setSun(40, 200);
     else this.world.setSun(Math.max(2, sun.elevation), sun.azimuth);
     this.world.setNight(sun.night);
-    this.baseDaylight = sun.daylight;
-    this.world.daylight = sun.daylight;
+    // 날씨: 흐리면 어둡고, 비·안개는 가시거리만큼 안개를 당긴다
+    const weather = weatherOf(settings.weather);
+    this.weather = weather;
+    this.weatherView = new WeatherView(this.world, weather);
+    this.weatherView.apply(sun.night);
+    this.baseDaylight = sun.daylight * (1 - 0.35 * weather.overcast);
+    this.world.daylight = this.baseDaylight;
 
     this.busZones = routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
     this.chunks = new RoadChunks(road, this.world);
     this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
     this.enforcement = enforcementFor(road, cfg.cameras);
     this.chunks.setEnforcement(this.enforcement);
+    if (weather.wet) this.chunks.setWet(0.75 + 0.25 * weather.rain, this.weatherView.roadEnvironment());
 
     const type = setup.vehicle;
     this.spec = specFor(type);
     this.player = new PlayerCar(this.spec);
+    // 젖은 노면은 미끄럽다 (터널 안은 마른 노면)
+    const heavyGrip = this.spec.vehicleClass !== "car";
+    this.player.grip = (kmh) => (road.structureAt(this.player.s) === Structure.Tunnel ? 1 : gripAt(weather, kmh, heavyGrip));
     const s0 = Math.max(60, Math.min(setup.finishS - 400, setup.startS));
     const lanes = road.lanesAt(s0);
     // 화물·대형승합은 지정차로(오른쪽)에서 출발
     const startLane = this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
-    const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8, 90, this.spec.governor * 3.6 - 5);
+    const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
     // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
     this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
@@ -132,7 +145,10 @@ export class Game {
     this.traffic = new Traffic(road, cfg, settings.seed);
     this.traffic.density = Math.max(1, tr.density);
     this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
-    this.traffic.headwayScale = 1 + 0.1 * sun.night;
+    // 날씨 반응: 비에는 속도를 거의 줄이지 않고(실측), 폭우·안개에는 줄인다 (driver_profiles.json weather)
+    const resp = trafficResponse(weather, cfg.profiles.weather);
+    this.traffic.headwayScale = (1 + 0.1 * sun.night) * resp.headwayScale;
+    this.traffic.weatherSpeed = resp.speedScale;
     this.traffic.setComposition(tr.composition);
     this.traffic.busZones = this.busZones;
     this.traffic.workZones = this.workZones;
@@ -162,6 +178,7 @@ export class Game {
       },
       enforcement: this.enforcement,
       workZones: this.workZones,
+      weather: { label: weather.label, factorAt: (s) => this.rules.weatherFactorAt(s) },
       chime: () => this.sound.chime(),
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
@@ -174,6 +191,7 @@ export class Game {
     this.rules.heavySpeed = heavySpeed;
     this.rules.enforcement = this.enforcement;
     this.rules.workZones = this.workZones;
+    this.rules.weatherFactor = legalFactor(weather, cfg.rules);
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.recorder.start({
@@ -183,6 +201,7 @@ export class Game {
       direction: `${setup.originName}→${setup.destName}`,
       startS: Math.round(s0),
       vehicle: type.id,
+      weather: weather.kind,
       route: road.isRoute ? road.legs : null,
       preset: `${settings.preset}:${tr.source}:${tr.density.toFixed(1)}`,
       simHour: settings.hour + (settings.weekend ? 100 : 0),
@@ -193,6 +212,8 @@ export class Game {
 
     this.sound.enabled = settings.sound;
     this.sound.voiceOn = settings.voice;
+    this.sound.rain = weather.rain;
+    this.sound.wetRoad = weather.wet;
     this.sound.setPowertrain(this.spec.powertrain);
     this.world.origin.e = 0;
     this.updateOrigin();
@@ -246,6 +267,9 @@ export class Game {
     if (this.spec.vehicleClass !== "car") notes.push("화물·대형승합은 지정차로(오른쪽 차로)로 달려야 합니다. 앞지르기 때만 바로 왼쪽 차로를 쓸 수 있습니다.");
     const works = this.workZones.filter((z) => z.s0 > s).length;
     if (works) notes.push(`경로에 공사 구간이 ${works}곳 있습니다. 한 차로를 라바콘으로 막고 제한속도 ${ZONE_KMH}km/h입니다.`);
+    const cut = Math.round((1 - this.rules.weatherFactor) * 100);
+    const weatherNote = this.weatherNote(cut);
+    if (weatherNote) notes.push(weatherNote);
     showDialog(
       `${this.setup.originName} → ${this.setup.destName}`,
       `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
@@ -260,12 +284,24 @@ export class Game {
           onClick: () => {
             this.state = "run";
             this.sound.resume();
-            this.sound.say(`경로 안내를 시작합니다. ${this.setup.destName}까지 ${Math.round(remain)}킬로미터입니다.`);
+            this.sound.say(
+              `경로 안내를 시작합니다. ${this.setup.destName}까지 ${Math.round(remain)}킬로미터입니다.` +
+                (cut ? ` ${this.weather.visibilityM <= 100 ? "앞이 잘 보이지 않습니다" : "노면이 젖어 있습니다"}. 제한속도의 ${cut}퍼센트를 줄여 달리세요.` : ""),
+            );
             onStart?.();
           },
         },
       ],
     );
+  }
+
+  /** 출발 안내에 넣을 날씨 설명 */
+  private weatherNote(cut: number): string {
+    const w = this.weather;
+    if (w.kind === "clear" || w.kind === "cloudy") return "";
+    const why = w.visibilityM <= 100 ? `${w.label}로 앞이 ${w.visibilityM}m 정도밖에 보이지 않습니다` : `${w.label}가 내려 노면이 젖어 있습니다`;
+    const grip = w.wet ? " 노면이 미끄러워 제동거리가 약 1.8배로 늘어납니다." : "";
+    return cut ? `${why}. 법대로라면 제한속도의 ${cut}%를 줄여 달려야 합니다(터널 안 제외).${grip}` : `${why}.${grip}`;
   }
 
   pause() {
@@ -548,7 +584,7 @@ export class Game {
         summary,
         events: this.rules.events,
         reason,
-        roadLabel: `${this.setup.originName} → ${this.setup.destName}`,
+        roadLabel: `${this.setup.originName} → ${this.setup.destName}${this.weather.kind === "clear" ? "" : ` · ${this.weather.label}`}`,
         upload,
         exportJson: () => this.recorder.exportJson(summary),
         fileName: `drip_${this.road.id.replace(/[^\w가-힣-]+/g, "_")}_${stamp}.json`,
@@ -633,9 +669,10 @@ export class Game {
         lead = a;
       }
     }
-    const v0 = (road.speedAt(p.s) - 5) / 3.6;
+    // 제한속도(공사 구간·악천후 감속 포함)보다 조금 낮게, 미끄러우면 굽은 길에서 더 천천히
+    const v0 = (this.rules.limitAt(p.s) - 5) / 3.6;
     const kk = Math.abs(road.sample(Math.min(road.length - 1, p.s + 120)).kappa);
-    const vc = kk > 1e-4 ? Math.min(v0, Math.sqrt(2.5 / kk)) : v0;
+    const vc = kk > 1e-4 ? Math.min(v0, Math.sqrt((2.5 * p.grip(p.speed * 3.6)) / kk)) : v0;
     const sStar = 3 + Math.max(0, v * 1.6 + (lead ? (v * (v - lead.v)) / (2 * Math.sqrt(2 * 3)) : 0));
     const accel = 2 * (1 - (v / vc) ** 4 - (lead ? (sStar / Math.max(0.5, gap)) ** 2 : 0));
     return {
@@ -659,6 +696,8 @@ export class Game {
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
     this.world.update(this.view.car.position);
+    this.weatherView.light();
+    this.weatherView.update(dt, this.view.car, road.sample(p.s).heading + p.theta, p.spec.length, p.spec.width, this.setup.vehicle.height, inTunnel);
     this.view.render();
     const lane = road.laneOf(p.d, p.s);
     this.hud.update(

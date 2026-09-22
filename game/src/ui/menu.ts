@@ -4,6 +4,7 @@ import type { Network, Place, Leg } from "../road/route";
 import { buildPlaces, findRoute, searchPlaces } from "../road/route";
 import type { RealTraffic } from "../sim/config";
 import { specFor } from "../sim/vehicleSpec";
+import type { WeatherKind } from "../sim/weather";
 import { paletteFor, type VehicleCatalog, type VehicleType } from "../render/vehicleModels";
 import { NetMap } from "./netMap";
 import { VehiclePreview } from "./vehiclePreview";
@@ -30,6 +31,8 @@ export interface DriveSettings {
   preset: Preset;
   hour: number;
   weekend: boolean;
+  /** 날씨 (없으면 맑음) */
+  weather?: WeatherKind;
   camera: CameraMode;
   consent: boolean;
   sound: boolean;
@@ -106,6 +109,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let preset: Preset = saved.preset ?? "자동";
     let hour = now.getHours();
     let weekend = now.getDay() === 0 || now.getDay() === 6;
+    let weather: WeatherKind = saved.weather ?? "clear";
     let camera: CameraMode = saved.camera ?? "cockpit";
     let sound = saved.sound ?? true;
     let voice = saved.voice ?? true;
@@ -436,6 +440,23 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       time.append(range, out);
       body.appendChild(field("시각", time, "해 높이·밝기, 버스전용차로 운영, 시간대별 교통량이 바뀝니다. 19시~5시는 밤입니다."));
       body.appendChild(field("요일", seg<string>([["weekday", "평일"], ["weekend", "주말·공휴일"]], weekend ? "weekend" : "weekday", (v) => (weekend = v === "weekend"))));
+      body.appendChild(
+        field(
+          "날씨",
+          seg<WeatherKind>(
+            [
+              ["clear", "맑음"],
+              ["cloudy", "흐림"],
+              ["rain", "비"],
+              ["heavy_rain", "폭우"],
+              ["fog", "짙은 안개"],
+            ],
+            weather,
+            (v) => (weather = v),
+          ),
+          "비가 와 노면이 젖으면 제한속도의 20%, 폭우·안개로 앞이 100m도 안 보이면 50%를 줄여야 합니다 (도로교통법 시행규칙 제19조). 젖은 노면은 제동거리가 약 1.8배입니다.",
+        ),
+      );
       const presets: [Preset, string][] = [
         ["자동", "시간대 반영"],
         ["한산", "한산"],
@@ -490,6 +511,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         preset,
         hour,
         weekend,
+        weather,
         camera,
         consent,
         sound,

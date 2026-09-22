@@ -23,6 +23,8 @@ export interface SessionInfo {
   camera: string;
   /** 차종 id (vehicles.json) */
   vehicle: string;
+  /** 날씨 (clear·cloudy·rain·heavy_rain·fog) */
+  weather: string;
   /** 여러 주행선을 이어 붙인 경로면 조각들 (s를 원래 주행선 위치로 되돌릴 때 쓴다) */
   route: LegInfo[] | null;
 }
@@ -90,6 +92,7 @@ export class Recorder {
       input_mode: info.inputMode,
       camera: info.camera,
       vehicle: info.vehicle,
+      weather: info.weather,
       route: info.route ? info.route.map((l) => [l.road, Math.round(l.s0), Math.round(l.s1), Math.round(l.src0), Math.round(l.src1), l.via]) : null,
       device: {
         ua: navigator.userAgent.slice(0, 300),
@@ -97,7 +100,15 @@ export class Recorder {
         lang: navigator.language,
       },
     };
-    this.sessionOk = Promise.resolve(this.client.from("drip_sessions").insert(row)).then(({ error }) => {
+    const client = this.client;
+    // 서버 표에 weather 열을 아직 안 넣었으면(supabase/schema.sql) 그 열만 빼고 다시 넣는다
+    const insert = async () => {
+      const first = await client.from("drip_sessions").insert(row);
+      if (!first.error || !/weather/.test(first.error.message)) return first;
+      const { weather: _w, ...rest } = row;
+      return client.from("drip_sessions").insert(rest);
+    };
+    this.sessionOk = insert().then(({ error }) => {
       this.status = error ? "error" : "ok";
       if (error) {
         this.uploaded.errors++;
