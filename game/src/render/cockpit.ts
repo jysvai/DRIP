@@ -168,24 +168,33 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   const dz = cab.dash.z ?? 0;
   const hw = w / 2;
   const premium = /luxury|flagship|large|import/.test(t.id);
+  // 앞유리 면(높이 y에서 x)보다 3cm 안쪽까지만: 눈이 유리에 가까운 트럭은 대시보드·계기판이 유리 밖으로 튀어나오지 않게 (앞유리 빗방울이 그 위에 그려진다)
+  const [gbx, gby] = cab.wsBase;
+  const [gtx, gty] = cab.wsTop;
+  const glassX = (y: number) => gbx + ((gtx - gbx) * Math.max(0, y - gby)) / (gty - gby) - 0.03;
+  const inside = (p: [number, number]): [number, number] => (p[1] > gby ? [Math.min(p[0], glassX(p[1])), p[1]] : p);
 
   // ---- 대시보드: 옆모양을 폭만큼 뽑는다 ----
   // 운전자 앞 윗면은 눈보다 충분히 낮게 (길이 잘 보이게), 앞유리 쪽으로 조금 내려간다
   const dT = Math.min(dy + 0.02, eye.y - (big ? 0.28 : 0.21));
-  const dash: [number, number][] = [
-    [x0 + 0.02, Math.min(dy, dT) - 0.05],
-    [x0 - 0.1, Math.min(dy, dT) - 0.005],
-    [x1 + 0.24, dT + 0.02],
-    [x1 + 0.06, dT + 0.012],
-    [x1 + 0.005, dT - 0.03],
-    [x1 + 0.02, dT - 0.16],
-    [x1 + 0.13, dT - 0.27],
-    [x1 + 0.15, dT - 0.55],
-    [x0 + 0.02, dT - 0.55],
-  ];
+  const dash = (
+    [
+      [x0 + 0.02, Math.min(dy, dT) - 0.05],
+      [x0 - 0.1, Math.min(dy, dT) - 0.005],
+      [x1 + 0.24, dT + 0.02],
+      [x1 + 0.06, dT + 0.012],
+      [x1 + 0.005, dT - 0.03],
+      [x1 + 0.02, dT - 0.16],
+      [x1 + 0.13, dT - 0.27],
+      [x1 + 0.15, dT - 0.55],
+      [x0 + 0.02, dT - 0.55],
+    ] as [number, number][]
+  ).map(inside);
   profile(m, dash, w, IN.dash, dz, 0.02);
   // 윗면 덮개 (조금 밝은 가죽 느낌) + 가운데 장식 띠 (금속) + 무드등
-  box(m, x0 - x1 - 0.3, 0.004, w - 0.04, (x0 + x1) / 2 + 0.08, (Math.min(dy, dT) + dT) / 2 + 0.012, dz, IN.dashTop, 0, -0.02);
+  const topY = (Math.min(dy, dT) + dT) / 2 + 0.012;
+  const topLen = Math.max(0.05, x0 - x1 - 0.3);
+  box(m, topLen, 0.004, w - 0.04, Math.min((x0 + x1) / 2 + 0.08, glassX(topY) - topLen / 2), topY, dz, IN.dashTop, 0, -0.02);
   box(m, 0.012, 0.016, w - 0.1, x1 + 0.03, dT - 0.05, dz, IN.trim);
   if (!big) box(m, 0.006, 0.005, w - 0.2, x1 + 0.028, dT - 0.066, dz, IN.ambient);
   // 송풍구
@@ -197,9 +206,9 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   // ---- 화면: 계기판 + (승용차) 내비 파노라마. 대시보드 위에 떠 있고 윗변은 눈보다 8cm 넘게 아래 ----
   const wide = !big;
   const sw = wide ? Math.min(0.92, hw + Math.abs(eye.z) - 0.08) : 0.36;
-  const sx = x1 + (wide ? 0.16 : 0.12);
   const sBot = dT + 0.022;
   const sh = Math.max(0.07, Math.min(wide ? 0.105 : 0.14, eye.y - (big ? 0.14 : 0.085) - sBot));
+  const sx = Math.min(x1 + (wide ? 0.16 : 0.12), glassX(sBot + sh + 0.03) - (wide ? 0.06 : 0.14));
   const sy = sBot + sh / 2;
   const sz = wide ? eye.z - 0.2 + sw / 2 : eye.z;
   const tiltS = 0.18;

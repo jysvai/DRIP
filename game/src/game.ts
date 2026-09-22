@@ -240,6 +240,10 @@ export class Game {
     this.sound.voiceOn = settings.voice;
     this.sound.rain = weather.rain;
     this.sound.wetRoad = weather.wet;
+    this.view.windshield.rain = weather.rain;
+    this.view.windshield.onStroke = () => {
+      if (this.view.mode === "cockpit") this.sound.wiper();
+    };
     this.sound.setPowertrain(this.spec.powertrain);
     this.world.origin.e = 0;
     this.updateOrigin();

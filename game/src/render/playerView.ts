@@ -9,6 +9,7 @@ import type { PlayerCar } from "../sim/player";
 import { createVehicleMaterial, setLampLevels, vehicleUniforms } from "./carMaterials";
 import { buildCockpit, type Cockpit } from "./cockpit";
 import { buildVehicleModel, wheelGeometry, type VehicleModel, type VehicleType, type WheelSpec } from "./vehicleModels";
+import { WindshieldRain } from "./windshield";
 import type { World } from "./world";
 
 export type CameraMode = "cockpit" | "hood" | "chase";
@@ -74,6 +75,8 @@ export class PlayerView {
   private bodyMat: THREE.MeshPhysicalMaterial;
   private wheelMat: THREE.MeshPhysicalMaterial;
   private cockpit: Cockpit;
+  /** 앞유리 빗방울·와이퍼 (운전석 시점) */
+  readonly windshield: WindshieldRain;
   private headBeam: THREE.SpotLight | null = null;
   private night = 0;
   private headPos = new THREE.Vector3();
@@ -152,6 +155,8 @@ export class PlayerView {
       this.interior.add(shell);
     }
     this.interior.add(this.cockpit.group);
+    this.windshield = new WindshieldRain(cab, type.width);
+    this.inner.add(this.windshield.group);
     this.inner.add(this.interior);
     // 가까운 내 차(실내·차체)를 먼저 그려서 그 뒤에 가려지는 길·차는 색칠하지 않게 한다 (깊이 검사로 걸러진다)
     this.interior.traverse((o) => (o.renderOrder = -2));
@@ -204,6 +209,7 @@ export class PlayerView {
     this.mode = mode;
     const cockpit = mode === "cockpit";
     this.interior.visible = cockpit;
+    this.windshield.group.visible = cockpit;
     this.mirrorGlass.visible = cockpit;
     vehicleUniforms(this.bodyMat).uHideGlass.value = cockpit ? 1 : 0;
     this.chase.init = false;
@@ -323,6 +329,10 @@ export class PlayerView {
       const f = Math.max(day * 0.5 * (1 - this.world.tunnel * 0.7), 0.02);
       vehicleUniforms(this.cockpit.material).uFill.value.setRGB(f, f * 0.98, f * 0.95);
     }
+
+    // ---- 앞유리: 빗방울은 뒤 하늘빛(안개 색)을 띠고, 밤·터널에서는 어둡다 ----
+    const lit = Math.max(0.35, Math.min(1, this.world.daylight) * (1 - this.night) * (1 - this.world.tunnel * 0.6));
+    this.windshield.update(h, speed * 3.6, this.world.tunnel > 0.5, lit, (this.world.scene.fog as THREE.Fog | null)?.color ?? null);
 
     // ---- 카메라 ----
     const cam = this.world.camera;

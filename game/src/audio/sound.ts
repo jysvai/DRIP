@@ -209,6 +209,37 @@ export class Sound {
     src.stop(ctx.currentTime + 0.55);
   }
 
+  /** 와이퍼 날이 끝에 닿는 소리: 고무가 유리를 쓰는 '슥' + 멈추는 '툭' */
+  wiper() {
+    const ctx = this.ctx;
+    if (!ctx || !this.enabled || this.paused) return;
+    const t0 = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const f = ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.value = 1500;
+    f.Q.value = 0.8;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(0.05, t0 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
+    src.connect(f).connect(g).connect(this.bus);
+    src.start(t0, Math.random() * 1.5);
+    src.stop(t0 + 0.18);
+    const o = ctx.createOscillator();
+    const og = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(140, t0);
+    o.frequency.exponentialRampToValueAtTime(70, t0 + 0.08);
+    og.gain.setValueAtTime(0.0001, t0);
+    og.gain.exponentialRampToValueAtTime(0.06, t0 + 0.01);
+    og.gain.exponentialRampToValueAtTime(0.001, t0 + 0.1);
+    o.connect(og).connect(this.bus);
+    o.start(t0);
+    o.stop(t0 + 0.12);
+  }
+
   /** 단속 카메라 앞 과속 경고음 (띵동) */
   chime() {
     const ctx = this.ctx;
