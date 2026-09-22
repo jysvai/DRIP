@@ -56,6 +56,10 @@
   .status { display: inline-block; font-size: 14px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; }
   h1 { font-size: clamp(30px, 5.4vw, 48px); line-height: 1.3; letter-spacing: -0.02em; margin: 18px 0 18px; }
   .lead { font-size: clamp(17px, 2.2vw, 19px); color: var(--muted); max-width: 40em; margin: 0; }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+  .cta a { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-weight: 700; border-radius: 10px; padding: 12px 20px; border: 1px solid var(--line); background: var(--surface); }
+  .cta a.go { background: var(--sign); border-color: var(--sign); color: var(--sign-text); }
+  .cta small { display: block; width: 100%; color: var(--muted); font-size: 14px; }
 
   .lane { height: 4px; margin: 48px 0; background: repeating-linear-gradient(90deg, var(--line) 0 36px, transparent 36px 64px); }
 
@@ -107,15 +111,20 @@
 <header>
   <div class="wrap">
     <a class="mark" href="./"><span>DRIP</span><small>Driving Practice</small></a>
-    <nav><a href="https://github.com/jysvai/DRIP">GitHub</a></nav>
+    <nav><a href="./play/">운전하기</a> · <a href="./play/garage.html">차량 도감</a> · <a href="https://github.com/jysvai/DRIP">GitHub</a></nav>
   </div>
 </header>
 
 <main class="wrap">
   <section class="hero">
-    <span class="status">1단계 진행 중 · 운전 게임 준비 중</span>
+    <span class="status">2단계 진행 중 · 운전 게임 시험판 공개</span>
     <h1>실제 한국 고속도로를 달리고,<br>사고가 어디서 나는지 검증합니다.</h1>
     <p class="lead">DRIP은 실제 고속도로 구간을 브라우저 운전 게임으로 옮긴 연구 프로젝트입니다. 사람들이 게임에서 남긴 사고·아차사고·법규 위반 위치가 실제 사고다발구간과 얼마나 겹치는지 1km 단위로 비교하고, 모은 기록은 공개 데이터셋으로 냅니다.</p>
+    <div class="cta">
+      <a class="go" href="./play/">운전해 보기</a>
+      <a href="./play/garage.html">차량 도감</a>
+      <small>전국 고속도로 129개 주행선(10,667km) · 차종 76가지 · 키보드, 마우스, 게임패드, 레이싱 휠. PC 크롬·엣지 권장.</small>
+    </div>
   </section>
 
   <div class="lane" aria-hidden="true"></div>
@@ -153,8 +162,8 @@
     <h2>진행 방식</h2>
     <p class="sub">게임 속 도로와 교통은 실제 구간과 전날의 실제 교통 상황으로 만듭니다.</p>
     <ol class="steps">
-      <li><b>운전</b><p>실제 고속도로 한 구간을 브라우저에서 운전합니다. 교통량은 전날 실제 기록으로 매일 바뀝니다.</p></li>
-      <li><b>기록</b><p>방향지시등, 실선 침범, 과속, 안전거리, 급가감속과 사고·아차사고를 노선·이정·방향과 함께 남깁니다.</p></li>
+      <li><b>운전</b><p>실제 고속도로를 브라우저에서 운전합니다. 교통량은 시간대별 기본값으로 만들고, 공공데이터 API를 연결하면 전날 실제 기록으로 매일 바뀝니다.</p></li>
+      <li><b>기록</b><p>방향지시등, 터널 안 차로 변경, 과속, 안전거리, 버스전용차로, 급가감속과 사고·아차사고를 노선·위치·방향과 함께 남깁니다.</p></li>
       <li><b>비교</b><p>게임 기록을 1km 구간으로 모아 실제 사고다발구간·사고 원인과 맞는지 봅니다.</p></li>
     </ol>
   </section>
@@ -192,8 +201,8 @@
     <div class="table">
       <table>
         <tbody>
-          <tr><td>1</td><td>실제 사고를 1km로 집계하고 게임 후보 구간 선정</td><td class="now">진행 중</td></tr>
-          <tr><td>2</td><td>도로 한 구간 운전 게임, 매일 교통 갱신, 법규 판정</td><td class="next">다음</td></tr>
+          <tr><td>1</td><td>실제 사고를 1km로 집계하고 게임 후보 구간 선정</td><td class="done">완료</td></tr>
+          <tr><td>2</td><td>전국 고속도로 운전 게임, 법규 판정, 주행 기록 저장<small>시험판 공개. 남은 일: 매일 실제 교통 반영(API 연결), 한국 운전 습관 데이터</small></td><td class="now">진행 중</td></tr>
           <tr><td>3</td><td>참가자 모집, 실제 사고다발구간과 비교</td><td class="next">예정</td></tr>
           <tr><td>4</td><td>데이터셋 공개, AI 운전자와 비교</td><td class="next">예정</td></tr>
         </tbody>

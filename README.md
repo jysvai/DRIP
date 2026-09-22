@@ -2,7 +2,7 @@
 
 실제 한국 고속도로 구간을 브라우저 운전 게임으로 만들고, 사람들이 남긴 사고·아차사고·법규 위반 위치가 **실제 사고다발구간과 얼마나 일치하는지** 검증한다. 모은 데이터는 공개 데이터셋으로 낸다.
 
-사이트: https://jysvai.github.io/DRIP/
+사이트: https://jysvai.github.io/DRIP/ · 운전하기: https://jysvai.github.io/DRIP/play/ · 차량 도감: https://jysvai.github.io/DRIP/play/garage.html
 
 > 예전 iOS 운전 습관 앱(HAD v0.1)은 `_archive/had-ios-app/`에 보관돼 있다.
 
@@ -22,8 +22,8 @@
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| 1 | 사고 데이터 1km 집계 → 게임 후보 구간 선정 | 진행 중 |
-| 2 | 게임(도로 1구간) + 매일 교통 갱신 + 법규 판정 | |
+| 1 | 사고 데이터 1km 집계 → 게임 후보 구간 선정 | 완료 |
+| 2 | 전국 고속도로 운전 게임 + 법규 판정 + 주행 기록 저장 | 시험판 공개. 남은 일: 실제 교통 API 연결, 한국 운전 습관 데이터 |
 | 3 | 참가자 모집 → 실제 사고다발구간과 비교 | |
 | 4 | 데이터셋 공개, AI 운전자 비교 | |
 
@@ -32,7 +32,11 @@
 | 경로 | 내용 |
 |---|---|
 | `pipeline/` | 데이터 수집·가공 스크립트 (Python) |
-| `web/` | 사이트. main에 push하면 GitHub Pages로 자동 배포 |
+| `game/` | 운전 게임 (Vite + TypeScript + three.js). 사이트의 `/play/`로 배포 |
+| `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`가 만든 것) |
+| `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규 (JSON, 코드 수정 없이 바꿀 수 있음) |
+| `supabase/` | 주행 기록 DB 스키마 (브라우저 키는 넣기만 가능) |
+| `web/` | 소개 페이지. main에 push하면 게임과 함께 GitHub Pages로 자동 배포 |
 | `data/raw/` | 받은 원본 공공데이터 (git 제외, 스크립트가 다시 받음) |
 | `data/processed/` | 가공 결과 |
 
@@ -41,11 +45,25 @@
 ```
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python pipeline\accident_hotspots.py
+.venv\Scripts\python pipeline\accident_hotspots.py   # 사고 1km 집계
+.venv\Scripts\python pipeline\osm_roads.py           # 전국 고속도로 주행선 (OSM + 지형)
+
+cd game
+npm install
+npm run dev      # http://localhost:5173 (주행), /garage.html (차량 도감)
+npm test         # 도로·차 물리·교통·법규 판정 테스트
+npm run build
 ```
+
+게임에 기록 저장을 켜려면 `game/.env.local`에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣는다 (publishable 키만. secret 키는 절대 넣지 않는다).
+배포 빌드는 저장소 변수(Settings → Variables)의 같은 이름 값을 쓴다.
+
+검수용 주소: `/play/?road=r1-1&km=20&cam=chase&auto=1` 처럼 붙이면 메뉴 없이 바로 시작한다 (`auto=1`은 자동 운전, 이렇게 연 주행은 서버에 올리지 않음).
 
 API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값을 채운다.
 
 ## 데이터 출처
 
 - 한국도로공사, [고속도로 교통사고 상세현황](https://www.data.go.kr/data/15145192/fileData.do) (2022~2024)
+- 도로 선형·차로 수·제한속도·터널·교량·나들목: © OpenStreetMap contributors (ODbL)
+- 지형 높이: AWS Terrain Tiles (Mapzen terrarium, SRTM 등)

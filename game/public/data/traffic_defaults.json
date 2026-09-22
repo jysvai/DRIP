@@ -1,0 +1,13 @@
+{
+  "status": "가정값",
+  "note": "실제 교통 데이터가 없을 때 쓰는 기본 교통. pipeline/traffic_ex.py가 도로공사 자료로 traffic/latest.json을 만들면 그 값이 우선한다.",
+  "presets": {
+    "한산": { "vehPerKmPerLane": 7 },
+    "보통": { "vehPerKmPerLane": 15 },
+    "혼잡": { "vehPerKmPerLane": 32 },
+    "정체": { "vehPerKmPerLane": 60 }
+  },
+  "composition": { "승용": 0.44, "SUV": 0.2, "전기차": 0.06, "택시": 0.03, "버스": 0.035, "화물": 0.23, "특수": 0.005 },
+  "hourlyFactor": [0.25, 0.18, 0.15, 0.15, 0.22, 0.45, 0.8, 1.15, 1.2, 1.0, 0.95, 0.95, 0.95, 0.95, 1.0, 1.05, 1.1, 1.25, 1.2, 0.95, 0.8, 0.65, 0.5, 0.35],
+  "oppositeDensityFactor": 0.9
+}
