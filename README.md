@@ -23,7 +23,7 @@
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | 사고 데이터 1km 집계 → 게임 후보 구간 선정 | 완료 |
-| 2 | 전국 고속도로 운전 게임 + 법규 판정 + 주행 기록 저장 | 시험판 공개. 남은 일: 실제 교통 API 연결, 한국 운전 습관 데이터 |
+| 2 | 전국 고속도로 운전 게임 + 법규 판정 + 주행 기록 저장 + 실제 교통 수집 | 시험판 공개. 남은 일: 본인 API 키 넣기, 한국 운전 습관 데이터 |
 | 3 | 참가자 모집 → 실제 사고다발구간과 비교 | |
 | 4 | 데이터셋 공개, AI 운전자 비교 | |
 
@@ -34,11 +34,12 @@
 | `pipeline/` | 데이터 수집·가공 스크립트 (Python) |
 | `game/` | 운전 게임 (Vite + TypeScript + three.js). 사이트의 `/play/`로 배포 |
 | `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`가 만든 것) |
-| `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규 (JSON, 코드 수정 없이 바꿀 수 있음) |
+| `game/public/data/` | 차종 76가지, 운전 습관, 교통 기본값, 한국 법규 (JSON, 코드 수정 없이 바꿀 수 있음. `game/DATA.md` 참고) |
+| `game/public/traffic/latest.json` | 전날 실제 교통 (주행선별 시간대 밀도·속도·차종 구성). `pipeline/traffic_ex.py`가 만든다 |
 | `supabase/` | 주행 기록 DB 스키마 (브라우저 키는 넣기만 가능) |
 | `web/` | 소개 페이지. main에 push하면 게임과 함께 GitHub Pages로 자동 배포 |
 | `data/raw/` | 받은 원본 공공데이터 (git 제외, 스크립트가 다시 받음) |
-| `data/processed/` | 가공 결과 |
+| `data/processed/` | 가공 결과: 사고 1km 집계, 주행선 ↔ 이정 기준점(`road_km_anchors.csv`), 날짜별 실제 교통(`traffic/`) |
 
 ## 실행
 
@@ -58,12 +59,29 @@ npm run build
 게임에 기록 저장을 켜려면 `game/.env.local`에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣는다 (publishable 키만. secret 키는 절대 넣지 않는다).
 배포 빌드는 저장소 변수(Settings → Variables)의 같은 이름 값을 쓴다.
 
-검수용 주소: `/play/?road=r1-1&km=20&cam=chase&auto=1` 처럼 붙이면 메뉴 없이 바로 시작한다 (`auto=1`은 자동 운전, 이렇게 연 주행은 서버에 올리지 않음).
+검수용 주소: `/play/?road=r1-1&km=20&cam=chase&hour=22&preset=실제&auto=1` 처럼 붙이면 메뉴 없이 바로 시작한다 (`auto=1`은 자동 운전, 이렇게 연 주행은 서버에 올리지 않음).
 
 API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값을 채운다.
+
+## 실제 교통 수집
+
+| 스크립트 | 하는 일 | 키 |
+|---|---|---|
+| `pipeline/traffic_ex.py anchors` | 도로공사 VDS 8천여 곳 위치로 게임 주행선의 s ↔ 도로공사 이정(km) 기준점을 만든다 (85개 주행선). 사고 다발 구간 비교에 쓴다 | `EX_API_KEY` |
+| `pipeline/traffic_ex.py daily` | 전날 AVC(차종 분류기) 15분 자료 → 주행선별 시간대 차로당 밀도·속도·차종 구성 → `game/public/traffic/latest.json`. 메뉴의 "실제 교통"이 이걸 쓴다 (측정 지점이 있는 36개 주행선, 출발 위치에서 가장 가까운 지점 값) | `EX_API_KEY` |
+| `pipeline/events_its.py [--loop 5]` | ITS 돌발상황(사고·공사·고장·기상)을 받아 게임 주행선 위치를 붙여 쌓는다 | `ITS_API_KEY` |
+| `pipeline/compare_hotspots.py` | 게임 주행 기록(Supabase)을 실제 사고 1km 구간과 비교 (가설 1·2) | DB |
+
+- 키 없이 시험: `--key test` (포털 설명서의 예시 키. 도로공사는 실제 자료를 주지만 시험용, ITS는 고정 표본만 준다). 지금 저장소의 `latest.json`과 기준점은 이 예시 키로 한 번 만든 것이다.
+- 매일 자동 수집: `.github/workflows/traffic.yml`이 매일 06:40(한국 시간)에 전날 자료를 받아 커밋하고 사이트를 다시 올린다. 저장소 비밀 `EX_API_KEY`가 있어야 돈다:
+  `gh secret set EX_API_KEY` (붙여 넣기). `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`도 넣으면 AVC 원자료(차로별·차종별 속도)를 R2에 쌓는다.
+- 도로공사 방향: E = 이정이 느는 쪽(종점 방향), S = 기점 방향. 경부선은 기점이 부산이라 E = 서울 방향.
+- VDS 좌표가 비어 있는 노선(수도권제2순환선 일부, 세종포천선)과 민자 고속도로는 아직 기준점이 없다.
 
 ## 데이터 출처
 
 - 한국도로공사, [고속도로 교통사고 상세현황](https://www.data.go.kr/data/15145192/fileData.do) (2022~2024)
 - 도로 선형·차로 수·제한속도·터널·교량·나들목: © OpenStreetMap contributors (ODbL)
 - 지형 높이: AWS Terrain Tiles (Mapzen terrarium, SRTM 등)
+- 교통량·속도·차종(VDS·AVC): 한국도로공사 [고속도로 공공데이터 포털](https://data.ex.co.kr)
+- 돌발상황: 국토교통부 [국가교통정보센터](https://www.its.go.kr/opendata/)

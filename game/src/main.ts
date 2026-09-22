@@ -71,7 +71,7 @@ async function main() {
       settings = null;
     }
   }
-  if (!settings) settings = await showMenu(index, !!cfg.real, cfg.catalog.types.length);
+  if (!settings) settings = await showMenu(index, cfg.real, cfg.catalog.types.length);
 
   // 소리는 사용자가 누른 직후에 켜야 한다
   const sound = new Sound();

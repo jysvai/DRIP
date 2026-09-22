@@ -9,7 +9,12 @@ export interface ScenarioSettings {
   road: { id: string };
   preset: string;
   hour: number;
+  /** 출발 위치 (km). 실제 교통은 이 근처 측정 지점 값을 쓴다 */
+  startKm?: number;
 }
+
+/** 출발 위치에서 30km 안에 있는 가장 가까운 측정 지점 */
+const SITE_RANGE_M = 30000;
 
 /** 버스전용차로 구간: 규칙 파일의 나들목 이름을 이 주행선의 위치로 바꾼다.
  *  이름이 주행선 밖에 있으면(예: 한남은 OSM 고속도로 구간 밖) fromPlace/toPlace 도시 쪽 끝을 쓴다. */
@@ -42,9 +47,18 @@ export function trafficFor(settings: ScenarioSettings, cfg: GameConfig): { densi
   const t = cfg.traffic;
   const real = cfg.real?.roads[settings.road.id];
   if (settings.preset === "실제" && real?.density) {
-    return { density: real.density[settings.hour], composition: real.composition ?? t.composition, source: `실제(${cfg.real!.date})` };
+    const s0 = (settings.startKm ?? 0) * 1000;
+    let site: NonNullable<typeof real.sites>[number] | null = null;
+    for (const x of real.sites ?? []) {
+      if (!x.density || Math.abs(x.s - s0) > SITE_RANGE_M) continue;
+      if (!site || Math.abs(x.s - s0) < Math.abs(site.s - s0)) site = x;
+    }
+    const density = (site?.density ?? real.density)[settings.hour];
+    const where = site ? ` ${(site.s / 1000).toFixed(0)}km 지점` : "";
+    return { density, composition: real.composition ?? t.composition, source: `실제(${cfg.real!.date}${where})` };
   }
-  if (settings.preset === "자동") {
+  // 실제 교통이 없는 주행선에서 '실제'를 고르면 시간대 반영으로
+  if (settings.preset === "자동" || settings.preset === "실제") {
     return { density: t.presets["보통"].vehPerKmPerLane * t.hourlyFactor[settings.hour], composition: real?.composition ?? t.composition, source: "시간대" };
   }
   const p = t.presets[settings.preset] ?? t.presets["보통"];

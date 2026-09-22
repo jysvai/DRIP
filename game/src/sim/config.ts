@@ -71,18 +71,22 @@ export interface Rules {
 }
 
 /** 실제 교통 자료로 만든 파일 (pipeline/traffic_ex.py). 없으면 기본값을 쓴다 */
+/** 전날 실제 교통 (pipeline/traffic_ex.py daily가 만든다) */
 export interface RealTraffic {
   date: string;
   source: string;
+  note?: string;
   roads: Record<
     string,
     {
-      /** 시간대(0~23)별 차로당 밀도(대/km) */
+      /** 시간대(0~23)별 차로당 밀도(대/km), 측정 지점들의 중앙값 */
       density?: number[];
       /** 시간대별 평균 속도(km/h) */
       speed?: number[];
       /** 차종 구성비 */
-      composition?: Record<string, number>;
+      composition?: Record<string, number> | null;
+      /** 측정 지점(AVC)별 값. s는 이 주행선 시작점부터 m */
+      sites?: { s: number; km: number; lanes: number; density: number[] | null; speed: number[] | null }[];
     }
   >;
 }

@@ -1,6 +1,7 @@
 // 시작 메뉴: 전국 고속도로 주행선 고르기, 출발 위치·교통·시간대·시점, 연구 참여 동의.
 
 import type { RoadIndex, RoadIndexEntry } from "../road/road";
+import type { RealTraffic } from "../sim/config";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
 export type CameraMode = "cockpit" | "chase" | "hood";
@@ -43,7 +44,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", html = ""):
   return e;
 }
 
-export function showMenu(index: RoadIndex, hasRealTraffic: boolean, carTypes: number): Promise<DriveSettings> {
+export function showMenu(index: RoadIndex, real: RealTraffic | null, carTypes: number): Promise<DriveSettings> {
   return new Promise((resolve) => {
     const saved = load();
     const now = new Date();
@@ -90,7 +91,7 @@ export function showMenu(index: RoadIndex, hasRealTraffic: boolean, carTypes: nu
         box.appendChild(el("div", "name", `<span class="shield">${ref}</span>${name}`));
         const dirs = el("div", "dirs");
         for (const r of rs) {
-          const b = el("button", r.id === road.id ? "on" : "", `${r.from} → ${r.to}<small>${r.lengthKm}km</small>`);
+          const b = el("button", r.id === road.id ? "on" : "", `${r.from} → ${r.to}<small>${r.lengthKm}km${real?.roads[r.id]?.density ? " · 실측" : ""}</small>`);
           b.onclick = () => {
             road = r;
             startKm = Math.min(startKm, Math.max(0, r.lengthKm - 1));
@@ -129,7 +130,12 @@ export function showMenu(index: RoadIndex, hasRealTraffic: boolean, carTypes: nu
       setup.innerHTML = "";
       setup.appendChild(el("h2", "", `${road.name} <span style="color:var(--muted);font-weight:500">${road.from} → ${road.to}</span>`));
       setup.appendChild(
-        el("p", "sub", `${road.lengthKm}km · 주로 편도 ${road.lanes}차로 · IC·JC ${road.junctions}곳 · 터널 ${road.tunnels}곳 · 교량 ${road.bridges}곳`),
+        el(
+          "p",
+          "sub",
+          `${road.lengthKm}km · 주로 편도 ${road.lanes}차로 · IC·JC ${road.junctions}곳 · 터널 ${road.tunnels}곳 · 교량 ${road.bridges}곳` +
+            (real?.roads[road.id]?.sites?.length ? ` · 전날 실측 교통 (측정 지점 ${real.roads[road.id].sites!.length}곳)` : ""),
+        ),
       );
 
       const km = el("div", "km");
@@ -155,7 +161,9 @@ export function showMenu(index: RoadIndex, hasRealTraffic: boolean, carTypes: nu
         ["혼잡", "혼잡"],
         ["정체", "정체"],
       ];
-      if (hasRealTraffic) presets.push(["실제", "실제 교통 (전날)"]);
+      // 전날 실제 교통은 도로공사 측정 지점이 있는 주행선에만 있다
+      if (real?.roads[road.id]?.density) presets.push(["실제", `실제 교통 (${real.date.slice(5).replace("-", "/")})`]);
+      else if (preset === "실제") preset = "자동";
       setup.appendChild(field("교통량", seg(presets, preset, (v) => (preset = v))));
       setup.appendChild(
         field(

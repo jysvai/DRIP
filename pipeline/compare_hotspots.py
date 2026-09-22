@@ -7,9 +7,9 @@
      - 사고다발구간 / 그 외 구간의 게임 위험 사건 비율 비
      를 낸다.
 
-게임 위치(주행선 id, s m)를 도로공사 이정(km)으로 바꾸려면 나들목 이정표가 필요하다:
-  data/processed/road_km_anchors.csv   road_id, s_m, km, name   (build_km_anchors()가 만든다)
-나들목 이정표(노선·나들목 이름·이정)는 data/raw/ic_km.csv 로 둔다 (도로공사 API 또는 공공데이터 파일).
+게임 위치(주행선 id, s m)를 도로공사 이정(km)으로 바꾸는 기준점:
+  data/processed/road_km_anchors.csv   road_id, s_m, km, route, route_cd, direction
+  (python pipeline/traffic_ex.py anchors 가 VDS 위치로 만든다)
 
 실행: .venv\\Scripts\\python pipeline\\compare_hotspots.py [--min-seconds 30]
 """
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 import numpy as np
@@ -29,19 +28,13 @@ PROCESSED = ROOT / "data" / "processed"
 ROADS = ROOT / "game" / "public" / "roads"
 ACCIDENT_BINS = PROCESSED / "accident_bins_1km.csv"
 ANCHORS = PROCESSED / "road_km_anchors.csv"
-IC_TABLE = ROOT / "data" / "raw" / "ic_km.csv"
 OUT = PROCESSED / "sim_vs_accidents.csv"
 
-# 도로공사 사고 자료의 노선명 → 노선 번호. 같은 번호라도 이정 체계가 따로인 노선이 있어 이름도 함께 본다.
-ROUTE_REF = {
-    "경부선": "1", "경인선": "120", "고창담양선": "253", "광주대구선": "12", "광주외곽순환선": "500",
-    "남해선": "10", "남해제1지선": "102", "남해제2지선": "104", "당진대전선": "30", "당진청주선": "32",
-    "대구외곽순환선": "700", "대구포항선": "20", "대전남부순환선": "300", "동해선": "65", "무안광주선": "12",
-    "부산외곽순환선": "600", "부산포항선": "65", "서울양양선": "60", "서천공주선": "151", "서해안선": "15",
-    "수도권제1순환선": "100", "수도권제2순환선": "400", "순천완주선": "27", "영동선": "50", "울산선": "16",
-    "익산장수선": "204", "제2경인선": "110", "제2중부선": "37", "중부내륙선": "45", "중부내륙선의 지선": "451",
-    "중부선": "35", "중앙선": "55", "중앙선의 지선": "551", "청주영덕선": "30", "평택제천선": "40",
-    "함양울산선": "14", "호남선": "25", "호남선의 지선": "251",
+# VDS 목록의 노선명 → 사고 자료의 노선명 (같은 것은 그대로)
+ACCIDENT_ROUTE = {
+    "남해선(순천-부산)": "남해선", "남해선(영암-순천)": "남해선", "동해선(부산-포항)": "부산포항선", "동해선(삼척-속초)": "동해선",
+    "남해1지선": "남해제1지선", "남해2지선": "남해제2지선", "호남지선": "호남선의 지선", "대전남부선": "대전남부순환선",
+    "중부내륙지선": "중부내륙선의 지선", "중앙선지선": "중앙선의 지선", "부산외곽선": "부산외곽순환선",
 }
 
 # 위험 사건: 가설 1은 아차사고·충돌, 가설 2는 원인별 위반
@@ -54,13 +47,6 @@ CAUSE_EVENTS = {
 }
 
 
-def norm_name(name: str) -> str:
-    """나들목 이름 비교용: 공백·괄호·IC/JC/TG 꼬리표를 뗀다."""
-    name = re.sub(r"\(.*?\)", "", name)
-    name = re.sub(r"\s+", "", name)
-    return re.sub(r"(IC|JC|JCT|TG|나들목|분기점|요금소|휴게소)$", "", name)
-
-
 def load_roads() -> dict[str, dict]:
     index = json.loads((ROADS / "index.json").read_text(encoding="utf-8"))
     out = {}
@@ -70,72 +56,53 @@ def load_roads() -> dict[str, dict]:
     return out
 
 
-def build_km_anchors(roads: dict[str, dict]) -> pd.DataFrame:
-    """나들목 이정표와 주행선의 나들목 이름을 맞춰 (주행선, s) ↔ 이정 기준점을 만든다."""
-    if not IC_TABLE.exists():
-        raise SystemExit(
-            f"{IC_TABLE.relative_to(ROOT)}이 없습니다. 노선명·나들목명·이정(km) 열이 있는 표를 넣어 주세요 "
-            "(pipeline/traffic_ex.py --ic-table 이 도로공사 API로 만든다)."
-        )
-    ic = pd.read_csv(IC_TABLE)
-    ic["ref"] = ic["route"].map(ROUTE_REF)
-    ic["key"] = ic["ic_name"].map(norm_name)
-    rows = []
-    for rid, r in roads.items():
-        cand = ic[ic["ref"] == r["ref"]]
-        if cand.empty:
-            continue
-        for s, name, _ in r["junctions"]:
-            hit = cand[cand["key"] == norm_name(name)]
-            if len(hit):
-                rows.append({"road_id": rid, "s_m": s, "km": float(hit.iloc[0]["km"]), "name": name, "route": hit.iloc[0]["route"]})
-    anchors = pd.DataFrame(rows)
-    # 방향이 거꾸로 된 짝(이정이 s와 어긋나는 점)은 버린다
-    keep = []
-    for rid, g in anchors.groupby("road_id"):
+def segments(anchors: pd.DataFrame, road_id: str) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """주행선의 (사고 자료 노선명, s[], km[]) 구간들. 순환선처럼 이정이 처음으로 돌아가는 곳에서 끊는다."""
+    out = []
+    for route, g in anchors[anchors["road_id"] == road_id].groupby("route"):
         g = g.sort_values("s_m")
-        if len(g) >= 2:
-            slope = np.sign(np.polyfit(g["s_m"], g["km"], 1)[0])
-            resid = g["km"] - np.polyval(np.polyfit(g["s_m"], g["km"], 1), g["s_m"])
-            g = g[np.abs(resid) < 3]
-            g = g.assign(direction_sign=slope)
-        keep.append(g)
-    anchors = pd.concat(keep) if keep else anchors
-    anchors.to_csv(ANCHORS, index=False, encoding="utf-8-sig")
-    return anchors
+        xs, ks = g["s_m"].to_numpy(float), g["km"].to_numpy(float)
+        jump = np.abs(np.diff(ks)) - np.diff(xs) / 1000.0 > 5.0
+        cuts = np.concatenate([[0], np.nonzero(jump)[0] + 1, [len(xs)]])
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            if b - a >= 2:
+                out.append((ACCIDENT_ROUTE.get(str(route), str(route)), xs[a:b], ks[a:b]))
+    return out
 
 
-def s_to_km(anchors: pd.DataFrame, road_id: str, s: np.ndarray) -> np.ndarray:
-    """기준점 사이는 선형 보간, 밖은 기울기 ±1로 늘린다."""
-    g = anchors[anchors["road_id"] == road_id].sort_values("s_m")
-    if len(g) < 2:
-        return np.full(len(s), np.nan)
-    xs = g["s_m"].to_numpy()
-    ks = g["km"].to_numpy()
+def s_to_km(xs: np.ndarray, ks: np.ndarray, s: np.ndarray, margin: float = 1000.0) -> np.ndarray:
+    """기준점 사이는 선형 보간, 양끝 밖 margin m까지는 기울기 ±1로 늘리고 그보다 멀면 NaN."""
     km = np.interp(s, xs, ks)
     sign = np.sign(ks[-1] - ks[0]) or 1
     km = np.where(s < xs[0], ks[0] + sign * (s - xs[0]) / 1000, km)
     km = np.where(s > xs[-1], ks[-1] + sign * (s - xs[-1]) / 1000, km)
-    return km
+    return np.where((s < xs[0] - margin) | (s > xs[-1] + margin), np.nan, km)
 
 
-def route_direction(anchors: pd.DataFrame, road_id: str, roads: dict, bins: pd.DataFrame) -> tuple[str | None, str | None]:
-    """주행선 → (사고 자료 노선명, 방향 이름). 방향은 주행선 끝 도시 이름이 사고 자료 방향 이름과 같으면 그것을 쓴다."""
-    g = anchors[anchors["road_id"] == road_id]
-    if g.empty:
-        return None, None
-    route = g["route"].mode().iloc[0]
+def direction_name(route: str, road: dict, bins: pd.DataFrame) -> str | None:
+    """사고 자료의 방향 이름(도착 도시). 주행선 끝 도시와 같으면 그것, 출발 도시가 한쪽 방향이면 다른 쪽."""
     dirs = bins.loc[bins["route"] == route, "direction"].unique().tolist()
-    to = roads[road_id]["to"]
+    to, frm = road["to"], road["from"]
     for d in dirs:
         if d in to or to in d:
-            return route, d
-    # 출발 도시가 한쪽 방향 이름과 같으면 반대쪽이 우리 방향
-    frm = roads[road_id]["from"]
+            return d
     others = [d for d in dirs if not (d in frm or frm in d)]
     if len(dirs) == 2 and len(others) == 1:
-        return route, others[0]
-    return route, None
+        return others[0]
+    return None
+
+
+def to_bins(anchors: pd.DataFrame, roads: dict, bins: pd.DataFrame, rid: str, s: np.ndarray) -> pd.DataFrame:
+    """주행선 위치들 → (노선, 방향, 1km 이정 구간). 두 노선이 겹치는 곳은 양쪽에 모두 넣는다."""
+    parts = []
+    for route, xs, ks in segments(anchors, rid):
+        direction = direction_name(route, roads[rid], bins)
+        if direction is None:
+            continue
+        km = s_to_km(xs, ks, s)
+        idx = np.nonzero(~np.isnan(km))[0]
+        parts.append(pd.DataFrame({"i": idx, "route": route, "direction": direction, "km_bin": np.floor(km[idx])}))
+    return pd.concat(parts) if parts else pd.DataFrame(columns=["i", "route", "direction", "km_bin"])
 
 
 def load_game(min_seconds: float) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -164,14 +131,13 @@ def load_game(min_seconds: float) -> tuple[pd.DataFrame, pd.DataFrame]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-seconds", type=float, default=30, help="이보다 짧은 주행은 뺀다")
-    ap.add_argument("--anchors-only", action="store_true", help="이정 기준점만 만든다")
     args = ap.parse_args()
 
     roads = load_roads()
-    anchors = pd.read_csv(ANCHORS) if ANCHORS.exists() and not args.anchors_only else build_km_anchors(roads)
+    if not ANCHORS.exists():
+        raise SystemExit(f"{ANCHORS.relative_to(ROOT)}이 없습니다. 먼저 python pipeline/traffic_ex.py anchors")
+    anchors = pd.read_csv(ANCHORS)
     print(f"이정 기준점 {len(anchors)}개, 주행선 {anchors['road_id'].nunique()}개")
-    if args.anchors_only:
-        return
 
     bins = pd.read_csv(ACCIDENT_BINS)
     events, samples = load_game(args.min_seconds)
@@ -182,23 +148,21 @@ def main() -> None:
     # 1초 기록 → 이정 구간별 노출 시간
     parts = []
     for rid, g in samples.groupby("road_id"):
-        rid = str(rid)
-        route, direction = route_direction(anchors, rid, roads, bins)
-        if route is None or direction is None:
+        b = to_bins(anchors, roads, bins, str(rid), g["s"].to_numpy(float))
+        if b.empty:
             print(f"  {rid}: 노선·방향을 맞추지 못해 뺍니다")
             continue
-        km = s_to_km(anchors, rid, g["s"].to_numpy(float))
-        parts.append(pd.DataFrame({"route": route, "direction": direction, "km_bin": np.floor(km), "seconds": 1.0}).dropna())
+        parts.append(b.assign(seconds=1.0))
+    if not parts:
+        print("이정을 맞출 수 있는 주행 기록이 없습니다.")
+        return
     exposure = pd.concat(parts).groupby(["route", "direction", "km_bin"], as_index=False)["seconds"].sum()
 
     ev_parts = []
     for rid, g in events.groupby("road_id"):
-        rid = str(rid)
-        route, direction = route_direction(anchors, rid, roads, bins)
-        if route is None or direction is None:
-            continue
-        km = s_to_km(anchors, rid, g["s"].to_numpy(float))
-        ev_parts.append(pd.DataFrame({"route": route, "direction": direction, "km_bin": np.floor(km), "type": g["type"].to_numpy()}).dropna())
+        b = to_bins(anchors, roads, bins, str(rid), g["s"].to_numpy(float))
+        if not b.empty:
+            ev_parts.append(b.assign(type=g["type"].to_numpy()[b["i"].to_numpy(int)]))
     ev = pd.concat(ev_parts) if ev_parts else pd.DataFrame(columns=["route", "direction", "km_bin", "type"])
     counts = ev.pivot_table(index=["route", "direction", "km_bin"], columns="type", aggfunc="size", fill_value=0).reset_index()
 

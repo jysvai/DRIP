@@ -1,11 +1,12 @@
 // public/data 파일 검사. 한국 운전 특징·법규·차종 데이터를 고친 뒤 `npm test`로 형식이 맞는지 확인한다.
 
 import { describe, expect, it } from "vitest";
+import roadIndexJson from "../public/roads/index.json";
 import profilesJson from "../public/data/driver_profiles.json";
 import rulesJson from "../public/data/rules_kr.json";
 import trafficJson from "../public/data/traffic_defaults.json";
 import vehiclesJson from "../public/data/vehicles.json";
-import type { DriverProfile, DriverProfiles, Rules, TrafficDefaults } from "./sim/config";
+import type { DriverProfile, DriverProfiles, RealTraffic, Rules, TrafficDefaults } from "./sim/config";
 import { buildVehicleModel, type VehicleCatalog } from "./render/vehicleModels";
 
 const profiles = profilesJson as unknown as DriverProfiles;
@@ -114,6 +115,35 @@ describe("traffic_defaults.json", () => {
     const sum = Object.values(traffic.composition).reduce((a, b) => a + b, 0);
     expect(sum).toBeCloseTo(1, 1);
     for (const k of ["한산", "보통", "혼잡", "정체"]) expect(traffic.presets[k].vehPerKmPerLane).toBeGreaterThan(0);
+  });
+});
+
+// 수집기가 아직 파일을 만들지 않았으면 비어 있다
+const latestFiles = import.meta.glob<RealTraffic>("../public/traffic/latest.json", { eager: true, import: "default" });
+const latest = Object.values(latestFiles)[0];
+
+describe.runIf(!!latest)("traffic/latest.json (수집기가 만든 전날 교통)", () => {
+  const real = latest!;
+  const roadIds = new Set(roadIndexJson.roads.map((r) => r.id));
+  const cats = new Set(catalog.types.map((t) => t.category));
+
+  it("날짜와 주행선이 있고, 주행선 id는 게임에 있는 것이다", () => {
+    expect(real.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(Object.keys(real.roads).length).toBeGreaterThan(0);
+    for (const id of Object.keys(real.roads)) expect(roadIds.has(id), id).toBe(true);
+  });
+
+  it.each(Object.entries(real.roads))("%s: 시간대 24개, 밀도·속도·구성이 말이 된다", (_, r) => {
+    expect(r.density).toHaveLength(24);
+    for (const d of r.density!) {
+      expect(d).toBeGreaterThanOrEqual(0);
+      expect(d).toBeLessThanOrEqual(150);
+    }
+    for (const v of r.speed ?? []) expect(v).toBeLessThan(160);
+    if (r.composition) {
+      for (const k of Object.keys(r.composition)) expect(cats.has(k), k).toBe(true);
+      expect(Object.values(r.composition).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 1);
+    }
   });
 });
 

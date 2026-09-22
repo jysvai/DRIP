@@ -9,7 +9,7 @@
 | `traffic_defaults.json` | 교통량 단계, 시간대별 교통량, 차종 구성 | 가정값 |
 | `rules_kr.json` | 플레이어 주행을 판정하는 한국 고속도로 법규 | 법 조문은 확인, 위험운전 수치는 확인 필요 |
 | `vehicles.json` | 차종 76가지 (크기, 최고속도, 가속, 도색, 번호판, 교통 속 비율) | 제원 기반 |
-| `../traffic/latest.json` | 전날 실제 교통 (수집기가 만든다) | 아직 없음 → API 키가 들어오면 생김 |
+| `../traffic/latest.json` | 전날 실제 교통 (`pipeline/traffic_ex.py daily`가 만든다) | 도로공사 AVC 실측 (36개 주행선) |
 
 ## 한국 운전 특징 넣기 (`driver_profiles.json`)
 
@@ -61,7 +61,18 @@
 - `composition`: 차종 분류 비율. 분류 안에서 어떤 차종이 나올지는 `vehicles.json`의 `share`로 정한다.
 - `oppositeDensityFactor`: 반대편 차로 교통량 비율.
 
-`traffic/latest.json`(수집기가 만든 전날 실제 교통)이 있으면 메뉴에 "실제 교통 (전날)"이 생기고, 그 주행선의 시간대별 밀도·차종 구성을 쓴다. 형식은 `src/sim/config.ts`의 `RealTraffic`.
+`traffic/latest.json`(수집기가 만든 전날 실제 교통)에 그 주행선이 있으면 메뉴에 "실제 교통 (날짜)"가 생기고 주행선 목록에 "실측"이 붙는다.
+형식은 `src/sim/config.ts`의 `RealTraffic`:
+
+| 항목 | 뜻 |
+|---|---|
+| `roads.<주행선>.density[24]` | 시간대별 차로 하나 1km당 대수. 측정 지점마다 교통량 ÷ 속도 ÷ 차로 수를 내고 중앙값 |
+| `roads.<주행선>.speed[24]` | 시간대별 평균 속도 (km/h) |
+| `roads.<주행선>.composition` | AVC 12종 → 게임 분류. 1종(승용·미니트럭)은 승용·SUV·전기차·택시를 기본값 비율로 나누고, 2종 = 버스, 3~12종 = 화물 |
+| `roads.<주행선>.sites[]` | 측정 지점별 `s`(주행선 시작점부터 m), `km`(도로공사 이정), `lanes`, `density[24]`, `speed[24]` |
+
+게임은 출발 위치에서 30km 안의 가장 가까운 측정 지점 값을 쓰고, 없으면 주행선 전체 값을 쓴다.
+AVC 원자료에는 차로별·차종별 속도가 있어서 화물차가 어느 차로로 얼마나 빨리 달리는지(지정차로 준수)도 뽑을 수 있다 (R2 `raw/ex/avc15/`).
 
 ## 법규 (`rules_kr.json`)
 
