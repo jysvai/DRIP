@@ -15,6 +15,8 @@ export interface ScenarioSettings {
 
 /** 출발 위치에서 30km 안에 있는 가장 가까운 측정 지점 */
 const SITE_RANGE_M = 30000;
+/** 실측 평균 속도가 이보다 느리면(km/h) 막히는 흐름으로 보고 차들의 희망속도를 묶는다 */
+const CONGESTED_KMH = 70;
 
 /** 버스전용차로 구간: 규칙 파일의 나들목 이름을 이 주행선의 위치로 바꾼다.
  *  이름이 주행선 밖에 있으면(예: 한남은 OSM 고속도로 구간 밖) fromPlace/toPlace 도시 쪽 끝을 쓴다. */
@@ -43,7 +45,10 @@ export function busLaneZones(road: Road, rules: Rules, weekend: boolean, hour: n
 }
 
 /** 차로당 밀도(대/km)와 차종 구성 */
-export function trafficFor(settings: ScenarioSettings, cfg: GameConfig): { density: number; composition: Record<string, number>; source: string } {
+export function trafficFor(
+  settings: ScenarioSettings,
+  cfg: GameConfig,
+): { density: number; composition: Record<string, number>; source: string; flowKmh?: number } {
   const t = cfg.traffic;
   const real = cfg.real?.roads[settings.road.id];
   if (settings.preset === "실제" && real?.density) {
@@ -54,8 +59,14 @@ export function trafficFor(settings: ScenarioSettings, cfg: GameConfig): { densi
       if (!site || Math.abs(x.s - s0) < Math.abs(site.s - s0)) site = x;
     }
     const density = (site?.density ?? real.density)[settings.hour];
+    const speed = (site?.speed ?? real.speed)?.[settings.hour];
     const where = site ? ` ${(site.s / 1000).toFixed(0)}km 지점` : "";
-    return { density, composition: real.composition ?? t.composition, source: `실제(${cfg.real!.date}${where})` };
+    return {
+      density,
+      composition: real.composition ?? t.composition,
+      source: `실제(${cfg.real!.date}${where})`,
+      flowKmh: speed !== undefined && speed < CONGESTED_KMH ? speed : undefined,
+    };
   }
   // 실제 교통이 없는 주행선에서 '실제'를 고르면 시간대 반영으로
   if (settings.preset === "자동" || settings.preset === "실제") {

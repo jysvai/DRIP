@@ -38,7 +38,7 @@ describe("trafficFor (실제 교통)", () => {
         composition: { 승용: 0.7, 화물: 0.3 },
         sites: [
           { s: 5000, km: 400, lanes: 3, density: flat(4), speed: flat(100) },
-          { s: 80000, km: 325, lanes: 3, density: flat(20), speed: flat(60) },
+          { s: 80000, km: 325, lanes: 3, density: flat(20), speed: flat(55) },
         ],
       },
     },
@@ -48,6 +48,9 @@ describe("trafficFor (실제 교통)", () => {
     expect(trafficFor({ road: { id: "a" }, preset: "실제", hour: 8, startKm: 3 }, cfg).density).toBe(4);
     expect(trafficFor({ road: { id: "a" }, preset: "실제", hour: 8, startKm: 70 }, cfg).density).toBe(20);
     expect(trafficFor({ road: { id: "a" }, preset: "실제", hour: 8, startKm: 70 }, cfg).composition).toEqual({ 승용: 0.7, 화물: 0.3 });
+    // 막히는 지점(시속 55km)만 흐름 속도를 넘긴다
+    expect(trafficFor({ road: { id: "a" }, preset: "실제", hour: 8, startKm: 70 }, cfg).flowKmh).toBe(55);
+    expect(trafficFor({ road: { id: "a" }, preset: "실제", hour: 8, startKm: 3 }, cfg).flowKmh).toBeUndefined();
   });
 
   it("30km 안에 측정 지점이 없으면 주행선 전체 값, 실제 교통이 없는 주행선은 시간대 반영", () => {

@@ -51,6 +51,21 @@ describe("Traffic", () => {
     expect(avg(40)).toBeLessThan(avg(6));
   });
 
+  it("실측 흐름 속도가 느리면(막히는 시간대) 차들이 그 속도 근처로 달린다", () => {
+    const t = new Traffic(road, cfg, 7);
+    t.density = 12;
+    t.flowSpeed = 50 / 3.6;
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 14, len: 4.9, width: 1.86 };
+    t.fill(player);
+    for (let i = 0; i < 30 * 20; i++) {
+      player.s += player.v * 0.05;
+      t.update(0.05, player, i * 0.05);
+    }
+    const kmh = (t.agents.reduce((s, a) => s + a.v, 0) / t.agents.length) * 3.6;
+    expect(kmh).toBeLessThan(65);
+    expect(kmh).toBeGreaterThan(30);
+  });
+
   it("여러 차종이 섞여 나온다 (화물·버스 포함)", () => {
     const { t } = sim(20, 5);
     const cats = new Set(t.agents.map((a) => a.type.category));

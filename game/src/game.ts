@@ -95,6 +95,7 @@ export class Game {
     const tr = trafficFor(settings, cfg);
     this.traffic = new Traffic(road, cfg, settings.seed);
     this.traffic.density = Math.max(1, tr.density);
+    this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
     this.traffic.setComposition(tr.composition);
     this.traffic.busZones = this.busZones;
     this.traffic.fill(this.playerState());
