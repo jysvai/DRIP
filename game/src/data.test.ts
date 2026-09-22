@@ -7,7 +7,8 @@ import rulesJson from "../public/data/rules_kr.json";
 import trafficJson from "../public/data/traffic_defaults.json";
 import vehiclesJson from "../public/data/vehicles.json";
 import type { DriverProfile, DriverProfiles, RealTraffic, Rules, TrafficDefaults } from "./sim/config";
-import { buildVehicleModel, type VehicleCatalog } from "./render/vehicleModels";
+import type * as THREE from "three";
+import { buildVehicleModel, createVehicleObject, type VehicleCatalog, type VehicleModel, type VehicleType } from "./render/vehicleModels";
 
 const profiles = profilesJson as unknown as DriverProfiles;
 const rules = rulesJson as unknown as Rules;
@@ -60,8 +61,91 @@ describe("vehicles.json", () => {
 });
 
 describe("차 모델", () => {
-  it.each(catalog.types.map((t) => [t.id, t] as const))("%s: 전조등·제동등·방향지시등 위치가 차 앞뒤에 있다", (_, t) => {
-    const m = buildVehicleModel(t, 1);
+  // 차종마다 한 번만 만든다
+  const models = new Map<string, VehicleModel>();
+  const modelOf = (t: VehicleType) => {
+    let m = models.get(t.id);
+    if (!m) models.set(t.id, (m = buildVehicleModel(t, 1)));
+    return m;
+  };
+  const tris = (g: THREE.BufferGeometry) => (g.index ? g.index.count : g.getAttribute("position").count) / 3;
+  const types = catalog.types.map((t) => [t.id, t] as const);
+
+  it.each(types)("%s: 차체 기하에 필요한 속성이 모두 있고 NaN이 없다", (_, t) => {
+    const m = modelOf(t);
+    for (const g of [m.body, m.mid, m.interior]) {
+      const n = g.getAttribute("position").count;
+      expect(n).toBeGreaterThan(0);
+      for (const name of ["normal", "color", "surf"]) expect(g.getAttribute(name)?.count, name).toBe(n);
+      const pos = g.getAttribute("position").array;
+      for (let i = 0; i < pos.length; i++) if (!Number.isFinite(pos[i])) throw new Error(`position[${i}] = ${pos[i]}`);
+    }
+  });
+
+  it.each(types)("%s: 차체가 차 크기 안에 들어가고 중간 거리 모델이 더 가볍다", (_, t) => {
+    const m = modelOf(t);
+    m.body.computeBoundingBox();
+    const b = m.body.boundingBox!;
+    // 거울·범퍼가 조금 튀어나올 수 있다 (버스 토끼귀 거울은 앞으로 더)
+    const bus = ["coach", "city_bus", "double_decker"].includes(t.body);
+    expect(b.max.x - b.min.x).toBeLessThan(t.length + (bus ? 0.6 : 0.3));
+    expect(b.max.x - b.min.x).toBeGreaterThan(t.length * 0.9);
+    expect(b.max.z - b.min.z).toBeLessThan(t.width + 0.8);
+    expect(b.max.y).toBeLessThan(t.height + 0.35);
+    expect(b.min.y).toBeGreaterThan(-0.05);
+    expect(tris(m.mid)).toBeLessThan(tris(m.body));
+  });
+
+  it.each(types)("%s: 바퀴가 좌우 짝을 이루고 앞바퀴가 조향한다", (_, t) => {
+    const m = modelOf(t);
+    const ws = m.wheels;
+    expect(ws.length).toBeGreaterThanOrEqual(4);
+    expect(ws.length % 2).toBe(0);
+    for (const w of ws) {
+      expect(Math.abs(w.x)).toBeLessThan(t.length / 2);
+      expect(w.r).toBeGreaterThan(0.2);
+      expect(w.r).toBeLessThan(0.6);
+      expect(Math.abs(w.z) + w.w / 2, "바퀴가 차 폭 안").toBeLessThanOrEqual(t.width / 2 + 0.06);
+      // 반대쪽에 같은 바퀴가 있다
+      expect(ws.some((o) => Math.abs(o.x - w.x) < 1e-6 && Math.abs(o.z + w.z) < 1e-6 && o.r === w.r)).toBe(true);
+    }
+    const steer = ws.filter((w) => w.steer);
+    expect(steer.length).toBeGreaterThanOrEqual(2);
+    const front = Math.max(...ws.map((w) => w.x));
+    for (const w of steer) expect(w.x, "조향 바퀴는 앞쪽").toBeGreaterThan(front - 1.6);
+  });
+
+  it.each(types)("%s: 운전석은 차 안 왼쪽이고 거울 세 개가 제자리에 있다", (_, t) => {
+    const c = modelOf(t).cabin;
+    expect(Math.abs(c.eye.x)).toBeLessThan(t.length / 2);
+    expect(c.eye.y).toBeGreaterThan(c.floorY);
+    expect(c.eye.y).toBeLessThan(Math.min(c.roofY, t.height));
+    expect(c.eye.z, "왼쪽 운전석").toBeLessThan(0);
+    expect(Math.abs(c.eye.z)).toBeLessThan(t.width / 2);
+    expect(c.dash.x0).toBeGreaterThan(c.dash.x1);
+    expect(c.dash.x1).toBeGreaterThan(c.eye.x);
+    expect(c.glass).toHaveLength(3);
+    for (const g of c.glass) {
+      expect(g.w).toBeGreaterThan(0.05);
+      expect(g.h).toBeGreaterThan(0.03);
+    }
+    expect(c.glass[1].c.z, "왼쪽 사이드미러").toBeLessThan(0);
+    expect(c.glass[2].c.z, "오른쪽 사이드미러").toBeGreaterThan(0);
+    expect(c.mirrorL.z).toBeLessThan(0);
+    expect(c.mirrorR.z).toBeGreaterThan(0);
+  });
+
+  it("같은 씨앗이면 같은 모양, 미리보기 차는 World 없이 만든다", () => {
+    const t = catalog.types[0];
+    expect(buildVehicleModel(t, 7).body.getAttribute("position").count).toBe(buildVehicleModel(t, 7).body.getAttribute("position").count);
+    const o = createVehicleObject(t, "#c0392b");
+    const m = o.userData.model as VehicleModel;
+    expect(o.userData.wheels).toHaveLength(m.wheels.length);
+    expect(o.children).toHaveLength(1 + m.wheels.length);
+  });
+
+  it.each(types)("%s: 전조등·제동등·방향지시등 위치가 차 앞뒤에 있다", (_, t) => {
+    const m = modelOf(t);
     expect(m.headLights.length).toBeGreaterThanOrEqual(2);
     expect(m.brakeLights.length).toBeGreaterThanOrEqual(2);
     expect(m.signalLeft.length).toBeGreaterThanOrEqual(1);

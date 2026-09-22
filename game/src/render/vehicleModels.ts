@@ -1829,11 +1829,11 @@ function buildTractor(t: VehicleType, b: VB) {
   const cabLen = 2.3;
   const txs = [front - 1.3, front - 4.4, front - 5.7];
   const { yTop } = truckCab(b, t, { front, len: cabLen, W, y0: frameY - 0.02, H: 2.5, xAxle: txs[0], wr, tireW: tw + 0.04, style: "heavy" });
-  // 지붕 공기 가리개 (짐 높이까지)
+  // 지붕 공기 가리개 (짐 높이까지, 평판은 낮은 지붕 그대로)
   const cargo = t.cargo ?? "container40";
-  const fh = cargo.startsWith("container") ? 0.55 : cargo === "carcarrier" ? 0.45 : 0.25;
+  const fh = cargo.startsWith("container") ? 0.55 : cargo === "carcarrier" ? 0.45 : cargo === "flatbed" ? 0 : 0.25;
   const fx = front - 0.5;
-  profile(m, [[fx, yTop], [fx - 0.2, yTop + 0.08], [fx - 1.55, yTop + fh], [fx - 1.75, yTop + fh], [fx - 1.75, yTop]], W - 0.3, S.paint, 0, 0.1);
+  if (fh > 0) profile(m, [[fx, yTop], [fx - 0.2, yTop + 0.08], [fx - 1.55, yTop + fh], [fx - 1.75, yTop + fh], [fx - 1.75, yTop]], W - 0.3, S.paint, 0, 0.1);
   const tractorLen = 6.3;
   const gaps: [number, number][] = txs.map((x) => [x - wr - 0.1, x + wr + 0.1]);
   chassis(b, front - cabLen, front - tractorLen, frameY, W, gaps, true);
@@ -1907,8 +1907,9 @@ function buildTractor(t: VehicleType, b: VB) {
     box(m, tLen * 0.85, 0.05, 0.5, tMid, deckY + 2.42, 0, S.steel);
     for (let x = tMid + tLen * 0.35; x > tMid - tLen * 0.4; x -= 2.2) cyl(m, 0.22, 0.12, x, deckY + 2.45, 0, "y", S.steel, 10);
   } else if (cargo === "carcarrier") {
+    // 아래칸 차 지붕 바로 위에 윗칸 (전체 높이 4m 안쪽)
     const lower = deckY + 0.1;
-    const upper = deckY + 1.95;
+    const upper = lower + 1.35;
     box(m, tLen, 0.08, W, tMid, upper, 0, S.steel);
     for (const side of [-1, 1]) {
       for (let k = 0; k < 6; k++) box(m, 0.1, upper - lower, 0.08, tx1 + 0.3 + (k * (tLen - 0.6)) / 5, (upper + lower) / 2, side * (W / 2 - 0.05), S.steel);
