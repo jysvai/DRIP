@@ -121,7 +121,7 @@ export class Game {
     // 날씨: 흐리면 어둡고, 비·안개는 가시거리만큼 안개를 당긴다. '실제'는 어제 같은 시각 출발 지점의 날씨
     const realW = settings.weather === "real" ? realWeatherAt(cfg.realWeather, road, Math.max(60, setup.startS), settings.hour) : null;
     const weather = realW ? realW.weather : weatherOf(settings.weather === "real" ? "clear" : settings.weather);
-    this.realWeather = realW ? `실제 날씨(Open-Meteo, ${realW.stamp}, 출발 지점): ${weather.label}${realW.snow ? " (눈은 아직 비로 그립니다)" : ""}.` : "";
+    this.realWeather = realW ? `실제 날씨(Open-Meteo, ${realW.stamp}, 출발 지점): ${weather.label}.` : "";
     this.weather = weather;
     this.weatherView = new WeatherView(this.world, weather);
     this.weatherView.apply(sun.night);
@@ -133,7 +133,9 @@ export class Game {
     this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
     this.enforcement = enforcementFor(road, cfg.cameras);
     this.chunks.setEnforcement(this.enforcement);
-    if (weather.wet) this.chunks.setWet(0.75 + 0.25 * weather.rain, this.weatherView.roadEnvironment());
+    if (weather.wet) this.chunks.setWet(0.75 + 0.25 * Math.max(weather.rain, weather.snow * 0.5), this.weatherView.roadEnvironment());
+    // 눈: 땅·나무·방호벽 윗면에 쌓인다
+    if (weather.snow > 0) this.chunks.setSnow(0.7 + 0.3 * weather.snow);
 
     const type = setup.vehicle;
     this.spec = specFor(type);
@@ -245,9 +247,11 @@ export class Game {
     this.sound.voiceOn = settings.voice;
     this.sound.rain = weather.rain;
     this.sound.wetRoad = weather.wet;
-    this.view.windshield.rain = weather.rain;
-    this.spray.wet = weather.rain;
-    this.trafficView.wet = weather.wet ? 0.6 + 0.4 * weather.rain : 0;
+    // 눈: 앞유리에는 눈송이가 붙었다 녹고, 바퀴는 젖은 눈(진창)을 조금 튀긴다
+    this.view.windshield.rain = weather.rain || weather.snow * 0.45;
+    this.view.windshield.flakes = weather.snow > 0;
+    this.spray.wet = weather.rain || weather.snow * 0.6;
+    this.trafficView.wet = weather.wet ? 0.6 + 0.4 * Math.max(weather.rain, weather.snow * 0.5) : 0;
     this.view.windshield.onStroke = () => {
       if (this.view.mode === "cockpit") this.sound.wiper();
     };
@@ -328,7 +332,9 @@ export class Game {
             this.sound.resume();
             this.sound.say(
               `경로 안내를 시작합니다. ${this.setup.destName}까지 ${Math.round(remain)}킬로미터입니다.` +
-                (cut ? ` ${this.weather.visibilityM <= 100 ? "앞이 잘 보이지 않습니다" : "노면이 젖어 있습니다"}. 제한속도의 ${cut}퍼센트를 줄여 달리세요.` : ""),
+                (cut
+                  ? ` ${this.weather.visibilityM <= 100 ? "앞이 잘 보이지 않습니다" : this.weather.snow > 0 ? "눈길입니다" : "노면이 젖어 있습니다"}. 제한속도의 ${cut}퍼센트를 줄여 달리세요.`
+                  : ""),
             );
             onStart?.();
           },
@@ -341,8 +347,8 @@ export class Game {
   private weatherNote(cut: number): string {
     const w = this.weather;
     if (w.kind === "clear" || w.kind === "cloudy") return "";
-    const why = w.visibilityM <= 100 ? `${w.label}로 앞이 ${w.visibilityM}m 정도밖에 보이지 않습니다` : `${w.label}가 내려 노면이 젖어 있습니다`;
-    const grip = w.wet ? " 노면이 미끄러워 제동거리가 약 1.8배로 늘어납니다." : "";
+    const why = w.visibilityM <= 100 ? `${w.label}로 앞이 ${w.visibilityM}m 정도밖에 보이지 않습니다` : w.snow > 0 ? "눈이 내려 노면에 눈이 쌓이고 있습니다" : `${w.label}가 내려 노면이 젖어 있습니다`;
+    const grip = w.wet ? ` 노면이 미끄러워 제동거리가 약 ${(1 / w.grip).toFixed(1)}배로 늘어납니다.` : "";
     return cut ? `${why}. 법대로라면 제한속도의 ${cut}%를 줄여 달려야 합니다(터널 안 제외).${grip}` : `${why}.${grip}`;
   }
 

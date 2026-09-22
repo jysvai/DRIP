@@ -1,6 +1,7 @@
-// 날씨 화면: 잿빛 하늘과 안개(가시거리), 흐린 날 약한 햇빛, 빗줄기.
+// 날씨 화면: 잿빛 하늘과 안개(가시거리), 흐린 날 약한 햇빛, 빗줄기, 눈발.
 // 빗줄기는 카메라 둘레 상자 안에서 떨어지는 짧은 선이다. 빗방울은 땅에 대해 멈춰 있고(차가 달리면 뒤로 스친다),
 // 상자를 벗어나면 반대쪽에서 다시 나온다. 차 안(운전석 시점)이나 차체를 뚫고 내리지 않게 차 둘레는 비운다.
+// 눈발은 같은 상자에서 천천히 내리며 알갱이마다 옆으로 흔들린다. 달리면 앞유리로 쏟아지듯 다가온다.
 
 import * as THREE from "three";
 import type { Weather } from "../sim/weather";
@@ -8,6 +9,9 @@ import type { World } from "./world";
 
 const OVERCAST = new THREE.Color(0xa7afb6);
 const MIST = new THREE.Color(0xc9ced1);
+const SNOWSKY = new THREE.Color(0xc4cad0);
+/** 눈송이 떨어지는 속도 (m/s) */
+const SNOW_FALL = 1.3;
 const NIGHT = new THREE.Color(0x06090e);
 const BOX = new THREE.Vector3(44, 22, 44);
 /** 빗방울 떨어지는 속도 (m/s) */
@@ -46,8 +50,62 @@ void main() {
   gl_FragColor = vec4(uColor, uOpacity * vFade);
 }`;
 
+const SNOW_VERT = /* glsl */ `
+uniform vec3 uOffset;
+uniform vec3 uCenter;
+uniform vec3 uBox;
+uniform vec3 uCarPos;
+uniform vec2 uCarDir;
+uniform vec3 uCarHalf;
+uniform float uTime;
+uniform float uScale;
+attribute float aSeed;
+varying float vFade;
+void main() {
+  // 흩날림: 알갱이마다 다른 위상으로 옆으로 흔들린다
+  vec3 q = position;
+  q.x += sin(uTime * 0.9 + aSeed * 6.283) * 0.5;
+  q.z += cos(uTime * 0.7 + aSeed * 12.1) * 0.5;
+  vec3 p = mod(q + uOffset - uCenter + uBox * 0.5, uBox) - uBox * 0.5;
+  vec3 wp = uCenter + p;
+  vec2 rel = wp.xz - uCarPos.xz;
+  float along = dot(rel, uCarDir);
+  float side = dot(rel, vec2(-uCarDir.y, uCarDir.x));
+  bool inCar = abs(along) < uCarHalf.x && abs(side) < uCarHalf.y && wp.y < uCarPos.y + uCarHalf.z;
+  vFade = (1.0 - smoothstep(0.3, 0.5, length(p.xz) / uBox.x)) * (1.0 - smoothstep(0.3, 0.5, abs(p.y) / uBox.y));
+  vec4 mv = viewMatrix * vec4(wp, 1.0);
+  // 눈송이 지름 약 5cm (뭉친 함박눈, 가까우면 크게, 멀어도 1px)
+  gl_PointSize = clamp(0.05 * uScale / max(0.3, -mv.z), 1.0, 16.0) * (0.6 + 0.8 * fract(aSeed * 7.31));
+  gl_Position = inCar ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * mv;
+}`;
+
+const SNOW_FRAG = /* glsl */ `
+uniform vec3 uColor;
+uniform float uOpacity;
+varying float vFade;
+void main() {
+  float r = length(gl_PointCoord - 0.5) * 2.0;
+  if (r > 1.0) discard;
+  gl_FragColor = vec4(uColor, uOpacity * vFade * (1.0 - smoothstep(0.35, 1.0, r)));
+}`;
+
 export class WeatherView {
   private rain: THREE.LineSegments | null = null;
+  private snow: THREE.Points | null = null;
+  private snowUniforms = {
+    uOffset: { value: new THREE.Vector3() },
+    uCenter: { value: new THREE.Vector3() },
+    uBox: { value: new THREE.Vector3(36, 18, 36) },
+    uCarPos: { value: new THREE.Vector3() },
+    uCarDir: { value: new THREE.Vector2(1, 0) },
+    uCarHalf: { value: new THREE.Vector3(2.7, 1.2, 2) },
+    uTime: { value: 0 },
+    uScale: { value: 600 },
+    uColor: { value: new THREE.Color(0xf4f7fa) },
+    uOpacity: { value: 0.9 },
+  };
+  private snowY = 0;
+  private time = 0;
   private uniforms = {
     uOffset: { value: new THREE.Vector3() },
     uCenter: { value: new THREE.Vector3() },
@@ -70,6 +128,7 @@ export class WeatherView {
     readonly weather: Weather,
   ) {
     if (weather.rain > 0) this.makeRain(Math.round(3000 + 9000 * weather.rain));
+    if (weather.snow > 0) this.makeSnow(Math.round(6000 + 24000 * weather.snow));
   }
 
   /** 하늘·안개. World.setNight 뒤에 한 번 부른다 */
@@ -78,7 +137,7 @@ export class WeatherView {
     const scene = this.world.scene;
     const fog = scene.fog as THREE.Fog;
     if (w.overcast > 0) {
-      const gray = (w.kind === "fog" ? MIST : OVERCAST).clone().lerp(NIGHT, Math.pow(Math.min(1, night), 0.6));
+      const gray = (w.kind === "fog" ? MIST : w.snow > 0 ? SNOWSKY : OVERCAST).clone().lerp(NIGHT, Math.pow(Math.min(1, night), 0.6));
       fog.color.lerp(gray, Math.min(1, w.overcast * 1.1));
     }
     // 가시거리: 물체가 거의 다 흐려지는 거리가 가시거리쯤이 되게
@@ -89,6 +148,9 @@ export class WeatherView {
     const dark = Math.min(1, night);
     u.uColor.value.setRGB(0.78, 0.82, 0.86).multiplyScalar(1 - 0.55 * dark);
     u.uOpacity.value = (0.22 + 0.16 * w.rain) * (1 - 0.35 * dark);
+    // 밤 눈발은 어둡게 (전조등·가로등이 없는 곳)
+    this.snowUniforms.uColor.value.setRGB(0.95, 0.97, 0.99).multiplyScalar(1 - 0.7 * dark);
+    this.snowUniforms.uOpacity.value = 0.85 - 0.25 * dark;
   }
 
   /** 젖은 노면이 비출 하늘: 위는 지금 안개(하늘)색, 지평선 아래는 어둡게. apply 뒤에 부른다 */
@@ -118,7 +180,7 @@ export class WeatherView {
 
   /** 빗줄기: 원점(플레이어 위치)·카메라·차 위치로 맞춘다. dt 초 */
   update(dt: number, car: THREE.Object3D, carHeading: number, carLen: number, carWidth: number, carHeight: number, inTunnel: boolean) {
-    if (!this.rain) return;
+    if (!this.rain && !this.snow) return;
     const o = this.world.origin;
     if (dt > 0 && Number.isFinite(this.lastE)) {
       const ve = (o.e - this.lastE) / dt;
@@ -139,8 +201,46 @@ export class WeatherView {
     this.dir.set(Math.cos(carHeading), -Math.sin(carHeading));
     u.uCarDir.value.copy(this.dir);
     u.uCarHalf.value.set(carLen / 2 + 0.4, carWidth / 2 + 0.35, carHeight + 0.3);
-    // 터널 안에는 비가 오지 않는다
-    this.rain.visible = !inTunnel;
+    // 터널 안에는 비·눈이 오지 않는다
+    if (this.rain) this.rain.visible = !inTunnel;
+    if (this.snow) {
+      const su = this.snowUniforms;
+      this.time += dt;
+      this.snowY = (this.snowY + SNOW_FALL * dt) % su.uBox.value.y;
+      const b = su.uBox.value;
+      su.uOffset.value.set(m(-o.e, b.x), m(-this.snowY, b.y), m(o.n, b.z));
+      su.uCenter.value.copy(this.world.camera.position);
+      su.uCarPos.value.copy(car.position);
+      su.uCarDir.value.copy(this.dir);
+      su.uCarHalf.value.copy(u.uCarHalf.value);
+      su.uTime.value = this.time;
+      this.snow.visible = !inTunnel;
+    }
+  }
+
+  private makeSnow(n: number) {
+    const b = this.snowUniforms.uBox.value;
+    const pos = new Float32Array(n * 3);
+    const seed = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      pos.set([Math.random() * b.x, Math.random() * b.y, Math.random() * b.z], i * 3);
+      seed[i] = Math.random();
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    g.setAttribute("aSeed", new THREE.BufferAttribute(seed, 1));
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
+    const mat = new THREE.ShaderMaterial({ uniforms: this.snowUniforms, vertexShader: SNOW_VERT, fragmentShader: SNOW_FRAG, transparent: true, depthWrite: false });
+    this.snow = new THREE.Points(g, mat);
+    this.snow.frustumCulled = false;
+    this.snow.renderOrder = 5;
+    // 점 크기: 그리는 화면(본 화면·거울) 높이와 시야각에 맞춘다
+    this.snow.onBeforeRender = (r, _s, cam) => {
+      const h = r.getRenderTarget()?.height ?? r.domElement.height;
+      const fov = (cam as THREE.PerspectiveCamera).fov ?? 60;
+      this.snowUniforms.uScale.value = h / (2 * Math.tan((fov * Math.PI) / 360));
+    };
+    this.world.scene.add(this.snow);
   }
 
   private makeRain(n: number) {

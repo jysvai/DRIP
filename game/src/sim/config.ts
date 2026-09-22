@@ -40,7 +40,7 @@ export interface DriverProfiles {
   assignment: Record<string, Record<string, number>>;
   typeOverrides: Record<string, Record<string, number>>;
   /** 날씨별 반응 (비·폭우·안개 등). 없으면 날씨에 반응하지 않는다 */
-  weather?: Partial<Record<"clear" | "cloudy" | "rain" | "heavy_rain" | "fog", WeatherResponse>>;
+  weather?: Partial<Record<"clear" | "cloudy" | "rain" | "heavy_rain" | "fog" | "snow" | "heavy_snow", WeatherResponse>>;
 }
 
 export interface TrafficDefaults {

@@ -244,6 +244,26 @@ export class RoadChunks {
     surface.needsUpdate = marks.needsUpdate = true;
   }
 
+  /** 눈이 쌓인다: 땅·나무·콘크리트(방호벽 윗면 등)의 위를 보는 면이 하얘진다. k 0~1 (노면은 제설돼 젖은 채로 둔다) */
+  setSnow(k: number) {
+    for (const m of [this.mats.terrain, this.mats.tree, this.mats.concrete] as THREE.MeshStandardMaterial[]) {
+      m.onBeforeCompile = (sh) => {
+        sh.uniforms.uSnow = { value: k };
+        sh.fragmentShader = sh.fragmentShader.replace("void main() {", "uniform float uSnow;\nvoid main() {").replace(
+          "#include <lights_physical_fragment>",
+          `{
+            vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+            float cover = uSnow * smoothstep(0.2, 0.75, dot(normal, upV));
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.88, 0.9, 0.93), cover);
+          }
+          #include <lights_physical_fragment>`,
+        );
+      };
+      m.customProgramCacheKey = () => `snow${k}`;
+      m.needsUpdate = true;
+    }
+  }
+
   /** 단속 카메라와 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setEnforcement(e: Enforcement) {
     this.enforcement = e;

@@ -4,7 +4,7 @@ r"""노선별 시간대 날씨 (Open-Meteo, 키 없음) → game/public/weather/
 '실제 교통'(pipeline/traffic_ex.py daily)과 같은 날(기본 어제)을 받아 두 자료의 시점을 맞춘다.
 
 주행선마다 시작점부터 40km 간격(끝점 포함)으로 지점을 잡는다. 시간마다 한 글자:
-  c 맑음 · o 흐림(구름 70% 이상) · r 비(강수 0.1mm/h 이상) · h 폭우(20mm/h 이상) · f 안개(WMO 45·48) · s 눈
+  c 맑음 · o 흐림(구름 70% 이상) · r 비(강수 0.1mm/h 이상) · h 폭우(20mm/h 이상) · f 안개(WMO 45·48) · s 눈 · S 폭설(1cm/h 이상, WMO 75·86)
 
 실행: .venv\Scripts\python pipeline\weather_om.py [--date YYYYMMDD]
 자료: Open-Meteo.com (CC BY 4.0), 기상 모델 재분석·예보 값이라 관측소 실측과 다를 수 있다.
@@ -40,12 +40,16 @@ HEAVY_MM = 20.0
 RAIN_MM = 0.1
 FOG_CODES = {45, 48}
 SNOW_CODES = {71, 73, 75, 77, 85, 86}
+HEAVY_SNOW_CODES = {75, 86}
+HEAVY_SNOW_CM = 1.0
 
 
 def code(wmo: int | None, precip: float | None, snow: float | None, cloud: float | None) -> str:
     """한 시간의 날씨 한 글자"""
     w = int(wmo or 0)
     p = float(precip or 0)
+    if w in HEAVY_SNOW_CODES or float(snow or 0) >= HEAVY_SNOW_CM:
+        return "S"
     if w in SNOW_CODES or float(snow or 0) > 0:
         return "s"
     if p >= HEAVY_MM:
@@ -134,7 +138,7 @@ def main() -> None:
             {
                 "source": "Open-Meteo.com (CC BY 4.0)",
                 "date": date,
-                "codes": {"c": "clear", "o": "cloudy", "r": "rain", "h": "heavy_rain", "f": "fog", "s": "snow"},
+                "codes": {"c": "clear", "o": "cloudy", "r": "rain", "h": "heavy_rain", "f": "fog", "s": "snow", "S": "heavy_snow"},
                 "roads": roads,
             },
             ensure_ascii=False,

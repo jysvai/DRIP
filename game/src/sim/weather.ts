@@ -1,10 +1,10 @@
-// 날씨: 맑음·흐림·비·폭우·안개. 가시거리(안개), 노면 마찰(물리), 법정 감속(판정), 주변 차의 반응(교통)을 한곳에서 정한다.
+// 날씨: 맑음·흐림·비·폭우·안개·눈·폭설. 가시거리(안개), 노면 마찰(물리), 법정 감속(판정), 주변 차의 반응(교통)을 한곳에서 정한다.
 // 기상청 실황을 붙이기 전까지는 메뉴에서 고른다.
 
 import type { Road } from "../road/road";
 import type { Rules, WeatherResponse } from "./config";
 
-export type WeatherKind = "clear" | "cloudy" | "rain" | "heavy_rain" | "fog";
+export type WeatherKind = "clear" | "cloudy" | "rain" | "heavy_rain" | "fog" | "snow" | "heavy_snow";
 /** 메뉴에서 고르는 날씨: 직접 고르거나 실제(어제 같은 시각, weather/latest.json) */
 export type WeatherChoice = WeatherKind | "real";
 
@@ -17,20 +17,26 @@ export interface Weather {
   overcast: number;
   /** 빗줄기 세기 0~1 (화면·소리) */
   rain: number;
-  /** 노면이 젖었는지 (법정 20% 감속) */
+  /** 눈발 세기 0~1 (화면). 눈이 오면 땅·나무에 쌓이고 노면은 젖는다 */
+  snow: number;
+  /** 노면이 젖었는지 (법정 20% 감속: 비에 젖은 노면, 눈이 20mm 미만 쌓인 노면) */
   wet: boolean;
   /** 노면 마찰 배율 (마른 노면 1), 승용·대형차(화물·버스).
-   *  한국교통안전공단 50km/h 제동 시험: 승용 9.9m→18.1m(0.55배), 화물 15.4m→24.3m(0.63배), 버스 17.3m→28.9m(0.60배) */
+   *  한국교통안전공단 50km/h 제동 시험: 승용 9.9m→18.1m(0.55배), 화물 15.4m→24.3m(0.63배), 버스 17.3m→28.9m(0.60배).
+   *  눈은 가정: 다져진 눈길 마찰은 마른 노면의 약 1/3. 같은 공단 빙판길 시험(30km/h 제동거리 승용 7.0배, 화물 4.6배, 버스 4.9배)보다는 덜 미끄럽다 */
   grip: number;
   gripHeavy: number;
 }
 
 export const WEATHERS: Record<WeatherKind, Weather> = {
-  clear: { kind: "clear", label: "맑음", visibilityM: 20000, overcast: 0, rain: 0, wet: false, grip: 1, gripHeavy: 1 },
-  cloudy: { kind: "cloudy", label: "흐림", visibilityM: 8000, overcast: 0.7, rain: 0, wet: false, grip: 1, gripHeavy: 1 },
-  rain: { kind: "rain", label: "비", visibilityM: 700, overcast: 0.85, rain: 0.5, wet: true, grip: 0.55, gripHeavy: 0.62 },
-  heavy_rain: { kind: "heavy_rain", label: "폭우", visibilityM: 90, overcast: 1, rain: 1, wet: true, grip: 0.5, gripHeavy: 0.57 },
-  fog: { kind: "fog", label: "짙은 안개", visibilityM: 80, overcast: 0.9, rain: 0, wet: false, grip: 0.9, gripHeavy: 0.92 },
+  clear: { kind: "clear", label: "맑음", visibilityM: 20000, overcast: 0, rain: 0, snow: 0, wet: false, grip: 1, gripHeavy: 1 },
+  cloudy: { kind: "cloudy", label: "흐림", visibilityM: 8000, overcast: 0.7, rain: 0, snow: 0, wet: false, grip: 1, gripHeavy: 1 },
+  rain: { kind: "rain", label: "비", visibilityM: 700, overcast: 0.85, rain: 0.5, snow: 0, wet: true, grip: 0.55, gripHeavy: 0.62 },
+  heavy_rain: { kind: "heavy_rain", label: "폭우", visibilityM: 90, overcast: 1, rain: 1, snow: 0, wet: true, grip: 0.5, gripHeavy: 0.57 },
+  fog: { kind: "fog", label: "짙은 안개", visibilityM: 80, overcast: 0.9, rain: 0, snow: 0, wet: false, grip: 0.9, gripHeavy: 0.92 },
+  // 눈: 20mm 미만 쌓인 노면(20% 감속). 폭설: 가시거리 100m 이내(50% 감속)
+  snow: { kind: "snow", label: "눈", visibilityM: 400, overcast: 0.95, rain: 0, snow: 0.55, wet: true, grip: 0.33, gripHeavy: 0.4 },
+  heavy_snow: { kind: "heavy_snow", label: "폭설", visibilityM: 90, overcast: 1, rain: 0, snow: 1, wet: true, grip: 0.28, gripHeavy: 0.34 },
 };
 
 export const WEATHER_KINDS = Object.keys(WEATHERS) as WeatherKind[];
@@ -40,7 +46,8 @@ export function weatherOf(kind: string | null | undefined): Weather {
 }
 
 /**
- * 법정 감속 배율 (도로교통법 시행규칙 제19조 제2항): 가시거리 100m 이내면 최고속도의 50%, 노면이 젖었으면 20%를 줄인다.
+ * 법정 감속 배율 (도로교통법 시행규칙 제19조 제2항): 가시거리 100m 이내면 최고속도의 50%,
+ * 노면이 젖었거나 눈이 20mm 미만 쌓였으면 20%를 줄인다.
  * 규칙을 끄면 1
  */
 export function legalFactor(w: Weather, rules: Rules): number {
@@ -71,10 +78,10 @@ export interface RealWeatherData {
   roads: Record<string, [number, string][]>;
 }
 
-const REAL_CODES: Record<string, WeatherKind> = { c: "clear", o: "cloudy", r: "rain", h: "heavy_rain", f: "fog", s: "rain" };
+const REAL_CODES: Record<string, WeatherKind> = { c: "clear", o: "cloudy", r: "rain", h: "heavy_rain", f: "fog", s: "snow", S: "heavy_snow" };
 
-/** 실제 날씨: 출발 위치(원래 주행선·위치)에서 가장 가까운 지점의 그 시각 날씨. 눈은 아직 그리지 못해 비로 본다 */
-export function realWeatherAt(data: RealWeatherData | null, road: Road, s: number, hour: number): { weather: Weather; snow: boolean; stamp: string } | null {
+/** 실제 날씨: 출발 위치(원래 주행선·위치)에서 가장 가까운 지점의 그 시각 날씨 */
+export function realWeatherAt(data: RealWeatherData | null, road: Road, s: number, hour: number): { weather: Weather; stamp: string } | null {
   if (!data) return null;
   const src = road.sourceAt(s);
   const points = data.roads[src.road];
@@ -84,5 +91,5 @@ export function realWeatherAt(data: RealWeatherData | null, road: Road, s: numbe
   const h = ((Math.floor(hour) % 24) + 24) % 24;
   const c = best[1][h] ?? "c";
   const stamp = `${data.date.slice(4, 6)}/${data.date.slice(6, 8)} ${h}시`;
-  return { weather: WEATHERS[REAL_CODES[c] ?? "clear"], snow: c === "s", stamp };
+  return { weather: WEATHERS[REAL_CODES[c] ?? "clear"], stamp };
 }

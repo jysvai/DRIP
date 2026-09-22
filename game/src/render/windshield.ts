@@ -46,6 +46,7 @@ void main() {
 const FRAG = /* glsl */ `
 uniform vec3 uTint;
 uniform float uLight;
+uniform float uFlake;
 varying vec2 vUv;
 varying float vA;
 void main() {
@@ -56,6 +57,9 @@ void main() {
   float hl = smoothstep(0.32, 0.0, length(p - vec2(-0.32, 0.36)));
   vec3 col = mix(uTint * 1.25 + 0.06, vec3(0.03, 0.035, 0.04), rim * 0.85) + hl * 0.9;
   float a = (1.0 - smoothstep(0.86, 1.0, r)) * (0.16 + 0.55 * rim + 0.6 * hl) * vA;
+  // 눈송이: 하얗고 불투명한 알갱이 (가장자리만 조금 비친다)
+  col = mix(col, vec3(0.94, 0.96, 0.98), uFlake);
+  a = mix(a, (1.0 - smoothstep(0.55, 1.0, r)) * 0.85 * vA, uFlake);
   gl_FragColor = vec4(col * uLight, a);
 }`;
 
@@ -91,6 +95,8 @@ export class WindshieldRain {
   /** 비가 그친 뒤(터널) 닦은 횟수: 두 번 닦으면 쓸지 않는 구석에 방울이 남아도 멈춘다 */
   private dryStrokes = 0;
   rain = 0;
+  /** 눈: 방울 대신 하얀 눈송이 (맞바람에 밀리지 않고 붙어 있다가 와이퍼에 닦인다) */
+  flakes = false;
   /** 와이퍼 날이 끝(아래)에 닿을 때마다: 소리용 */
   onStroke: (() => void) | null = null;
 
@@ -116,7 +122,7 @@ export class WindshieldRain {
     this.mat = new THREE.ShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
-      uniforms: { uTint: { value: new THREE.Color(0xa0a8b0) }, uLight: { value: 1 } },
+      uniforms: { uTint: { value: new THREE.Color(0xa0a8b0) }, uLight: { value: 1 }, uFlake: { value: 0 } },
       transparent: true,
       depthWrite: false,
     });
@@ -187,7 +193,10 @@ export class WindshieldRain {
     const wind = Math.max(0, kmh - 55);
     for (const p of this.drops) {
       p.age += dt;
-      if (wind > 0 && p.r > 0.0032) {
+      if (this.flakes) {
+        p.vv = 0;
+        p.vu = 0;
+      } else if (wind > 0 && p.r > 0.0032) {
         p.vv = wind * 0.0065 * (p.r / 0.004);
         p.vu = 0.35 * p.vv * (p.u / this.halfBase);
       } else if (kmh < 15 && p.r > 0.0045) {
@@ -240,6 +249,7 @@ export class WindshieldRain {
     this.mesh.instanceMatrix.needsUpdate = true;
     this.alpha.needsUpdate = true;
     this.mat.uniforms.uLight.value = light;
+    this.mat.uniforms.uFlake.value = this.flakes ? 1 : 0;
     if (tint) this.mat.uniforms.uTint.value.copy(tint);
   }
 
