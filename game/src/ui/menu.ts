@@ -159,9 +159,9 @@ export function showMenu(index: RoadIndex, hasRealTraffic: boolean, carTypes: nu
       setup.appendChild(field("교통량", seg(presets, preset, (v) => (preset = v))));
       setup.appendChild(
         field(
-          "시간대 (버스전용차로·교통량에 반영)",
+          "시간대 (밝기·버스전용차로·교통량에 반영, 19시~5시는 밤)",
           seg(
-            [6, 8, 12, 15, 18, 21].map((h) => [h, `${h}시`] as [number, string]).concat([[hour, `지금 ${hour}시`]]).filter((v, i, a) => a.findIndex((x) => x[0] === v[0]) === i),
+            [6, 8, 12, 15, 18, 21, 2].map((h) => [h, `${h}시`] as [number, string]).concat([[hour, `지금 ${hour}시`]]).filter((v, i, a) => a.findIndex((x) => x[0] === v[0]) === i),
             hour,
             (v) => (hour = v),
           ),

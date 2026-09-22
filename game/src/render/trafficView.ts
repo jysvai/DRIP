@@ -11,6 +11,36 @@ const CAPACITY = 40;
 /** 이보다 먼 차는 차종 모양 대신 상자로 그린다 (m) */
 const LOD_NEAR = 240;
 const FAR_CAPACITY = 900;
+const GLOW_CAPACITY = 8000;
+
+/** 밤의 전조등·미등 빛 번짐. 가까우면 크기가 m 단위로, 멀어도 몇 픽셀은 남는다 */
+function glowMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { scale: { value: 800 } },
+    vertexShader: `
+      attribute float size;
+      attribute vec3 color;
+      uniform float scale;
+      varying vec3 vColor;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float px = size * scale / max(0.1, -mv.z);
+        gl_PointSize = max(px, 3.0);
+        vColor = color * clamp(px / 3.0, 0.4, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        float r = length(gl_PointCoord - 0.5) * 2.0;
+        float a = pow(max(0.0, 1.0 - r), 2.2);
+        gl_FragColor = vec4(vColor * a, 1.0);
+      }`,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+}
 
 interface Pool {
   model: VehicleModel;
@@ -34,6 +64,12 @@ export class TrafficView {
   private color = new THREE.Color();
   private tmp = new THREE.Vector3();
   private world3 = { e: 0, n: 0, z: 0, heading: 0 };
+  private glow: THREE.Points;
+  private glowPos = new Float32Array(GLOW_CAPACITY * 3);
+  private glowColor = new Float32Array(GLOW_CAPACITY * 3);
+  private glowSize = new Float32Array(GLOW_CAPACITY);
+  private ng = 0;
+  private lp = new THREE.Vector3();
 
   constructor(
     private world: World,
@@ -69,6 +105,52 @@ export class TrafficView {
       m.count = 0;
       world.scene.add(m);
     }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(this.glowPos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute("color", new THREE.BufferAttribute(this.glowColor, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute("size", new THREE.BufferAttribute(this.glowSize, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setDrawRange(0, 0);
+    this.glow = new THREE.Points(g, glowMaterial());
+    this.glow.frustumCulled = false;
+    this.glow.renderOrder = 10;
+    world.scene.add(this.glow);
+  }
+
+  private addGlow(p: THREE.Vector3, r: number, g: number, b: number, size: number) {
+    if (this.ng >= GLOW_CAPACITY) return;
+    const i = this.ng++;
+    this.glowPos[i * 3] = p.x;
+    this.glowPos[i * 3 + 1] = p.y;
+    this.glowPos[i * 3 + 2] = p.z;
+    this.glowColor[i * 3] = r;
+    this.glowColor[i * 3 + 1] = g;
+    this.glowColor[i * 3 + 2] = b;
+    this.glowSize[i] = size;
+  }
+
+  /** 밤: 카메라 쪽을 보는 전조등, 카메라 쪽으로 등을 보이는 미등(제동하면 더 밝게). this.m은 크기 조절 전 행렬 */
+  private nightLights(a: Agent, model: VehicleModel, camera: THREE.Vector3, night: number) {
+    const e = this.m.elements;
+    const dx = camera.x - e[12];
+    const dy = camera.y - e[13];
+    const dz = camera.z - e[14];
+    const dist = Math.hypot(dx, dy, dz) || 1;
+    const facing = (e[0] * dx + e[1] * dy + e[2] * dz) / dist; // 차 앞쪽이 카메라를 볼수록 1
+    const head = Math.min(1, Math.max(0, facing * 4)) * night;
+    const tail = Math.min(1, Math.max(0, -facing * 4)) * night;
+    if (head > 0.01) {
+      for (const p of model.headLights) {
+        this.lp.copy(p).applyMatrix4(this.m);
+        this.addGlow(this.lp, 1.0 * head, 0.95 * head, 0.82 * head, 1.5);
+      }
+    }
+    if (tail > 0.01) {
+      const k = a.brake ? 1 : 0.4;
+      for (const p of model.brakeLights) {
+        this.lp.copy(p).applyMatrix4(this.m);
+        this.addGlow(this.lp, 1.0 * tail * k, 0.08 * tail * k, 0.04 * tail * k, a.brake ? 1.1 : 0.75);
+      }
+    }
   }
 
   /** 모델 좌표 → 인스턴스 행렬 */
@@ -86,6 +168,8 @@ export class TrafficView {
 
   update(agents: Agent[], opposite: Agent[], time: number, camera: THREE.Vector3, maxDist = 1400) {
     for (const pool of this.pools) pool.n = 0;
+    const night = this.world.night > 0.05 ? this.world.night : 0;
+    this.ng = 0;
     let nb = 0;
     let ns = 0;
     let nh = 0;
@@ -100,6 +184,7 @@ export class TrafficView {
       this.tmp.setFromMatrixPosition(this.m);
       const d2 = this.tmp.distanceToSquared(camera);
       if (d2 > maxDist * maxDist) return;
+      if (night) this.nightLights(a, pool.model, camera, night);
       if (d2 > LOD_NEAR * LOD_NEAR || pool.n >= CAPACITY) {
         if (nf >= FAR_CAPACITY) return;
         this.scale.set(a.len, a.type.height, a.width);
@@ -155,6 +240,21 @@ export class TrafficView {
     this.brake.instanceMatrix.needsUpdate = true;
     this.signal.instanceMatrix.needsUpdate = true;
     this.hazardBar.instanceMatrix.needsUpdate = true;
+    const g = this.glow.geometry;
+    g.setDrawRange(0, this.ng);
+    this.glow.visible = this.ng > 0;
+    if (this.ng > 0) {
+      for (const name of ["position", "color", "size"]) {
+        const attr = g.getAttribute(name) as THREE.BufferAttribute;
+        attr.clearUpdateRanges();
+        attr.addUpdateRange(0, this.ng * attr.itemSize);
+        attr.needsUpdate = true;
+      }
+      // 거리 1m에서 1m가 몇 픽셀인지
+      const cam = this.world.camera;
+      const h = this.world.renderer.domElement.height;
+      (this.glow.material as THREE.ShaderMaterial).uniforms.scale.value = h / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2));
+    }
   }
 
   /** 몇 종류의 차가 지금 화면에 나오는지 (검수용) */

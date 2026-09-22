@@ -46,6 +46,10 @@ export class PlayerView {
   private interior = new THREE.Group();
   private wheelSpin = new THREE.Group();
   private brakeLights: THREE.Mesh[] = [];
+  private brakeMat = new THREE.MeshBasicMaterial({ color: 0xff2a1f, toneMapped: false });
+  private headBeam: THREE.SpotLight | null = null;
+  private night = 0;
+  private headPos = new THREE.Vector3();
   private sigL: THREE.Mesh[] = [];
   private sigR: THREE.Mesh[] = [];
   private eye: THREE.Vector3;
@@ -74,6 +78,7 @@ export class PlayerView {
     const W = type.width;
     const H = type.height;
     const model = buildVehicleModel(type, 7);
+    for (const p of model.headLights) this.headPos.addScaledVector(p, 1 / model.headLights.length);
     const paint = new THREE.Mesh(model.paint, new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.45 }));
     const fixed = new THREE.Mesh(model.fixed, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.1 }));
     for (const m of [paint, fixed]) {
@@ -82,7 +87,7 @@ export class PlayerView {
       this.exterior.add(m);
     }
     const lampGeo = new THREE.BoxGeometry(0.07, 0.13, 0.28);
-    const brakeMat = new THREE.MeshBasicMaterial({ color: 0xff2a1f, toneMapped: false });
+    const brakeMat = this.brakeMat;
     const sigMat = new THREE.MeshBasicMaterial({ color: 0xffa31a, toneMapped: false });
     for (const p of model.brakeLights) {
       const m = new THREE.Mesh(lampGeo, brakeMat);
@@ -137,11 +142,11 @@ export class PlayerView {
       this.interior.add(housing);
     }
 
-    // 대시보드: 앞으로 갈수록 낮아지는 판
+    // 대시보드: 앞끝이 보닛 뒤끝보다 조금 높고 앞에 있어야 둘 사이 틈으로 차 밑 도로가 보이지 않는다
     const dashShape = new THREE.Shape([
       new THREE.Vector2(roofFront + 0.02, belt - 0.01),
-      new THREE.Vector2(glassBase, belt - 0.06),
-      new THREE.Vector2(glassBase, belt - 0.45),
+      new THREE.Vector2(glassBase + 0.06, belt + 0.01),
+      new THREE.Vector2(glassBase + 0.06, belt - 0.45),
       new THREE.Vector2(roofFront + 0.1, belt - 0.5),
       new THREE.Vector2(roofFront - 0.05, belt - 0.16),
     ]);
@@ -270,6 +275,22 @@ export class PlayerView {
     });
   }
 
+  /** 밤이면 전조등을 켜고 실내를 어둡게 한다. 첫 화면을 그리기 전에 부른다 (조명 수가 바뀌면 셰이더를 다시 만든다) */
+  setNight(night: number) {
+    this.night = night;
+    this.interior.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (m && "emissiveIntensity" in m && m.emissiveIntensity > 0) m.emissiveIntensity = 0.35 * (1 - 0.9 * night);
+    });
+    if (night < 0.1 || this.headBeam) return;
+    // 전조등 (하향등 정도): 차 앞 가운데에서 25m 앞 노면을 향해
+    const beam = new THREE.SpotLight(0xfff1dc, 160 * night, 150, 0.42, 0.55, 1.3);
+    beam.position.copy(this.headPos);
+    beam.target.position.set(this.headPos.x + 25, 0, 0);
+    this.car.add(beam, beam.target);
+    this.headBeam = beam;
+  }
+
   /** 차 위치·자세를 맞추고 카메라를 놓는다 */
   update(car: PlayerCar, road: Road, dt: number, signal: -1 | 0 | 1, hazard: boolean, time: number) {
     const w = road.toWorld(car.s, car.d, this.tmpW);
@@ -283,7 +304,9 @@ export class PlayerView {
 
     this.wheelSpin.rotation.x = -car.steerAngle * STEER_RATIO;
     const braking = car.ax < -1.2 || (car.speed < 0.3 && car.vx === 0);
-    for (const m of this.brakeLights) m.visible = braking;
+    // 밤에는 미등이 늘 켜져 있고 제동하면 더 밝아진다
+    for (const m of this.brakeLights) m.visible = braking || this.night > 0.1;
+    this.brakeMat.color.setHex(braking ? 0xff2a1f : 0x7a0c08);
     const blink = Math.floor(time * 1.6) % 2 === 0;
     const left = (signal === -1 || hazard) && blink;
     const right = (signal === 1 || hazard) && blink;

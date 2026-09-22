@@ -10,7 +10,7 @@ import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, type Sample } from "./log/recorder";
 import { Sound } from "./audio/sound";
 import type { GameConfig } from "./sim/config";
-import { busLaneZones, trafficFor } from "./sim/scenario";
+import { busLaneZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
 import { DEFAULT_CAR, PlayerCar, type Controls } from "./sim/player";
 import { Traffic, type Agent, type BusLaneZone, type PlayerState } from "./sim/traffic";
@@ -31,12 +31,6 @@ function josa(word: string, a: string, b: string): string {
 }
 
 const INPUT_LABELS = { keyboard: "키보드", mouse: "마우스 조향", gamepad: "게임패드" } as const;
-
-function sunFor(hour: number): { elevation: number; daylight: number } {
-  const x = (hour + 0.5 - 6) / 13; // 6시~19시
-  if (x <= 0 || x >= 1) return { elevation: 3, daylight: 0.45 };
-  return { elevation: Math.max(4, Math.sin(x * Math.PI) * 58), daylight: x < 0.08 || x > 0.92 ? 0.75 : 1 };
-}
 
 export class Game {
   readonly world: World;
@@ -79,8 +73,12 @@ export class Game {
     this.world = new World(app);
     this.world.renderer.shadowMap.autoUpdate = false;
     const sun = sunFor(settings.hour);
-    this.world.setSun(sun.elevation, 150);
+    // 밤에는 하늘을 그리지 않고, 빛 방향은 높이 뜬 달
+    if (sun.night > 0.6) this.world.setSun(40, 200);
+    else this.world.setSun(Math.max(2, sun.elevation), sun.azimuth);
+    this.world.setNight(sun.night);
     this.baseDaylight = sun.daylight;
+    this.world.daylight = sun.daylight;
 
     this.busZones = busLaneZones(road, cfg.rules, settings.weekend, settings.hour);
     this.chunks = new RoadChunks(road, this.world);
@@ -111,6 +109,7 @@ export class Game {
     this.hud = new Hud(document.body, road, this.busZones);
     this.view = new PlayerView(this.world, type, PLAYER_COLOR, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
+    this.view.setNight(sun.night);
     this.input = new Input(this.world.renderer.domElement);
 
     this.rules = new RuleEngine(road, cfg.rules, this.busZones);
@@ -519,6 +518,7 @@ export class Game {
     const inTunnel = road.structureAt(p.s) === Structure.Tunnel;
     const target = inTunnel ? 0.3 : this.baseDaylight;
     this.world.daylight += (target - this.world.daylight) * Math.min(1, dt * 2);
+    this.world.tunnel += ((inTunnel ? 1 : 0) - this.world.tunnel) * Math.min(1, dt * 2);
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
     this.world.update(this.view.car.position);

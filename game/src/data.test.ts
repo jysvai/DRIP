@@ -6,7 +6,7 @@ import rulesJson from "../public/data/rules_kr.json";
 import trafficJson from "../public/data/traffic_defaults.json";
 import vehiclesJson from "../public/data/vehicles.json";
 import type { DriverProfile, DriverProfiles, Rules, TrafficDefaults } from "./sim/config";
-import type { VehicleCatalog } from "./render/vehicleModels";
+import { buildVehicleModel, type VehicleCatalog } from "./render/vehicleModels";
 
 const profiles = profilesJson as unknown as DriverProfiles;
 const rules = rulesJson as unknown as Rules;
@@ -55,6 +55,18 @@ describe("vehicles.json", () => {
     const pal = Array.isArray(t.paint) ? t.paint : catalog.palettes[t.paint];
     expect(pal?.length, `색 팔레트 ${String(t.paint)}`).toBeGreaterThan(0);
     for (const c of pal) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+});
+
+describe("차 모델", () => {
+  it.each(catalog.types.map((t) => [t.id, t] as const))("%s: 전조등·제동등·방향지시등 위치가 차 앞뒤에 있다", (_, t) => {
+    const m = buildVehicleModel(t, 1);
+    expect(m.headLights.length).toBeGreaterThanOrEqual(2);
+    expect(m.brakeLights.length).toBeGreaterThanOrEqual(2);
+    expect(m.signalLeft.length).toBeGreaterThanOrEqual(1);
+    expect(m.signalRight.length).toBeGreaterThanOrEqual(1);
+    for (const p of m.headLights) expect(p.x, "전조등은 앞쪽").toBeGreaterThan(t.length * 0.4);
+    for (const p of m.brakeLights) expect(p.x, "제동등은 뒤쪽").toBeLessThan(-t.length * 0.3);
   });
 });
 

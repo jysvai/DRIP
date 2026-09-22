@@ -37,7 +37,8 @@ export interface VehicleModel {
   type: VehicleType;
   paint: THREE.BufferGeometry;
   fixed: THREE.BufferGeometry;
-  /** 제동등·방향지시등 위치 (모델 좌표) */
+  /** 전조등·제동등·방향지시등 위치 (모델 좌표) */
+  headLights: THREE.Vector3[];
   brakeLights: THREE.Vector3[];
   signalLeft: THREE.Vector3[];
   signalRight: THREE.Vector3[];
@@ -71,6 +72,7 @@ const C = {
 class Builder {
   paint: THREE.BufferGeometry[] = [];
   fixed: THREE.BufferGeometry[] = [];
+  head: THREE.Vector3[] = [];
   brake: THREE.Vector3[] = [];
   sigL: THREE.Vector3[] = [];
   sigR: THREE.Vector3[] = [];
@@ -143,7 +145,7 @@ class Builder {
     this.fixed.forEach((g) => g.dispose());
     paint.computeBoundingSphere();
     fixed.computeBoundingSphere();
-    return { type, paint, fixed, brakeLights: this.brake, signalLeft: this.sigL, signalRight: this.sigR, lightSize };
+    return { type, paint, fixed, headLights: this.head, brakeLights: this.brake, signalLeft: this.sigL, signalRight: this.sigR, lightSize };
   }
 }
 
@@ -253,6 +255,7 @@ function buildCar(t: VehicleType, b: Builder) {
   else b.box(0.03, 0.06, W * 0.7, X(0) + 0.01, sh.nose * H - 0.04, 0, C.headlight); // 전기차 일자 램프
   for (const side of [-1, 1]) {
     b.box(0.06, 0.1, 0.34, X(0) - 0.02, sh.nose * H - 0.02, side * (W / 2 - 0.25), C.headlight);
+    b.head.push(new THREE.Vector3(X(0) + 0.03, sh.nose * H - 0.02, side * (W / 2 - 0.25)));
     b.box(0.3, 0.08, 0.06, X(sh.hood) - 0.05, belt + 0.02, side * (W / 2 + 0.03), "paint"); // 사이드미러
   }
   b.box(0.02, 0.11, 0.52, X(0) + 0.015, y0 + 0.22, 0, plateColor(t));
@@ -394,6 +397,7 @@ function buildBus(t: VehicleType, b: Builder) {
   // 앞 등·번호판·범퍼
   for (const side of [-1, 1]) {
     b.box(0.05, 0.14, 0.34, front + 0.01, H * 0.26, side * (W / 2 - 0.3), C.headlight);
+    b.head.push(new THREE.Vector3(front + 0.05, H * 0.26, side * (W / 2 - 0.3)));
     b.box(0.05, 0.3, 0.2, -front - 0.01, H * 0.3, side * (W / 2 - 0.2), C.taillight);
     b.brake.push(new THREE.Vector3(-front - 0.04, H * 0.3, side * (W / 2 - 0.2)));
     (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(-front - 0.045, H * 0.3 + 0.2, side * (W / 2 - 0.2)));
@@ -440,6 +444,7 @@ function cab(b: Builder, t: VehicleType, x0: number, len: number, W: number, H: 
   for (const side of [-1, 1]) {
     b.box(len * 0.55, H * 0.38, 0.02, front - len * 0.4, y0 + H * 0.72, side * (W / 2 + 0.005), C.glass);
     b.box(0.05, 0.14, 0.3, front + 0.01, y0 + 0.28, side * (W / 2 - 0.3), C.headlight);
+    b.head.push(new THREE.Vector3(front + 0.05, y0 + 0.28, side * (W / 2 - 0.3)));
     (side < 0 ? b.sigL : b.sigR).push(new THREE.Vector3(front + 0.03, y0 + 0.45, side * (W / 2 - 0.15)));
     b.box(0.35, 0.4, 0.05, front - 0.2, y0 + H * 0.75, side * (W / 2 + 0.15), C.trim);
   }

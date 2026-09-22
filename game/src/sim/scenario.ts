@@ -50,3 +50,14 @@ export function trafficFor(settings: ScenarioSettings, cfg: GameConfig): { densi
   const p = t.presets[settings.preset] ?? t.presets["보통"];
   return { density: p.vehPerKmPerLane, composition: t.composition, source: settings.preset };
 }
+
+/** 시각(0~23시)의 해 고도·방위와 밝기. 봄·가을 기준 (해 뜨는 6시 20분, 지는 18시 40분 무렵) */
+export function sunFor(hour: number): { elevation: number; azimuth: number; daylight: number; night: number } {
+  const x = (hour + 0.5 - 6.3) / 12.4; // 해 뜰 때 0, 질 때 1
+  const elevation = 55 * Math.sin(x * Math.PI);
+  // 해가 6° 아래로 지면(시민박명 끝) 밤
+  const night = Math.max(0, Math.min(1, (6 - elevation) / 12));
+  const daylight = Math.max(0.06, Math.min(1, (elevation + 6) / 21));
+  // 방위: 90 = 동, 0 = 남, -90 = 서 (world.setSun 기준)
+  return { elevation, azimuth: 90 - x * 180, daylight, night };
+}

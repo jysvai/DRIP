@@ -10,6 +10,11 @@ export interface Origin {
 }
 
 export const FOG_COLOR = new THREE.Color(0xc3ccd3);
+const NIGHT_FOG = new THREE.Color(0x06090e);
+const SUN_COLOR = new THREE.Color(0xfff4e2);
+const MOON_COLOR = new THREE.Color(0x8fa6cc);
+const HEMI_SKY = new THREE.Color(0xdde7f0);
+const HEMI_SKY_NIGHT = new THREE.Color(0x40506c);
 
 export class World {
   renderer: THREE.WebGLRenderer;
@@ -20,8 +25,12 @@ export class World {
   origin: Origin = { e: 0, n: 0 };
   private sky: Sky;
   private sunDir = new THREE.Vector3();
-  /** 터널 안처럼 어두운 곳에서 0에 가까워진다 */
+  /** 밝기 (1 = 한낮). 해가 낮거나 밤이거나 터널 안이면 작아진다 */
   daylight = 1;
+  /** 밤 정도 (0 = 낮, 1 = 밤). 하늘·안개·달빛과 차 등화에 쓴다 */
+  night = 0;
+  /** 터널 안 정도 (0~1). 터널은 밤에도 조명으로 밝다 */
+  tunnel = 0;
 
   constructor(container: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -75,6 +84,20 @@ export class World {
     this.sky.material.uniforms.sunPosition.value.copy(this.sunDir);
   }
 
+  /** 시간대에 맞춰 하늘·안개·그림자를 정한다. 첫 화면을 그리기 전에 부른다 (그림자를 켜고 끄면 셰이더를 다시 만든다) */
+  setNight(night: number) {
+    const n = Math.max(0, Math.min(1, night));
+    this.night = n;
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.copy(FOG_COLOR).lerp(NIGHT_FOG, Math.pow(n, 0.6));
+    fog.near = 250 - 200 * n;
+    fog.far = 2600 - 1700 * n;
+    // 해가 진 뒤에는 하늘 셰이더 대신 어두운 배경
+    this.sky.visible = n < 0.6;
+    this.scene.background = this.sky.visible ? null : fog.color;
+    this.sun.castShadow = n < 0.5;
+  }
+
   resize() {
     const w = innerWidth;
     const h = innerHeight;
@@ -89,9 +112,13 @@ export class World {
     this.sun.target.position.copy(focus);
     this.sky.position.copy(this.camera.position);
     const k = this.daylight;
-    this.sun.intensity = 2.4 * k;
-    this.hemi.intensity = 0.25 + 1.0 * k;
-    this.renderer.toneMappingExposure = 0.9 + (1 - k) * 0.5;
+    const n = this.night * (1 - this.tunnel);
+    this.sun.color.copy(SUN_COLOR).lerp(MOON_COLOR, n);
+    this.hemi.color.copy(HEMI_SKY).lerp(HEMI_SKY_NIGHT, n);
+    // 밤에는 해 대신 약한 달빛. 터널 안은 밤에도 조명 때문에 낮의 터널과 같다
+    this.sun.intensity = 2.4 * k * (1 - n) + 0.3 * n;
+    this.hemi.intensity = (0.25 + 1.0 * k) * (1 - n) + (0.013 + 1.79 * k) * n;
+    this.renderer.toneMappingExposure = (0.9 + (1 - k) * 0.5) * (1 - n) + 1.15 * n;
   }
 
   toScene(e: number, n: number, z: number, out: THREE.Vector3): THREE.Vector3 {
