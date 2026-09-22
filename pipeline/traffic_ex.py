@@ -6,6 +6,7 @@
                                                         (game/public/traffic/latest.json, data/processed/traffic/날짜.json)
   --key test                                            포털 예시 키로 시험 (매일 수집은 .env의 EX_API_KEY)
   --upload                                              원자료를 R2(raw/ex/…)에도 올린다 (.env의 R2_* 필요)
+원자료는 data/raw/ex/avc15/날짜.json.gz에 남는다 (운전 습관 분석: pipeline/habits_avc.py)
 
 좌표: 게임 도로는 UTM-K(EPSG:5179), VDS는 GRS80 중부원점(EPSG:5186), AVC는 위경도.
 방향: 도로공사 E = 종점 쪽(이정 증가), S = 기점 쪽(이정 감소). 경부선은 기점이 부산이라 E = 서울 방향.
@@ -260,11 +261,15 @@ def daily(api: ExApi, date: str, upload: bool) -> dict:
     if not raw:
         raise SystemExit(f"{date} AVC 자료가 없습니다 (전날까지만 나온다)")
 
+    # 원자료는 운전 습관 분석(pipeline/habits_avc.py)에 쓰려고 남긴다
+    packed = gzip.compress(json.dumps(raw, ensure_ascii=False).encode("utf-8"))
+    (RAW / "avc15").mkdir(parents=True, exist_ok=True)
+    (RAW / "avc15" / f"{date}.json.gz").write_bytes(packed)
     if upload:
         from storage import bucket, client
 
         key = f"raw/ex/avc15/{date}.json.gz"
-        client().put_object(Bucket=bucket(), Key=key, Body=gzip.compress(json.dumps(raw, ensure_ascii=False).encode("utf-8")))
+        client().put_object(Bucket=bucket(), Key=key, Body=packed)
         print(f"R2에 원자료 저장: {key}")
 
     # 지점(AVC·방향)마다 시간대별 교통량·속도, 하루 차종 합계

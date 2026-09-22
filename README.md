@@ -69,6 +69,7 @@ API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값�
 |---|---|---|
 | `pipeline/traffic_ex.py anchors` | 도로공사 VDS 8천여 곳 위치로 게임 주행선의 s ↔ 도로공사 이정(km) 기준점을 만든다 (85개 주행선). 사고 다발 구간 비교에 쓴다 | `EX_API_KEY` |
 | `pipeline/traffic_ex.py daily` | 전날 AVC(차종 분류기) 15분 자료 → 주행선별 시간대 차로당 밀도·속도·차종 구성 → `game/public/traffic/latest.json`. 메뉴의 "실제 교통"이 이걸 쓴다 (측정 지점이 있는 36개 주행선, 출발 위치에서 가장 가까운 지점 값) | `EX_API_KEY` |
+| `pipeline/habits_avc.py [--apply]` | 쌓인 AVC 원자료로 한국 운전 습관(차종별 희망속도, 대형화물 지정차로 준수, 차로 이용)을 계산해 `driver_profiles.json`에 넣는다 (`game/DATA.md`) | 없음 |
 | `pipeline/events_its.py [--loop 5]` | ITS 돌발상황(사고·공사·고장·기상)을 받아 게임 주행선 위치를 붙여 쌓는다 | `ITS_API_KEY` |
 | `pipeline/compare_hotspots.py` | 게임 주행 기록(Supabase)을 실제 사고 1km 구간과 비교 (가설 1·2) | DB |
 

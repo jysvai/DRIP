@@ -45,6 +45,26 @@
 
 비율은 합이 1이 아니어도 된다 (상대 비율로 뽑는다).
 
+### 도로공사 실측으로 채우기 (`pipeline/habits_avc.py`)
+
+`pipeline/traffic_ex.py daily`가 남긴 AVC 원자료(차로별·차종별 15분 교통량·속도)로 계산한다.
+
+```
+python pipeline/habits_avc.py           # 계산해서 보여 주기만 (data/processed/habits/에 저장)
+python pipeline/habits_avc.py --apply   # driver_profiles.json에 넣기 (calibration에 출처·날짜·바뀐 값이 남는다)
+```
+
+| 측정 | 넣는 곳 |
+|---|---|
+| 한산할 때 승용차 속도 ÷ 제한속도 | 승용 계열 성향(standard·calm·aggressive·novice·taxi)의 `speedFactor` 평균 (서로 간격은 그대로 두고 함께 옮김) |
+| 버스, 소형화물(1~2.5톤), 대형화물 속도 ÷ 제한속도(대형화물은 화물차 제한속도) | `bus_driver`, `light_commercial`, `truck_heavy`의 `speedFactor` |
+| 대형화물이 앞지르기로도 못 가는 왼쪽 차로에 있는 비율 | `truck_heavy.designatedLaneCompliance` |
+| 차로 수별·차종별 차로 이용 비율과 차로별 속도, 승용차 1차로 비율 | 보고서에만 (keepRightBias·passingLaneStay는 이 비율이 게임에서 비슷하게 나오도록 맞춘다) |
+
+2026-09-21(월) 하루치 예: 한산할 때 승용 0.985, 버스 0.958, 소형화물 0.914, 대형화물 1.051(화물차 제한속도 대비),
+대형화물 지정차로 준수 약 0.90, 편도 3차로에서 승용차의 44%가 1차로. 하루치라 아직 넣지 않았다. 평일·주말을 며칠 모은 뒤 `--apply`.
+차간 시간, 끼어들기 간격, 방향지시등 사용률은 15분 집계로는 알 수 없어 아래 자료나 게임 기록으로 채운다.
+
 ### 데이터로 채울 때 참고할 곳 (예시)
 
 - 차간 시간 간격, 속도 분포: 도로공사 VDS 개별 차량 자료, 고속도로 교통량 조사
