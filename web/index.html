@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DRIP · 한국 고속도로 운전 시뮬레이터</title>
+<meta name="description" content="실제 한국 고속도로 구간을 브라우저에서 운전하고, 사람들이 남긴 사고·아차사고·법규 위반 위치가 실제 사고다발구간과 맞는지 검증하는 연구 프로젝트.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<style>
+  :root {
+    --bg: #f6f5f1;
+    --surface: #ffffff;
+    --text: #1b1d1c;
+    --muted: #5e6361;
+    --line: #dcdad3;
+    --sign: #0a6b3d;       /* 고속도로 표지판 초록 */
+    --sign-text: #ffffff;
+    --hot: #d9480f;
+    --bar: #b9bdb8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121413;
+      --surface: #1b1e1c;
+      --text: #ecedea;
+      --muted: #9ba19d;
+      --line: #2d312f;
+      --sign: #1f8a55;
+      --sign-text: #ffffff;
+      --hot: #ff7a3d;
+      --bar: #4a504c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Pretendard Variable", Pretendard, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    font-size: 17px;
+    line-height: 1.7;
+    word-break: keep-all;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+  a { color: inherit; }
+
+  header .wrap { display: flex; align-items: center; justify-content: space-between; padding-top: 22px; padding-bottom: 22px; }
+  .mark { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.04em; text-decoration: none; }
+  .mark span { background: var(--sign); color: var(--sign-text); padding: 2px 10px; border-radius: 6px; }
+  .mark small { font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  header nav a { color: var(--muted); font-size: 15px; text-decoration: none; }
+  header nav a:hover { color: var(--text); }
+
+  .hero { padding: 56px 0 40px; }
+  .status { display: inline-block; font-size: 14px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; }
+  h1 { font-size: clamp(30px, 5.4vw, 48px); line-height: 1.3; letter-spacing: -0.02em; margin: 18px 0 18px; }
+  .lead { font-size: clamp(17px, 2.2vw, 19px); color: var(--muted); max-width: 40em; margin: 0; }
+
+  .lane { height: 4px; margin: 48px 0; background: repeating-linear-gradient(90deg, var(--line) 0 36px, transparent 36px 64px); }
+
+  h2 { font-size: 22px; letter-spacing: -0.01em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 0; }
+  .stats div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 16px; }
+  .stats dt { font-size: 14px; color: var(--muted); }
+  .stats dd { margin: 4px 0 0; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+  figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 20px 14px; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 14px; color: var(--muted); margin-top: 10px; }
+  .key { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; }
+  .key i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  ol.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; counter-reset: s; }
+  ol.steps li { counter-increment: s; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  ol.steps li::before { content: counter(s); display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; background: var(--sign); color: var(--sign-text); font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+  ol.steps b { display: block; margin-bottom: 4px; }
+  ol.steps p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .table { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  td small { display: block; color: var(--muted); }
+  .done { color: var(--sign); font-weight: 600; white-space: nowrap; }
+  .now { color: var(--hot); font-weight: 600; white-space: nowrap; }
+  .next { color: var(--muted); white-space: nowrap; }
+
+  footer { margin-top: 72px; border-top: 1px solid var(--line); }
+  footer .wrap { padding-top: 24px; padding-bottom: 40px; font-size: 14px; color: var(--muted); }
+  footer p { margin: 0 0 6px; }
+
+  @media (max-width: 720px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    ol.steps { grid-template-columns: 1fr; }
+    .hero { padding: 32px 0 24px; }
+    .lane { margin: 36px 0; }
+    .mark small { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="mark" href="./"><span>DRIP</span><small>Driving Practice</small></a>
+    <nav><a href="https://github.com/jysvai/DRIP">GitHub</a></nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <span class="status">1단계 진행 중 · 운전 게임 준비 중</span>
+    <h1>실제 한국 고속도로를 달리고,<br>사고가 어디서 나는지 검증합니다.</h1>
+    <p class="lead">DRIP은 실제 고속도로 구간을 브라우저 운전 게임으로 옮긴 연구 프로젝트입니다. 사람들이 게임에서 남긴 사고·아차사고·법규 위반 위치가 실제 사고다발구간과 얼마나 겹치는지 1km 단위로 비교하고, 모은 기록은 공개 데이터셋으로 냅니다.</p>
+  </section>
+
+  <div class="lane" aria-hidden="true"></div>
+
+  <section>
+    <h2>지금까지 본 실제 사고</h2>
+    <p class="sub">한국도로공사 고속도로 교통사고 상세현황(2022~2024)을 노선·방향별 1km 구간으로 묶었습니다.</p>
+    <dl class="stats">
+      <div><dt>사고</dt><dd>4,711건</dd></div>
+      <div><dt>노선</dt><dd>38개</dd></div>
+      <div><dt>1km 구간</dt><dd>9,523개</dd></div>
+      <div><dt>사고다발구간</dt><dd>136개</dd></div>
+    </dl>
+    <p class="sub" style="margin-top:12px;font-size:14px">사고다발구간: 한 방향 1km에서 3년간 사고 4건 이상.</p>
+  </section>
+
+  <div class="lane" aria-hidden="true"></div>
+
+  <section>
+    <h2>게임 후보 구간 예시</h2>
+    <p class="sub">사고가 몰리는 곳과 조용한 곳이 한 구간 안에 섞여 있어야 비교가 됩니다. 이런 15km 구간 19곳을 골랐습니다.</p>
+    <figure>
+      <svg id="segment" viewBox="0 0 600 210" role="img" aria-label="경부선 서울 방향 298~313km, 1km마다 3년간 사고 수. 305km와 306km가 각각 7건, 309km가 5건으로 다발구간이고, 298~301km는 사고가 없습니다."></svg>
+      <figcaption>
+        <span class="key"><i style="background:var(--hot)"></i>사고다발구간 (4건 이상)</span>
+        <span class="key"><i style="background:var(--bar)"></i>그 외</span><br>
+        경부선 서울 방향 298~313km · 1km당 3년간 사고 수 · 이 구간 사고 31건 중 주시태만 22건
+      </figcaption>
+    </figure>
+  </section>
+
+  <div class="lane" aria-hidden="true"></div>
+
+  <section>
+    <h2>진행 방식</h2>
+    <p class="sub">게임 속 도로와 교통은 실제 구간과 전날의 실제 교통 상황으로 만듭니다.</p>
+    <ol class="steps">
+      <li><b>운전</b><p>실제 고속도로 한 구간을 브라우저에서 운전합니다. 교통량은 전날 실제 기록으로 매일 바뀝니다.</p></li>
+      <li><b>기록</b><p>방향지시등, 실선 침범, 과속, 안전거리, 급가감속과 사고·아차사고를 노선·이정·방향과 함께 남깁니다.</p></li>
+      <li><b>비교</b><p>게임 기록을 1km 구간으로 모아 실제 사고다발구간·사고 원인과 맞는지 봅니다.</p></li>
+    </ol>
+  </section>
+
+  <div class="lane" aria-hidden="true"></div>
+
+  <section>
+    <h2>이용하는 공공데이터</h2>
+    <p class="sub">개인 비영리 연구 프로젝트이며, 공공데이터는 출처를 밝혀 사용합니다.</p>
+    <div class="table">
+      <table>
+        <thead><tr><th>데이터</th><th>쓰는 곳</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>고속도로 교통사고 상세현황<small>한국도로공사 · 공공데이터포털</small></td>
+            <td>1km 구간별 실제 사고 집계, 게임 구간 선정, 결과 비교의 기준</td>
+          </tr>
+          <tr>
+            <td>교통소통정보 · 돌발상황정보<small>국토교통부 ITS 국가교통정보센터</small></td>
+            <td>게임 속 구간 속도와 사고·공사 상황을 전날 실제 기록으로 재현</td>
+          </tr>
+          <tr>
+            <td>고속도로 교통량 · 구간 통행속도<small>한국도로공사 고속도로 공공데이터 포털</small></td>
+            <td>시간대별 차량 수와 혼잡도를 게임 교통에 반영</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="lane" aria-hidden="true"></div>
+
+  <section>
+    <h2>단계</h2>
+    <div class="table">
+      <table>
+        <tbody>
+          <tr><td>1</td><td>실제 사고를 1km로 집계하고 게임 후보 구간 선정</td><td class="now">진행 중</td></tr>
+          <tr><td>2</td><td>도로 한 구간 운전 게임, 매일 교통 갱신, 법규 판정</td><td class="next">다음</td></tr>
+          <tr><td>3</td><td>참가자 모집, 실제 사고다발구간과 비교</td><td class="next">예정</td></tr>
+          <tr><td>4</td><td>데이터셋 공개, AI 운전자와 비교</td><td class="next">예정</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>DRIP (Driving Practice) · <a href="https://github.com/jysvai/DRIP">github.com/jysvai/DRIP</a></p>
+    <p>사고 데이터 출처: 한국도로공사, 고속도로 교통사고 상세현황 (공공데이터포털)</p>
+  </div>
+</footer>
+
+<script>
+  // 경부선 서울 방향 298~312km 구간별 사고 수 (data/processed/accident_bins_1km.csv)
+  const START_KM = 298;
+  const COUNTS = [0, 0, 0, 0, 1, 0, 1, 7, 7, 1, 3, 5, 3, 3, 0];
+  const HOT = 4;
+
+  const svg = document.getElementById("segment");
+  const ns = "http://www.w3.org/2000/svg";
+  const slot = 600 / COUNTS.length, barW = slot * 0.62, base = 170, maxH = 130;
+  const max = Math.max(...COUNTS);
+
+  const el = (name, attrs, text) => {
+    const node = document.createElementNS(ns, name);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    svg.appendChild(node);
+  };
+
+  // 색은 style로 줘야 CSS 변수(다크 모드)가 먹는다.
+  el("line", { x1: 0, x2: 600, y1: base, y2: base, style: "stroke: var(--line)" });
+  COUNTS.forEach((n, i) => {
+    const x = i * slot + (slot - barW) / 2;
+    const h = n ? (n / max) * maxH : 2;
+    el("rect", { x, y: base - h, width: barW, height: h, rx: 3, style: `fill: var(${n >= HOT ? "--hot" : "--bar"})` });
+    if (n) el("text", { x: x + barW / 2, y: base - h - 7, "text-anchor": "middle", "font-size": 15, "font-weight": 700, style: "fill: var(--text)" }, n);
+    if (i % 2 === 0) el("text", { x: x + barW / 2, y: base + 24, "text-anchor": "middle", "font-size": 14, style: "fill: var(--muted)" }, START_KM + i);
+  });
+</script>
+</body>
+</html>
