@@ -3,6 +3,33 @@ import { makeRoad } from "../testing/fixtures";
 import { LANE_WIDTH, Structure } from "./road";
 
 describe("Road", () => {
+  it("0.1m 단위 높이로도 오르막·내리막 기울기가 끊기지 않고 이어진다 (덜컥거리지 않게)", () => {
+    // 1.5km마다 오르내리는 언덕 (가장 가파른 곳 12.6%)
+    const hill = (s: number) => 30 * Math.sin((2 * Math.PI * s) / 1500);
+    const r = makeRoad({ length: 4000, hill });
+    const rise = (s: number) => r.sample(s + 0.5).z - r.sample(s - 0.5).z;
+    let jump = 0;
+    let rjump = 0;
+    let err = 0;
+    let prev = r.sample(200).grade;
+    let prevRise = rise(200);
+    for (let s = 201; s < 3800; s++) {
+      const g = r.sample(s).grade;
+      const k = rise(s);
+      jump = Math.max(jump, Math.abs(g - prev));
+      rjump = Math.max(rjump, Math.abs(k - prevRise));
+      err = Math.max(err, Math.abs(g - ((30 * 2 * Math.PI) / 1500) * Math.cos((2 * Math.PI * s) / 1500)));
+      prev = g;
+      prevRise = k;
+    }
+    // 1m 갈 때 기울기 변화: 언덕 모양 자체는 0.05%쯤, 예전에는 10m마다 1~2%씩 튀었다.
+    // 차체 기울기(grade)와 차가 실제로 오르내리는 높이 둘 다
+    expect(jump).toBeLessThan(0.002);
+    expect(rjump).toBeLessThan(0.002);
+    expect(err).toBeLessThan(0.01);
+    expect(Math.abs(r.sample(1000).z - (50 + hill(1000)))).toBeLessThan(0.3);
+  });
+
   it("복원한 좌표로 길이와 방향을 맞게 계산한다", () => {
     const r = makeRoad({ length: 2000 });
     expect(r.length).toBeCloseTo(2000, 0);

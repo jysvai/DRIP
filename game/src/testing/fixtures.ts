@@ -11,7 +11,7 @@ import type { VehicleCatalog } from "../render/vehicleModels";
 import type { QualityRules } from "../log/quality";
 
 /** 동쪽으로 곧게 뻗은 길. curveFrom 뒤로는 반지름 radius로 왼쪽으로 굽는다 */
-export function makeRoad(opts: { length?: number; lanes?: number; speed?: number; tunnel?: [number, number]; bridges?: [number, number][]; curveFrom?: number; radius?: number; junctions?: [number, string, string][]; ref?: string; from?: string; to?: string } = {}): Road {
+export function makeRoad(opts: { length?: number; lanes?: number; speed?: number; tunnel?: [number, number]; bridges?: [number, number][]; curveFrom?: number; radius?: number; junctions?: [number, string, string][]; ref?: string; from?: string; to?: string; hill?: (s: number) => number } = {}): Road {
   const length = opts.length ?? 5000;
   const step = 10;
   const n = Math.round(length / step) + 1;
@@ -52,7 +52,7 @@ export function makeRoad(opts: { length?: number; lanes?: number; speed?: number
     origin: pts[0],
     dx,
     dy,
-    z: new Array(n).fill(500),
+    z: Array.from({ length: n }, (_, i) => Math.round(500 + 10 * (opts.hill?.(i * step) ?? 0))),
     lanes: [[0, opts.lanes ?? 3]],
     speed: [[0, opts.speed ?? 100]],
     speedHgv: [[0, 80]],

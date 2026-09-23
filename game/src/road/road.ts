@@ -12,6 +12,11 @@ export const LANE_WIDTH = 3.6;
 export const RIGHT_SHOULDER = 3.0;
 export const LEFT_SHOULDER = 1.0;
 export const MEDIAN_WIDTH = 3.0; // 좌우 갓길 끝에서 반대편 갓길 끝까지 (분리대 포함)
+/**
+ * 높이 고르기 반 폭 (m). 파일의 높이는 0.1m 단위라 점 간격(고속도로 10m, 시내 2m)마다 기울기가 1~5%씩 튀어
+ * 오르막·내리막에서 차와 화면이 덜컥거린다. 앞뒤 이만큼을 두 번 평균 내어 매끄럽게 한다
+ */
+const Z_SMOOTH = 12;
 
 export const enum Structure {
   Normal = 0,
@@ -159,6 +164,8 @@ export class Road {
   readonly e: Float64Array;
   readonly nn: Float64Array;
   readonly z: Float64Array;
+  /** 점마다 기울기 (앞뒤 점으로 잰 것, 점 사이는 선형 보간) */
+  private readonly gradeAt: Float64Array;
   readonly te: Float64Array;
   readonly tn: Float64Array;
   readonly kappa: Float64Array;
@@ -214,6 +221,14 @@ export class Road {
       this.nn[i] = qy / per;
     }
     for (let i = 0; i < n; i++) this.z[i] = (f.z[i] ?? f.z[f.z.length - 1] ?? 0) / 10;
+    const zw = Math.max(1, Math.round(Z_SMOOTH / f.step));
+    for (let pass = 0; pass < 2; pass++) boxSmooth(this.z, zw);
+    this.gradeAt = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 1);
+      const b = Math.min(n - 1, i + 1);
+      this.gradeAt[i] = b > a ? (this.z[b] - this.z[a]) / ((b - a) * f.step) : 0;
+    }
 
     // 방향과 곡률: 앞뒤 점으로 잰다
     this.te = new Float64Array(n);
@@ -325,7 +340,7 @@ export class Road {
     return Math.min(this.n - 1, Math.max(0, Math.round(s / this.step)));
   }
 
-  /** s 위치의 중심선 정보. 점 사이는 선형 보간 */
+  /** s 위치의 중심선 정보. 점 사이는 선형 보간 (높이만 3차) */
   sample(s: number, out: RoadSample = {} as RoadSample): RoadSample {
     const f = Math.min(Math.max(s / this.step, 0), this.n - 1.000001);
     const i = Math.floor(f);
@@ -333,7 +348,10 @@ export class Road {
     const j = i + 1;
     out.e = this.e[i] + (this.e[j] - this.e[i]) * t;
     out.n = this.nn[i] + (this.nn[j] - this.nn[i]) * t;
-    out.z = this.z[i] + (this.z[j] - this.z[i]) * t;
+    // 높이는 점마다 기울기를 맞춘 3차 곡선으로 이어서 오르내림이 점에서 꺾이지 않게 한다
+    const t2 = t * t;
+    const t3 = t2 * t;
+    out.z = (2 * t3 - 3 * t2 + 1) * this.z[i] + (3 * t2 - 2 * t3) * this.z[j] + (t3 - 2 * t2 + t) * this.step * this.gradeAt[i] + (t3 - t2) * this.step * this.gradeAt[j];
     const te = this.te[i] + (this.te[j] - this.te[i]) * t;
     const tn = this.tn[i] + (this.tn[j] - this.tn[i]) * t;
     const len = Math.hypot(te, tn) || 1;
@@ -341,7 +359,7 @@ export class Road {
     out.tn = tn / len;
     out.heading = Math.atan2(out.tn, out.te);
     out.kappa = this.kappa[i] + (this.kappa[j] - this.kappa[i]) * t;
-    out.grade = (this.z[j] - this.z[i]) / this.step;
+    out.grade = this.gradeAt[i] + (this.gradeAt[j] - this.gradeAt[i]) * t;
     return out;
   }
 
@@ -499,3 +517,19 @@ export class Road {
 }
 
 const scratch = {} as RoadSample;
+
+/** 앞뒤 w점 이동 평균 (양 끝은 있는 점만) */
+function boxSmooth(v: Float64Array, w: number) {
+  const n = v.length;
+  if (n < 3) return;
+  const src = Float64Array.from(v);
+  let sum = 0;
+  let cnt = 0;
+  let lo = 0;
+  let hi = -1;
+  for (let i = 0; i < n; i++) {
+    while (hi < Math.min(n - 1, i + w)) sum += src[++hi], cnt++;
+    while (lo < i - w) sum -= src[lo++], cnt--;
+    v[i] = sum / cnt;
+  }
+}
