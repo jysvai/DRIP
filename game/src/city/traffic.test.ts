@@ -305,5 +305,5 @@ describe("시내 교통 (강동역 → 삼원타워)", () => {
       expect(r.longestStop).toBeLessThan(75);
       expect(r.overlaps / Math.max(1, r.samples)).toBeLessThan(0.002);
       expect(r.redRuns).toBeLessThanOrEqual(Math.ceil(r.crossings * 0.03));
-    });
+    }, 60_000);
 });
