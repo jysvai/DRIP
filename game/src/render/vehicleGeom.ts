@@ -106,15 +106,28 @@ export class Mesher {
   }
 
   build(): THREE.BufferGeometry {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(this.pos), 3));
-    g.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(this.nor), 3));
-    g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(this.col), 3));
-    g.setAttribute("surf", new THREE.BufferAttribute(new Float32Array(this.srf), 4));
-    g.computeBoundingSphere();
-    g.computeBoundingBox();
-    return g;
+    return packedGeometry(new Float32Array(this.pos), new Float32Array(this.nor), new Float32Array(this.col), new Float32Array(this.srf));
   }
+
+  /** 더 붙이지 않을 조각을 Float32 배열로 줄여 둔다 (JS 숫자 배열의 절반 아래). 나중에 build()로 도형을 만든다 */
+  pack(): { build(): THREE.BufferGeometry } {
+    const pos = new Float32Array(this.pos);
+    const nor = new Float32Array(this.nor);
+    const col = new Float32Array(this.col);
+    const srf = new Float32Array(this.srf);
+    return { build: () => packedGeometry(pos, nor, col, srf) };
+  }
+}
+
+function packedGeometry(pos: Float32Array, nor: Float32Array, col: Float32Array, srf: Float32Array): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  g.setAttribute("surf", new THREE.BufferAttribute(srf, 4));
+  g.computeBoundingSphere();
+  g.computeBoundingBox();
+  return g;
 }
 
 function faceNormal(a: V3, b: V3, c: V3): THREE.Vector3 | null {

@@ -124,6 +124,7 @@ export class PlayerView {
   /** 앞유리 빗방울·와이퍼 (운전석 시점) */
   readonly windshield: WindshieldRain;
   private headBeam: THREE.SpotLight | null = null;
+  private hiddenForMirror: THREE.Object3D[] = [];
   private night = 0;
   private headPos = new THREE.Vector3();
   private pivotY: number;
@@ -157,7 +158,7 @@ export class PlayerView {
     private world: World,
     readonly type: VehicleType,
     color: string,
-    hudRoot: HTMLElement,
+    private hudRoot: HTMLElement,
   ) {
     const model = (this.model = buildVehicleModel(type, 7));
     const cab = model.cabin;
@@ -218,8 +219,8 @@ export class PlayerView {
       const h = Math.round(w / aspect);
       // 거울에는 뒤 350m까지만 (멀리 있는 것은 작아서 안 보인다)
       const cam = new THREE.PerspectiveCamera(fov, aspect, 0.5, 350);
-      const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 2 });
-      const mat = new THREE.MeshBasicMaterial({ map: rt.texture, side: THREE.DoubleSide });
+      const rt = mirrorTarget(w, h);
+      const mat = mirrorMaterial(rt, 0xffffff, THREE.DoubleSide);
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
       this.overlay.add(quad);
       const frame = document.createElement("div");
@@ -240,7 +241,7 @@ export class PlayerView {
       const geo = new THREE.PlaneGeometry(g.w, g.h);
       const uv = geo.getAttribute("uv");
       for (let k = 0; k < uv.count; k++) uv.setX(k, 1 - uv.getX(k));
-      const mat = new THREE.MeshBasicMaterial({ map: mr.rt.texture, color: 0xd8dde2 });
+      const mat = mirrorMaterial(mr.rt, 0xd8dde2);
       const glass = new THREE.Mesh(geo, mat);
       glass.position.set(g.c.x - 0.0015, g.c.y, g.c.z);
       glass.rotation.y = -Math.PI / 2;
@@ -300,6 +301,12 @@ export class PlayerView {
       { x: 12, y: H * (a1 < 1 ? 0.38 : 0.46), w: sw, h: sw / a1 },
       { x: W - 12 - sw, y: H * (a2 < 1 ? 0.38 : 0.46), w: sw, h: sw / a2 },
     ];
+    // 오른쪽 거울 창은 오른쪽 아래 내비 화면(.fascia)을 가리지 않게 그 위로 올린다
+    const fascia = this.hudRoot.querySelector(".fascia")?.getBoundingClientRect();
+    if (fascia && fascia.height > 0) {
+      const r = rects[2];
+      if (r.x + r.w > fascia.left && r.y + r.h > fascia.top - 10) r.y = Math.max(90, fascia.top - 10 - r.h);
+    }
     this.overlayCam.left = 0;
     this.overlayCam.right = W;
     this.overlayCam.top = H;
@@ -486,6 +493,29 @@ export class PlayerView {
     }
   }
 
+  /**
+   * 거울에는 내 차가 비치지 않게 숨긴다. 차 전체를 숨기면 안에 단 전조등 조명까지 빠져
+   * 조명 수가 바뀌고, 그러면 모든 재질이 셰이더를 다시 고르느라 느려진다. 그래서 조명만 남기고 숨긴다.
+   */
+  private hideSelf() {
+    const hidden = this.hiddenForMirror;
+    hidden.length = 0;
+    const hide = (o: THREE.Object3D) => {
+      if (o.visible) {
+        o.visible = false;
+        hidden.push(o);
+      }
+    };
+    for (const o of this.car.children) if (o !== this.body) hide(o);
+    for (const o of this.body.children) if (o !== this.inner) hide(o);
+    for (const o of this.inner.children) if (o !== this.headBeam && o !== this.headBeam?.target) hide(o);
+  }
+
+  private showSelf() {
+    for (const o of this.hiddenForMirror) o.visible = true;
+    this.hiddenForMirror.length = 0;
+  }
+
   /** 본 화면과 거울을 그린다 */
   render() {
     const r = this.world.renderer;
@@ -501,8 +531,7 @@ export class PlayerView {
       m.cam.up.set(0, 1, 0);
       m.cam.lookAt(this.inner.localToWorld(this.v2));
       m.cam.updateMatrixWorld(true);
-      const vis = this.car.visible;
-      this.car.visible = false;
+      this.hideSelf();
       // 그림자 지도는 본 화면에서만 새로 그린다 (거울은 앞 프레임 것을 쓴다)
       const au = r.shadowMap.autoUpdate;
       r.shadowMap.autoUpdate = false;
@@ -512,7 +541,7 @@ export class PlayerView {
       r.render(scene, m.cam);
       this.world.mirrorPass(false);
       r.shadowMap.autoUpdate = au;
-      this.car.visible = vis;
+      this.showSelf();
     }
     r.setRenderTarget(null);
     r.shadowMap.needsUpdate = true;
@@ -525,6 +554,29 @@ export class PlayerView {
       r.render(this.overlay, this.overlayCam);
     }
   }
+}
+
+/**
+ * 거울 렌더 타깃. 본 화면처럼 톤매핑·sRGB 변환까지 마친 색을 담는다.
+ * three.js는 그리는 곳이 화면인지 렌더 타깃인지에 따라 재질마다 셰이더 조합을 다시 따지는데,
+ * 거울과 본 화면을 매 프레임 번갈아 그리면 이 계산이 프레임 CPU 시간의 3분의 1을 먹는다.
+ * 렌더 타깃을 XR 화면처럼 표시해 두면 두 곳이 같은 셰이더를 쓴다.
+ */
+function mirrorTarget(w: number, h: number): THREE.WebGLRenderTarget {
+  const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 2 });
+  rt.texture.colorSpace = THREE.SRGBColorSpace;
+  (rt as unknown as { isXRRenderTarget: boolean }).isXRRenderTarget = true;
+  return rt;
+}
+
+/** 거울 화면을 붙이는 재질: 이미 화면 색이라 sRGB를 풀어 두고 톤매핑 없이 그린다 */
+function mirrorMaterial(rt: THREE.WebGLRenderTarget, color: number, side: THREE.Side = THREE.FrontSide): THREE.MeshBasicMaterial {
+  const m = new THREE.MeshBasicMaterial({ map: rt.texture, color, side, toneMapped: false });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", "diffuseColor *= sRGBTransferEOTF( texture2D( map, vMapUv ) );");
+  };
+  m.customProgramCacheKey = () => "drip-mirror";
+  return m;
 }
 
 /** 유리는 그림자를 만들지 않는 깊이 재질 */

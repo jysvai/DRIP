@@ -61,6 +61,8 @@ export class SprayView {
   private debt = new WeakMap<THREE.Matrix4, number>();
   /** 노면 젖은 정도(비 0.5, 폭우 1). 0이면 물보라 없음 */
   wet = 0;
+  /** 그래픽 품질에 따른 입자 비율 */
+  private amount = 1;
 
   constructor(private world: World) {
     const g = new THREE.BufferGeometry();
@@ -85,6 +87,7 @@ export class SprayView {
       this.mat.uniforms.uScale.value = h / (2 * Math.tan((fov * Math.PI) / 360));
     };
     world.scene.add(this.points);
+    world.onQuality((_, s) => (this.amount = s.particles));
   }
 
   get count() {
@@ -155,7 +158,7 @@ export class SprayView {
   private emit(s: SpraySource, dt: number) {
     const spd = Math.max(0, s.v - 6) / 25;
     if (spd <= 0) return;
-    const rate = this.wet * (s.big ? 130 : 50) * spd * spd;
+    const rate = this.wet * (s.big ? 130 : 50) * spd * spd * this.amount;
     let debt = (this.debt.get(s.m) ?? 0) + rate * dt;
     const e = s.m.elements;
     // 모델 축: x 앞, y 위, z 오른쪽

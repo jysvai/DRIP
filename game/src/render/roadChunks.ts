@@ -14,8 +14,17 @@ import type { World } from "./world";
 export const CHUNK = 200;
 const ROW = 5; // 노면 가로줄 간격 (m)
 const TERRAIN_ROW = 20;
-const AHEAD = 2600;
 const BEHIND = 400;
+/** 조각마다 심을 수 있는 나무 수 (품질의 treeDensity만큼 그린다) */
+const TREE_CAP = 300;
+
+/** 조각 하나의 나무 무리: 가까우면 제 모양, 멀면 단순한 모양으로 바꿔 그린다 */
+interface TreeSet {
+  mesh: THREE.InstancedMesh;
+  n: number;
+  near: THREE.BufferGeometry;
+  far: THREE.BufferGeometry;
+}
 
 /** 버스전용차로 등 차선 색을 바꾸는 구간 */
 export interface LaneOverride {
@@ -228,6 +237,9 @@ export class RoadChunks {
   private signMats = new Map<THREE.Texture, THREE.Material>();
   private pineGeo: THREE.BufferGeometry;
   private broadGeo: THREE.BufferGeometry;
+  private pineFar: THREE.BufferGeometry;
+  private broadFar: THREE.BufferGeometry;
+  private trees = new Map<number, TreeSet[]>();
   private noiseWallBlocks = new Set<number>();
   overrides: LaneOverride[] = [];
   /** 단속 카메라: 고정식은 오른쪽 기둥과 팔, 구간단속 시점·종점은 도로를 건너는 문형 구조물 */
@@ -336,13 +348,16 @@ export class RoadChunks {
       tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
       post: new THREE.MeshStandardMaterial({ color: 0x8e9396, roughness: 0.5, metalness: 0.6 }),
       cone: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }),
-      glare: new THREE.MeshStandardMaterial({ vertexColors: true, map: glareTexture(), transparent: true, depthWrite: false, roughness: 0.7, side: THREE.DoubleSide }),
+      // 양면 투명은 three.js가 뒷면·앞면 두 번에 나눠 그리며 매번 셰이더를 다시 고른다 (얇은 망이라 한 번에 그려도 같다)
+      glare: new THREE.MeshStandardMaterial({ vertexColors: true, map: glareTexture(), transparent: true, depthWrite: false, roughness: 0.7, side: THREE.DoubleSide, forceSinglePass: true }),
       rumble: new THREE.MeshStandardMaterial({ vertexColors: true, map: rumbleTexture(), roughness: 0.95, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
       signBack: new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.6, metalness: 0.4, side: THREE.DoubleSide }),
     };
     this.joints = expansionJoints(road);
     this.pineGeo = makePineGeometry();
     this.broadGeo = makeBroadleafGeometry();
+    this.pineFar = makePineGeometry(true);
+    this.broadFar = makeBroadleafGeometry(true);
     // 방음벽 구간: IC·JC 근처(도시 부근)일수록 자주
     for (let b = 0; b * 400 < road.length; b++) {
       const s = b * 400;
@@ -359,13 +374,16 @@ export class RoadChunks {
     // 불꽃신호는 일렁인다
     const t = performance.now() / 1000;
     this.flareMat.color.setRGB(1, 0.2 + 0.12 * Math.sin(t * 23) + 0.08 * Math.sin(t * 37), 0.08).multiplyScalar(0.8 + 0.4 * Math.abs(Math.sin(t * 13)));
+    // 안개 끝(밤·날씨·품질)까지만 만든다. 그 너머는 안개에 가려 보이지 않는다
+    const ahead = this.world.visibleDistance + 100;
     const k0 = Math.max(0, Math.floor((s - BEHIND) / CHUNK));
-    const k1 = Math.min(Math.floor(this.road.length / CHUNK), Math.floor((s + AHEAD) / CHUNK));
+    const k1 = Math.min(Math.floor(this.road.length / CHUNK), Math.floor((s + ahead) / CHUNK));
     for (const [k, g] of this.chunks) {
       if (k < k0 - 1 || k > k1 + 1) {
         this.group.remove(g);
         disposeGroup(g);
         this.chunks.delete(k);
+        this.trees.delete(k);
       }
     }
     // 가까운 조각부터
@@ -375,12 +393,38 @@ export class RoadChunks {
     want.sort((a, b) => Math.abs(a - sk) - Math.abs(b - sk));
     for (const k of want.slice(0, maxBuild)) {
       const g = this.build(k);
+      // 조각 안 물체는 조각과 함께만 움직인다: 자기 행렬은 한 번만 계산해 둔다
+      g.traverse((o) => {
+        if (o === g) return;
+        o.updateMatrix();
+        o.matrixAutoUpdate = false;
+      });
       this.chunks.set(k, g);
       this.group.add(g);
     }
     // 떠다니는 원점에 맞춰 위치 갱신
     const o = this.world.origin;
     for (const g of this.chunks.values()) g.position.set(g.userData.e0 - o.e, 0, -(g.userData.n0 - o.n));
+    this.updateTrees(sk);
+  }
+
+  /**
+   * 나무: 가까운 조각만 제 모양(잎 뭉치가 둥근)으로, 먼 조각은 면이 적은 모양으로 그린다.
+   * 그림자는 해 그림자 범위에 드는 가까운 조각만 드리운다. 몇 그루를 그릴지는 품질에 따른다.
+   */
+  private updateTrees(sk: number) {
+    const set = this.world.settings;
+    for (const [k, sets] of this.trees) {
+      const dk = Math.abs(k - sk);
+      const near = dk <= set.treeNear;
+      const shadow = set.shadowMap > 0 && dk <= set.treeShadow;
+      for (const t of sets) {
+        const geo = near ? t.near : t.far;
+        if (t.mesh.geometry !== geo) t.mesh.geometry = geo;
+        t.mesh.count = Math.round(t.n * set.treeDensity);
+        t.mesh.castShadow = shadow;
+      }
+    }
   }
 
   /** 시작할 때 주변을 한 번에 다 만든다 */
@@ -1117,7 +1161,7 @@ export class RoadChunks {
 
     // 나무: 도로에서 35~450m 사이, 가까울수록 촘촘하게. 소나무와 활엽수(참나무 등)를 섞고
     // 섞는 비율은 약 600m마다 달라진다 (소나무 숲, 활엽수 숲, 섞인 숲)
-    const count = 230;
+    const count = TREE_CAP;
     const pines = new THREE.InstancedMesh(this.pineGeo, this.mats.tree, count);
     const broads = new THREE.InstancedMesh(this.broadGeo, this.mats.tree, count);
     const m = new THREE.Matrix4();
@@ -1171,9 +1215,10 @@ export class RoadChunks {
       target.setMatrixAt(idx, m);
       target.setColorAt(idx, tint);
     }
-    for (const [inst, n] of [
-      [pines, np],
-      [broads, nb],
+    const sets: TreeSet[] = [];
+    for (const [inst, n, near, far] of [
+      [pines, np, this.pineGeo, this.pineFar],
+      [broads, nb, this.broadGeo, this.broadFar],
     ] as const) {
       inst.count = n;
       inst.castShadow = true;
@@ -1181,7 +1226,9 @@ export class RoadChunks {
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       inst.computeBoundingSphere();
       g.add(inst);
+      sets.push({ mesh: inst, n, near, far });
     }
+    this.trees.set(k, sets);
     return g;
   }
 
@@ -1333,9 +1380,9 @@ function lumpy(g: THREE.BufferGeometry, amount: number, seed: number): THREE.Buf
   return g;
 }
 
-function makePineGeometry(): THREE.BufferGeometry {
-  // 잣나무·낙엽송 조림지 같은 원뿔형 침엽수: 줄기 + 세 층
-  const trunk = new THREE.CylinderGeometry(0.16, 0.3, 4, 5);
+function makePineGeometry(far = false): THREE.BufferGeometry {
+  // 잣나무·낙엽송 조림지 같은 원뿔형 침엽수: 줄기 + 세 층. far: 먼 나무용 (면을 줄이고 밑면 없이)
+  const trunk = new THREE.CylinderGeometry(0.16, 0.3, 4, far ? 3 : 5, 1, far);
   trunk.translate(0, 2, 0);
   const tiers = [
     { r: 2.7, h: 4.6, y: 4.4, c: 0x2f5129 },
@@ -1344,7 +1391,7 @@ function makePineGeometry(): THREE.BufferGeometry {
   ];
   const parts = [paintPart(trunk, 0x5c4432)];
   tiers.forEach((tr, i) => {
-    const cone = lumpy(new THREE.ConeGeometry(tr.r, tr.h, 8, 1), 0.16, i * 17);
+    const cone = lumpy(new THREE.ConeGeometry(tr.r, tr.h, far ? 5 : 8, 1, far), 0.16, i * 17);
     cone.translate(0, tr.y, 0);
     parts.push(paintPart(cone, tr.c, 0.22, i));
   });
@@ -1353,9 +1400,9 @@ function makePineGeometry(): THREE.BufferGeometry {
   return merged;
 }
 
-function makeBroadleafGeometry(): THREE.BufferGeometry {
-  // 참나무 같은 활엽수: 줄기 + 둥근 잎 뭉치 네 개
-  const trunk = new THREE.CylinderGeometry(0.2, 0.34, 4.2, 5);
+function makeBroadleafGeometry(far = false): THREE.BufferGeometry {
+  // 참나무 같은 활엽수: 줄기 + 둥근 잎 뭉치 네 개. far: 먼 나무용 (잎 뭉치를 거친 20면체로)
+  const trunk = new THREE.CylinderGeometry(0.2, 0.34, 4.2, far ? 3 : 5, 1, far);
   trunk.translate(0, 2.1, 0);
   const blobs = [
     { x: 0, y: 6.2, z: 0, r: 2.9, c: 0x4a6b31 },
@@ -1365,7 +1412,7 @@ function makeBroadleafGeometry(): THREE.BufferGeometry {
   ];
   const parts = [paintPart(trunk, 0x5a4a3a)];
   blobs.forEach((b, i) => {
-    const s = lumpy(new THREE.IcosahedronGeometry(b.r, 1), 0.28, i * 29);
+    const s = lumpy(new THREE.IcosahedronGeometry(b.r, far ? 0 : 1), far ? 0.18 : 0.28, i * 29);
     s.scale(1, 0.85, 1);
     s.translate(b.x, b.y, b.z);
     parts.push(paintPart(s, b.c, 0.3, i + 10));

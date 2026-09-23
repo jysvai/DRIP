@@ -2159,15 +2159,20 @@ export function buildVehicleModel(t: VehicleType, seed = 1): VehicleModel {
   else if (t.body === "camper") buildCamper(t, b);
   else buildCar(t, b);
   const big = t.length > 6;
-  const body = lazy(() => merge([b.m, b.core]));
-  const mid = lazy(() => {
-    const mm = new Mesher();
-    mm.append(b.mid.count ? b.mid : b.m);
-    mm.append(b.core);
-    bakeWheels(mm, b.wheels, true);
-    return mm.build();
-  });
-  const interior = lazy(() => b.inner.build());
+  // 조각(Mesher)은 JS 숫자 배열이라 꼭짓점 하나에 100바이트가 넘는다. 차종마다 붙잡고 있으면 수백 MB가 되므로
+  // 교통에 늘 쓰는 차체·중간 거리 모양은 바로 만들고 조각은 놓아준다. 실내 면(내 차만 쓴다)은 Float32로 줄여 둔다.
+  const bodyG = merge([b.m, b.core]);
+  const mm = new Mesher();
+  mm.append(b.mid.count ? b.mid : b.m);
+  mm.append(b.core);
+  bakeWheels(mm, b.wheels, true);
+  const midG = mm.build();
+  b.m = b.core = b.mid = new Mesher();
+  const innerPacked = b.inner.pack();
+  b.inner = new Mesher();
+  const body = () => bodyG;
+  const mid = () => midG;
+  const interior = lazy(() => innerPacked.build());
   const withWheels = lazy(() => {
     const mm = new Mesher();
     appendGeometry(mm, body().clone());

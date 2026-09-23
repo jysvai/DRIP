@@ -12,7 +12,8 @@ import { DriveFx } from "./ui/fx";
 import { SprayView, type SpraySource } from "./render/spray";
 import { ICE_GRIP, iceAt, planIce, type IcePatch } from "./sim/ice";
 import { TrafficView } from "./render/trafficView";
-import { World } from "./render/world";
+import { GfxGovernor, gpuName, guessTier, loadAutoTier, saveAutoTier } from "./render/gfx";
+import { QUALITY_LABELS, World, type Quality } from "./render/world";
 import { WeatherView } from "./render/weather";
 import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, SAMPLE_COLUMNS, type Sample, type UploadStatus } from "./log/recorder";
@@ -99,6 +100,11 @@ export class Game {
   fps = 0;
   private acc = 0;
   private last = performance.now();
+  /** 그래픽 품질 자동 맞춤과 GPU를 기다려 잴 때 쓰는 1화소 */
+  private gov: GfxGovernor;
+  private gpu = "";
+  private frameNo = 0;
+  private pixel = new Uint8Array(4);
   private sampleTimer = 0;
   private signalCancelAt = -1;
   private laneForSignal = 0;
@@ -139,8 +145,15 @@ export class Game {
   ) {
     const road = setup.road;
     this.road = road;
-    this.world = new World(app);
-    this.world.setQuality(settings.quality);
+    // 그래픽 품질: 자동이면 그래픽 카드로 짐작하고(지난번에 맞춘 값이 있으면 그것), 대기 화면에서 재서 고친다
+    const auto = settings.quality === "auto";
+    this.gpu = auto ? gpuName() : "";
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const tier: Quality = auto
+      ? (loadAutoTier(this.gpu) ?? guessTier(this.gpu, { coarse: matchMedia("(pointer: coarse)").matches, memoryGb: nav.deviceMemory ?? 0, cores: nav.hardwareConcurrency ?? 0 }))
+      : (settings.quality as Quality);
+    this.world = new World(app, tier);
+    this.gov = new GfxGovernor(auto, tier);
     this.world.renderer.shadowMap.autoUpdate = false;
     const sun = sunFor(settings.hour);
     // 밤에는 하늘을 그리지 않고, 빛 방향은 높이 뜬 달
@@ -255,7 +268,7 @@ export class Game {
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
-    this.view.shake.scale = SHAKE_SCALE[(settings as DriveSettings & { shake?: keyof typeof SHAKE_SCALE }).shake ?? "on"];
+    this.view.shake.scale = SHAKE_SCALE[settings.shake ?? "on"];
     this.view.setNight(sun.night);
     this.input = new Input(this.world.renderer.domElement);
 
@@ -430,10 +443,43 @@ export class Game {
       this.fpsFrames = 0;
       this.fpsTime = 0;
     }
+    // 가끔 GPU까지 기다려 한 프레임에 실제로 드는 시간을 잰다 (모니터 주사율·절전 제한과 구분하려고)
+    const measure = this.gov.wantsSample(this.frameNo++);
+    if (measure) this.syncGpu();
+    const t0 = performance.now();
     if (this.state === "run") this.step(dt);
     this.draw(dt);
+    let work: number | null = null;
+    if (measure) {
+      this.syncGpu();
+      work = performance.now() - t0;
+    }
+    this.tuneGraphics(now / 1000, dt * 1000, work);
     requestAnimationFrame(this.frame);
   };
+
+  /** GPU가 앞서 받은 일을 다 끝낼 때까지 기다린다 (1화소 읽기) */
+  private syncGpu() {
+    const r = this.world.renderer;
+    r.setRenderTarget(null);
+    const gl = r.getContext();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
+  }
+
+  /** 잰 시간으로 해상도·품질을 맞춘다 (render/gfx.ts) */
+  private tuneGraphics(t: number, intervalMs: number, workMs: number | null) {
+    const act = this.gov.push(t, intervalMs, workMs, this.state === "run");
+    if (!act) return;
+    if (act.tier && act.tier !== this.world.quality) this.world.setQuality(act.tier);
+    if (act.scale !== undefined) this.world.setResolutionScale(act.scale);
+    if (act.note === "calibrated" || act.note === "down") saveAutoTier(this.gpu, this.gov.tier);
+    if (act.note === "down") this.hud.toast(`화면이 끊겨 그래픽을 '${QUALITY_LABELS[this.gov.tier]}'(으)로 낮췄습니다`, 3);
+  }
+
+  /** 지금 그래픽 상태 (검수용) */
+  get graphics() {
+    return { quality: this.world.quality, scale: this.world.resolutionScale, calibrating: this.gov.calibrating, gpu: this.gpu, pixelRatio: this.world.renderer.getPixelRatio() };
+  }
 
   private step(dt: number) {
     const p = this.player;
@@ -989,7 +1035,7 @@ export class Game {
     this.world.tunnel += ((inTunnel ? 1 : 0) - this.world.tunnel) * Math.min(1, dt * 2);
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.viewGround = this.view.car.position.y;
-    this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
+    this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position, this.world.visibleDistance + 50);
     this.updateSpray(dt, inTunnel);
     this.sparks.update(dt);
     this.fx.speed(this.state === "run" ? p.speed * 3.6 : 0, this.view.shake.scale);

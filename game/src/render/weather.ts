@@ -129,6 +129,12 @@ export class WeatherView {
   ) {
     if (weather.rain > 0) this.makeRain(Math.round(3000 + 9000 * weather.rain));
     if (weather.snow > 0) this.makeSnow(Math.round(6000 + 24000 * weather.snow));
+    // 품질이 낮으면 빗줄기·눈송이를 덜 그린다 (앞쪽 일부만)
+    world.onQuality((_, s) => {
+      const k = Math.max(0.1, Math.min(1, s.particles));
+      if (this.rain) this.rain.geometry.setDrawRange(0, Math.round((this.rain.geometry.getAttribute("position").count / 2) * k) * 2);
+      if (this.snow) this.snow.geometry.setDrawRange(0, Math.round(this.snow.geometry.getAttribute("position").count * k));
+    });
   }
 
   /** 하늘·안개. World.setNight 뒤에 한 번 부른다 */
@@ -141,8 +147,7 @@ export class WeatherView {
       fog.color.lerp(gray, Math.min(1, w.overcast * 1.1));
     }
     // 가시거리: 물체가 거의 다 흐려지는 거리가 가시거리쯤이 되게
-    fog.far = Math.min(fog.far, w.visibilityM * 1.15);
-    fog.near = Math.min(fog.near, w.visibilityM * 0.08);
+    this.world.setVisibility(w.visibilityM * 1.15, w.visibilityM * 0.08);
     this.world.setOvercast(w.overcast, fog.color);
     const u = this.uniforms;
     const dark = Math.min(1, night);

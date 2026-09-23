@@ -11,15 +11,33 @@ export interface Origin {
   n: number;
 }
 
-/** 그래픽 품질. low: 그림자·반사 코팅·후처리 없이 가볍게, high: 전부 */
-export type Quality = "low" | "medium" | "high";
+/**
+ * 그래픽 품질. low: 그림자·반사 코팅·후처리 없이 가깝게만 그려 가볍게, high: 전부,
+ * ultra: 고사양 PC용으로 더 멀리·더 촘촘히·더 선명하게 (먼 산까지 숲, 넓고 고운 그림자, 선명한 거울)
+ */
+export type Quality = "low" | "medium" | "high" | "ultra";
+/** 메뉴에서 고르는 값: auto는 기기에 맞춰 고른다 (render/gfx.ts) */
+export type QualityChoice = Quality | "auto";
+export const QUALITY_ORDER: Quality[] = ["low", "medium", "high", "ultra"];
+export const QUALITY_LABELS: Record<Quality, string> = { low: "낮음", medium: "보통", high: "높음", ultra: "최고" };
 
 export interface QualitySettings {
   /** 화면 해상도 배율 상한 */
   pixelRatio: number;
-  /** 해 그림자 (0이면 끔) */
+  /** 끊길 때 해상도를 여기까지 낮춘다 (pixelRatio에 곱하는 값) */
+  minScale: number;
+  /** 해 그림자 (0이면 끔)와 그림자가 드리우는 범위 (차 둘레 ±m) */
   shadowMap: number;
   shadowRadius: number;
+  shadowExtent: number;
+  /** 길과 풍경을 그리는 거리 (m). 안개가 이보다 가까우면 안개까지만 */
+  viewDistance: number;
+  /** 나무: 조각마다 심을 수 있는 수 중 몇 할을 그릴지, 제 모양으로 그리는 조각 수(앞뒤로), 그림자를 드리우는 조각 수 */
+  treeDensity: number;
+  treeNear: number;
+  treeShadow: number;
+  /** 비·눈 입자 비율 */
+  particles: number;
   /** 차 도장 클리어코트 */
   clearcoat: boolean;
   /** 차를 제 모양으로 그리는 거리 / 단순 모양으로 그리는 거리 / 상자로라도 그리는 거리 (m) */
@@ -34,16 +52,86 @@ export interface QualitySettings {
 }
 
 export const QUALITY: Record<Quality, QualitySettings> = {
-  low: { pixelRatio: 1, shadowMap: 0, shadowRadius: 0, clearcoat: false, lodNear: 30, lodMid: 160, drawDistance: 900, mirrorEvery: 3, mirrorScale: 0.6, post: false },
-  medium: { pixelRatio: 1.25, shadowMap: 1024, shadowRadius: 2, clearcoat: true, lodNear: 45, lodMid: 240, drawDistance: 1200, mirrorEvery: 2, mirrorScale: 0.8, post: false },
-  high: { pixelRatio: 1.75, shadowMap: 2048, shadowRadius: 3, clearcoat: true, lodNear: 70, lodMid: 320, drawDistance: 1400, mirrorEvery: 1, mirrorScale: 1, post: true },
+  low: {
+    pixelRatio: 1,
+    minScale: 0.6,
+    shadowMap: 0,
+    shadowRadius: 0,
+    shadowExtent: 0,
+    viewDistance: 1500,
+    treeDensity: 0.4,
+    treeNear: 1,
+    treeShadow: 0,
+    particles: 0.45,
+    clearcoat: false,
+    lodNear: 30,
+    lodMid: 160,
+    drawDistance: 900,
+    mirrorEvery: 3,
+    mirrorScale: 0.6,
+    post: false,
+  },
+  medium: {
+    pixelRatio: 1.25,
+    minScale: 0.7,
+    shadowMap: 1024,
+    shadowRadius: 2,
+    shadowExtent: 55,
+    viewDistance: 2000,
+    treeDensity: 0.6,
+    treeNear: 1,
+    treeShadow: 1,
+    particles: 0.7,
+    clearcoat: true,
+    lodNear: 45,
+    lodMid: 240,
+    drawDistance: 1200,
+    mirrorEvery: 2,
+    mirrorScale: 0.8,
+    post: false,
+  },
+  high: {
+    pixelRatio: 1.75,
+    minScale: 0.75,
+    shadowMap: 2048,
+    shadowRadius: 3,
+    shadowExtent: 70,
+    viewDistance: 2600,
+    treeDensity: 0.77,
+    treeNear: 2,
+    treeShadow: 1,
+    particles: 1,
+    clearcoat: true,
+    lodNear: 70,
+    lodMid: 320,
+    drawDistance: 1400,
+    mirrorEvery: 1,
+    mirrorScale: 1,
+    post: true,
+  },
+  ultra: {
+    pixelRatio: 2,
+    minScale: 0.8,
+    shadowMap: 4096,
+    shadowRadius: 3,
+    shadowExtent: 110,
+    viewDistance: 3300,
+    treeDensity: 1,
+    treeNear: 4,
+    treeShadow: 2,
+    particles: 1,
+    clearcoat: true,
+    lodNear: 110,
+    lodMid: 520,
+    drawDistance: 2000,
+    mirrorEvery: 1,
+    mirrorScale: 1.3,
+    post: true,
+  },
 };
 
-/** 기기에 맞는 기본 품질: 휴대기기·터치 화면은 medium, 나머지는 high */
-export function defaultQuality(): Quality {
-  if (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches) return "medium";
-  return "high";
-}
+/** 낮 안개가 끝나는 거리 (m): 품질이 높으면 더 멀리까지 맑게 보인다 */
+const DAY_FOG_FAR = 2600;
 
 export const FOG_COLOR = new THREE.Color(0xc3ccd3);
 const NIGHT_FOG = new THREE.Color(0x06090e);
@@ -77,8 +165,11 @@ export class World {
   private overcastSky = new THREE.Color();
   /** 플레이어 차가 향한 방향 (화면 좌표 y축 회전). 터널 반사를 길 방향에 맞춘다 */
   heading = 0;
-  quality: Quality = defaultQuality();
-  settings: QualitySettings = QUALITY[this.quality];
+  quality: Quality;
+  settings: QualitySettings;
+  /** 끊길 때 낮추는 해상도 배율 (1 = 품질의 pixelRatio 그대로) */
+  resolutionScale = 1;
+  private fogLimit = { far: Infinity, near: Infinity };
   /** 후처리 (high에서만) */
   readonly post: PostFx;
   private qualityListeners: ((q: Quality, s: QualitySettings) => void)[] = [];
@@ -89,8 +180,11 @@ export class World {
   private envMats: EnvMat[] = [];
   private envSky: Sky;
 
-  constructor(container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+  /** initial: 처음 품질. low면 계단 현상 방지(MSAA)를 끈다 (나중에 바꿀 수 없다) */
+  constructor(container: HTMLElement, initial: Quality = "high") {
+    this.quality = initial;
+    this.settings = QUALITY[initial];
+    this.renderer = new THREE.WebGLRenderer({ antialias: initial !== "low", powerPreference: "high-performance" });
     this.renderer.setSize(container.clientWidth || innerWidth, container.clientHeight || innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -153,8 +247,7 @@ export class World {
     this.night = n;
     const fog = this.scene.fog as THREE.Fog;
     fog.color.copy(FOG_COLOR).lerp(NIGHT_FOG, Math.pow(n, 0.6));
-    fog.near = 250 - 200 * n;
-    fog.far = 2600 - 1700 * n;
+    this.refreshFog();
     // 해가 진 뒤에는 하늘 셰이더 대신 어두운 배경
     this.sky.visible = n < 0.6;
     this.scene.background = this.sky.visible ? null : fog.color;
@@ -180,18 +273,62 @@ export class World {
   setQuality(q: Quality) {
     this.quality = q;
     const s = (this.settings = QUALITY[q]);
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, s.pixelRatio));
-    this.resize();
+    this.resolutionScale = 1;
+    this.applyPixelRatio();
     if (s.shadowMap && this.sun.shadow.mapSize.x !== s.shadowMap) {
       this.sun.shadow.mapSize.set(s.shadowMap, s.shadowMap);
       this.sun.shadow.map?.dispose();
       this.sun.shadow.map = null;
     }
+    if (s.shadowExtent) {
+      const sc = this.sun.shadow.camera;
+      sc.left = sc.bottom = -s.shadowExtent;
+      sc.right = sc.top = s.shadowExtent;
+      sc.far = 330 + s.shadowExtent;
+      sc.updateProjectionMatrix();
+    }
     this.sun.shadow.radius = s.shadowRadius;
     this.applyShadow();
+    this.refreshFog();
     for (const e of this.envMats) this.applyCoat(e.mat);
     this.post.enabled = s.post;
     for (const cb of this.qualityListeners) cb(q, s);
+  }
+
+  /** 해상도 배율을 바꾼다 (끊길 때 품질의 minScale까지 낮춘다) */
+  setResolutionScale(k: number) {
+    const v = Math.max(this.settings.minScale, Math.min(1, k));
+    if (Math.abs(v - this.resolutionScale) < 0.01) return;
+    this.resolutionScale = v;
+    this.applyPixelRatio();
+  }
+
+  private applyPixelRatio() {
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.settings.pixelRatio) * this.resolutionScale);
+    this.resize();
+  }
+
+  /** 날씨 가시거리: 안개가 이 거리(far)에서 다 흐려지고 near부터 흐려지기 시작한다 */
+  setVisibility(far: number, near: number) {
+    this.fogLimit = { far, near };
+    this.refreshFog();
+  }
+
+  /**
+   * 안개 거리 = 밤(어두우면 가깝게)·날씨 가시거리·품질의 그리는 거리 중 가장 가까운 것.
+   * 그리는 거리 너머는 만들지 않으니 안개로 가린다. 높은 품질일수록 낮에 더 멀리까지 맑다.
+   */
+  private refreshFog() {
+    const fog = this.scene.fog as THREE.Fog;
+    const n = this.night;
+    const day = Math.max(DAY_FOG_FAR, this.settings.viewDistance);
+    fog.far = Math.min(day - (day - 900) * n, this.fogLimit.far, this.settings.viewDistance);
+    fog.near = Math.min(250 - 200 * n, this.fogLimit.near, fog.far * 0.3);
+  }
+
+  /** 지금 보이는 거리 (m): 안개 끝 (날씨·밤·품질에 따라) */
+  get visibleDistance(): number {
+    return (this.scene.fog as THREE.Fog).far;
   }
 
   /** 품질이 바뀌면 부른다 (바로 한 번 부른다) */
