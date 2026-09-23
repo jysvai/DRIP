@@ -420,7 +420,8 @@ export class Game {
   }
 
   private frame = (now: number) => {
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    // requestAnimationFrame 시각이 시작 시각보다 조금 앞설 수 있어 음수가 되지 않게 한다
+    const dt = Math.max(0, Math.min(0.1, (now - this.last) / 1000));
     this.last = now;
     this.fpsFrames++;
     this.fpsTime += dt;
@@ -575,18 +576,20 @@ export class Game {
     // 벽에 붙어 달리는 동안(닿았다 떨어졌다 해도) 불똥이 끊기지 않게 긁힘 값으로 뿌린다
     if (this.scrape > 0.15 && p.speed > 4) {
       this.view.shake.add(dt * 1.2 * this.scrape);
-      this.sparkDebt += dt * p.speed * 14 * Math.max(0.4, this.scrape);
+      this.sparkDebt += dt * p.speed * 24 * Math.max(0.4, this.scrape);
       const n = Math.floor(this.sparkDebt);
       if (n > 0) {
         this.sparkDebt -= n;
         const car = this.view.car;
         const side = this.scrapeSide;
-        const along = (Math.random() - 0.2) * p.spec.length * 0.45;
-        const at = this.sparks.worldPoint(car, along, 0.35 + Math.random() * 0.2, side * (p.spec.width / 2 + 0.05)).clone();
+        // 닿는 곳은 차 옆면 앞쪽 절반 (모서리부터 긁힌다)
+        const x = p.spec.length / 2 - 0.3 - Math.random() * 0.45 * p.spec.length;
+        const lift = 0.3 + Math.random() * 0.25;
+        const at = this.sparks.worldPoint(car, x, lift, side * (p.spec.width / 2 + 0.08)).clone();
         const yaw = this.world.heading;
         const dir = this.tmpDir.set(Math.cos(yaw), 0, -Math.sin(yaw));
         const out = this.tmpOut.set(-side * Math.sin(yaw), 0, -side * Math.cos(yaw));
-        this.sparks.emit(at, dir, p.speed, out, Math.min(12, n));
+        this.sparks.emit(at, dir, p.speed, out, Math.min(24, n), at.y - lift);
       }
     } else this.sparkDebt = 0;
   }

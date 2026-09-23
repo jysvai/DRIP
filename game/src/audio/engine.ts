@@ -139,7 +139,7 @@ export class EngineVoice {
 
     // 터보: 과급은 가속 페달과 rpm을 0.6초쯤 늦게 따라간다
     const want = ev ? 0 : Math.min(1, e.throttle * Math.min(1, (e.revs / Math.max(1, e.redline)) * 1.6));
-    this.boost += (want - this.boost) * Math.min(1, dt * (want > this.boost ? 1.7 : 4));
+    this.boost = Math.max(0, this.boost + (want - this.boost) * Math.min(1, dt * (want > this.boost ? 1.7 : 4)));
     this.turbo.frequency.setTargetAtTime(2400 + this.boost * 6500, t, 0.05);
     this.turboGain.gain.setTargetAtTime(on * cfg.turbo * this.boost ** 1.5, t, 0.05);
     // 블로오프: 과급이 찬 채로 페달을 확 떼면 '피슉'

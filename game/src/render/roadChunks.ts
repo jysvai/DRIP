@@ -198,9 +198,11 @@ function rumbleTexture(): THREE.CanvasTexture {
   g.fillRect(0, 0, 8, 208);
   for (let k = 0; k < 13; k++) {
     const y = k * 16;
-    g.fillStyle = "#4a4b4c";
+    g.fillStyle = "#6a6b6b";
     g.fillRect(0, y + 3, 8, 7);
-    g.fillStyle = "#b4b4b0";
+    g.fillStyle = "#5c5d5d";
+    g.fillRect(0, y + 4, 8, 4);
+    g.fillStyle = "#adadaa";
     g.fillRect(0, y + 10, 8, 1);
   }
   const t = new THREE.CanvasTexture(c);
