@@ -244,16 +244,7 @@ export class Input {
  *       ↓를 누르면 먼저 가속 페달에서 발을 떼고, 다 뗀 뒤에도 누르고 있으면 브레이크를 밟는다. 브레이크는 떼면 풀린다.
  * momentary: 누르는 동안만 밟히고 떼면 곧 풀린다.
  */
-export function pedalStep(
-  mode: PedalMode,
-  throttle: number,
-  brake: number,
-  up: boolean,
-  down: boolean,
-  dt: number,
-  upFor = 1,
-  downFor = 1,
-): { throttle: number; brake: number } {
+export function pedalStep(mode: PedalMode, throttle: number, brake: number, up: boolean, down: boolean, dt: number, upFor = 1, downFor = 1): { throttle: number; brake: number } {
   if (mode === "momentary") {
     return { throttle: approach(throttle, up ? 1 : 0, dt * (up ? 2.2 : 5)), brake: approach(brake, down ? 1 : 0, dt * (down ? 2.5 : 6)) };
   }
