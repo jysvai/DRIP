@@ -58,8 +58,31 @@ npm test         # 도로·차 물리·교통·법규 판정 테스트
 npm run build
 ```
 
-게임에 기록 저장을 켜려면 `game/.env.local`에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣는다 (publishable 키만. secret 키는 절대 넣지 않는다).
+게임의 서버 연결은 `game/.env.local`에 `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`를 넣는다 (publishable 키만. secret 키는 절대 넣지 않는다).
 배포 빌드는 저장소 변수(Settings → Variables)의 같은 이름 값을 쓴다.
+
+### 주행 기록 적재 (연구 공개 전에는 꺼 둔다)
+
+지금은 시험 운영이라 주행 기록을 서버(Supabase)와 R2에 쌓지 않는다. 기록은 결과 화면에서 JSON 파일로만 받을 수 있다. 공개할 때 세 곳을 켠다.
+
+| 어디 | 끄기 (지금) | 켜기 (공개할 때) |
+|---|---|---|
+| DB 넣기 권한 (옛 페이지·직접 호출까지 막음) | `python pipeline/collection.py off` | `python pipeline/collection.py on` |
+| 게임 빌드 | 저장소 변수 `VITE_DRIP_COLLECT` 없음 | `gh variable set VITE_DRIP_COLLECT --body on` 뒤 다시 배포 |
+| R2 교통 원자료 | 저장소 변수 `R2_ARCHIVE` 없음 | `gh variable set R2_ARCHIVE --body on` (+ `R2_*` 비밀) |
+
+`python pipeline/collection.py status`는 표마다 쌓인 행 수와 넣기 권한을 보여 준다. `supabase/schema.sql`을 다시 적용해도 권한은 켜지지 않는다.
+
+### 이상한 주행 거르기 (데이터 품질)
+
+현실에서 보기 어려운 주행은 데이터셋에 넣지 않는다. 기준은 `game/public/data/data_quality.json` 한 파일이다.
+정체 도로에서 흐름을 무시한 질주, 제한속도보다 80km/h 넘는 폭주가 1분 넘게 이어지는 것, 잦은 충돌, 가드레일 타기, 갓길 질주, 세워 두고 방치, 조작 없음, 자동 운전이 여기에 든다.
+최근 5번 중 3번 넘게 걸러진 참여자(브라우저)는 이후 주행도 올리지 않는다.
+현실에도 있는 위험 운전(과속·앞차 바짝 따라가기·깜빡이 없는 차로 변경)은 연구 대상이라 거르지 않는다.
+
+- 게임은 주행 중에는 브라우저에만 모으고, 끝난 뒤 검사(`game/src/log/quality.ts`)를 통과한 주행만 한꺼번에 올린다.
+- 판정은 저장되는 1초 기록(흐름 속도 `flow_kmh`, 차로 수 `lanes` 포함)과 이벤트만으로 한다. 그래서 서버 쪽 재검사(`pipeline/quality.py`)가 같은 결과를 낸다. 브라우저 코드는 고칠 수 있으므로 분석(`compare_hotspots.py`)과 데이터셋 공개 전에 한 번 더 거른다.
+- `python pipeline/quality.py`는 DB의 주행마다 판정하고 걸러진 이유별 수를 보여 준다. 기록이 쌓이면 이 비율을 보고 기준을 다시 맞춘다.
 
 ## 게임
 
@@ -86,11 +109,11 @@ API 키가 필요한 단계부터는 `.env.example`을 `.env`로 복사해 값�
 | `pipeline/habits_avc.py [--apply]` | 쌓인 AVC 원자료로 한국 운전 습관(차종별 희망속도, 대형화물 지정차로 준수, 차로 이용)을 계산해 `driver_profiles.json`에 넣는다 (`game/DATA.md`) | 없음 |
 | `pipeline/events_its.py [--loop 5] [--export]` | ITS 돌발상황(사고·공사·고장·기상)을 받아 게임 주행선 위치를 붙여 쌓는다. `--export`는 게임용 `game/public/events/latest.json`도 쓴다: 메뉴에서 "실제" 교통을 고르면 그 시각의 실제 공사 구간·사고·고장 차량이 나온다 (없으면 빈도로 놓는다) | `ITS_API_KEY` |
 | `pipeline/weather_om.py [--date YYYYMMDD]` | 어제 시간대별 노선 날씨(40km 간격)를 받아 `game/public/weather/latest.json`에 쓴다. 메뉴의 "실제" 날씨가 출발 지점·같은 시각 값을 쓴다 | 없음 (Open-Meteo) |
-| `pipeline/compare_hotspots.py` | 게임 주행 기록(Supabase)을 실제 사고 1km 구간과 비교 (가설 1·2) | DB |
+| `pipeline/compare_hotspots.py` | 게임 주행 기록(Supabase)을 실제 사고 1km 구간과 비교 (가설 1·2). 품질 기준을 통과한 주행만 쓴다 | DB |
 
 - 키 없이 시험: `--key test` (포털 설명서의 예시 키. 도로공사는 실제 자료를 주지만 시험용, ITS는 고정 표본만 준다). 지금 저장소의 `latest.json`과 기준점은 이 예시 키로 한 번 만든 것이다.
 - 매일 자동 수집: `.github/workflows/traffic.yml`이 매일 06:40(한국 시간)에 전날 자료를 받아 커밋하고 사이트를 다시 올린다. 저장소 비밀 `EX_API_KEY`가 있어야 돈다:
-  `gh secret set EX_API_KEY` (붙여 넣기). `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`도 넣으면 AVC 원자료(차로별·차종별 속도)를 R2에 쌓는다.
+  `gh secret set EX_API_KEY` (붙여 넣기). `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`을 넣고 저장소 변수 `R2_ARCHIVE=on`까지 두면 AVC 원자료(차로별·차종별 속도)를 R2에 쌓는다 (공개 전에는 두지 않는다).
   날씨(Open-Meteo)는 키가 없어도 매일 받는다. `gh secret set ITS_API_KEY`도 넣으면 같은 시각의 돌발상황을 받아 `events/latest.json`으로 올린다 (its.go.kr 오픈API 신청 때 '돌발상황정보'를 고른다, 승인 3~5일).
 - 도로공사 방향: E = 이정이 느는 쪽(종점 방향), S = 기점 방향. 경부선은 기점이 부산이라 E = 서울 방향.
 - VDS 좌표가 비어 있는 노선(수도권제2순환선 일부, 세종포천선)과 민자 고속도로는 아직 기준점이 없다.

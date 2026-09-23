@@ -9,6 +9,7 @@ import { paletteFor, type VehicleCatalog, type VehicleType } from "../render/veh
 import { NetMap } from "./netMap";
 import { VehiclePreview } from "./vehiclePreview";
 import { controlsHtml, showControls } from "./help";
+import { COLLECTING } from "../log/recorder";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
 export type CameraMode = "cockpit" | "chase" | "hood";
@@ -487,7 +488,15 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       cb.type = "checkbox";
       cb.checked = consent;
       cb.onchange = () => (consent = cb.checked);
-      consentBox.append(cb, el("span", "", "익명 주행 기록(위치·속도·조작·법규 판정)을 연구용 공개 데이터셋에 쓰는 데 동의합니다. 이름·연락처는 모으지 않습니다. 동의하지 않으면 기록은 이 브라우저에만 남습니다."));
+      consentBox.append(
+        cb,
+        el(
+          "span",
+          "",
+          "익명 주행 기록(위치·속도·조작·법규 판정)을 연구용 공개 데이터셋에 쓰는 데 동의합니다. 이름·연락처는 모으지 않습니다. 동의하지 않으면 기록은 이 브라우저에만 남습니다." +
+            (COLLECTING ? "" : " <b>지금은 시험 운영 기간이라 동의해도 서버에 올리지 않습니다.</b>"),
+        ),
+      );
       body.appendChild(consentBox);
       body.appendChild(el("details", "keys-inline", `<summary>조작법</summary>${controlsHtml()}`));
       body.appendChild(el("div", "links", `<a href="./garage.html">차량 도감 (${catalog.types.length}종)</a><a href="../">DRIP 소개</a>`));

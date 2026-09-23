@@ -4,9 +4,11 @@ import vehicles from "../../public/data/vehicles.json";
 import profiles from "../../public/data/driver_profiles.json";
 import traffic from "../../public/data/traffic_defaults.json";
 import rules from "../../public/data/rules_kr.json";
+import quality from "../../public/data/data_quality.json";
 import { Road, type RoadFile } from "../road/road";
 import type { DriverProfiles, GameConfig, Rules, TrafficDefaults } from "../sim/config";
 import type { VehicleCatalog } from "../render/vehicleModels";
+import type { QualityRules } from "../log/quality";
 
 /** 동쪽으로 곧게 뻗은 길. curveFrom 뒤로는 반지름 radius로 왼쪽으로 굽는다 */
 export function makeRoad(opts: { length?: number; lanes?: number; speed?: number; tunnel?: [number, number]; bridges?: [number, number][]; curveFrom?: number; radius?: number; junctions?: [number, string, string][]; ref?: string; from?: string; to?: string } = {}): Road {
@@ -74,5 +76,6 @@ export function makeConfig(): GameConfig {
     cameras: null,
     events: null,
     realWeather: null,
+    quality: quality as unknown as QualityRules,
   };
 }

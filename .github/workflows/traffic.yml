@@ -1,5 +1,6 @@
 # 매일 아침 전날 고속도로 교통(도로공사 AVC 15분 자료)을 받아 게임의 '실제 교통'을 새로 만들고 사이트를 다시 올린다.
-# 저장소 비밀 EX_API_KEY가 있어야 교통을 받는다. R2_* 비밀 네 개가 있으면 원자료도 R2(raw/ex/avc15/)에 쌓는다.
+# 저장소 비밀 EX_API_KEY가 있어야 교통을 받는다. 원자료를 R2(raw/ex/avc15/)에 쌓는 것은 R2_* 비밀 네 개와
+# 저장소 변수 R2_ARCHIVE=on이 모두 있을 때만 한다 (공개 전에는 쌓지 않는다).
 # 저장소 비밀 ITS_API_KEY가 있으면 그 시각의 돌발상황(공사·사고·고장)도 받아 게임의 '실제' 교통에 넣는다.
 # 노선별 시간대 날씨(Open-Meteo, 키 없음)는 늘 받는다 (게임의 '실제' 날씨).
 name: Collect traffic
@@ -31,6 +32,7 @@ jobs:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ARCHIVE: ${{ vars.R2_ARCHIVE }}
       DATE: ${{ inputs.date }}
     steps:
       - name: Check key
@@ -60,7 +62,7 @@ jobs:
             [[ "$DATE" =~ ^[0-9]{8}$ ]] || { echo "::error::날짜는 YYYYMMDD"; exit 1; }
             args+=(--date "$DATE")
           fi
-          if [ -n "$R2_BUCKET" ]; then args+=(--upload); fi
+          if [ -n "$R2_BUCKET" ] && [ "$R2_ARCHIVE" = "on" ]; then args+=(--upload); fi
           python pipeline/traffic_ex.py daily "${args[@]}"
       - name: Collect weather
         # 실패해도 교통은 올린다

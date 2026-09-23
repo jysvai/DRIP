@@ -1,5 +1,6 @@
 # 소개 페이지(web/)와 주행 게임(game/ → /play/)을 GitHub Pages(https://jysvai.github.io/DRIP/)에 올린다.
 # 게임 빌드에는 저장소 변수 VITE_SUPABASE_URL, VITE_SUPABASE_PUBLISHABLE_KEY를 쓴다 (브라우저에 넣어도 되는 공개 키).
+# 주행 기록은 저장소 변수 VITE_DRIP_COLLECT가 on일 때만 서버에 올린다 (연구 공개 전에는 두지 않는다. pipeline/collection.py도 함께).
 name: Deploy site
 
 on:
@@ -35,6 +36,7 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_DRIP_COLLECT: ${{ vars.VITE_DRIP_COLLECT }}
         run: |
           npm ci
           npm test

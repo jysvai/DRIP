@@ -1,4 +1,4 @@
--- DRIP 주행 기록 테이블. 게임(브라우저)은 publishable 키(anon 역할)로 "넣기"만 할 수 있고 읽을 수는 없다.
+-- DRIP 주행 기록 테이블. 게임(브라우저)은 publishable 키(anon 역할)로 "넣기"만 할 수 있고 읽을 수는 없다 (적재를 켰을 때만).
 -- 분석·데이터셋 공개는 secret 키나 DB 직접 연결로 한다.
 -- 적용: .venv\Scripts\python pipeline\apply_schema.py
 
@@ -76,7 +76,8 @@ alter table public.drip_samples enable row level security;
 alter table public.drip_summaries enable row level security;
 
 revoke all on public.drip_sessions, public.drip_events, public.drip_samples, public.drip_summaries from anon, authenticated;
-grant insert on public.drip_sessions, public.drip_events, public.drip_samples, public.drip_summaries to anon, authenticated;
+-- 넣기 권한은 여기서 주지 않는다 (이 파일을 다시 적용해도 적재가 켜지지 않게). 연구를 공개할 때
+-- python pipeline/collection.py on 으로 켜고, 그 전에는 off로 둔다. 정책은 권한이 있을 때만 쓰인다.
 
 drop policy if exists drip_sessions_insert on public.drip_sessions;
 create policy drip_sessions_insert on public.drip_sessions for insert to anon, authenticated with check (true);

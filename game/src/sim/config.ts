@@ -2,6 +2,7 @@
 
 import type { RealEventData } from "./realEvents";
 import type { RealWeatherData } from "./weather";
+import type { QualityRules } from "../log/quality";
 import type { VehicleCatalog } from "../render/vehicleModels";
 import { loadCatalog } from "../render/vehicleModels";
 
@@ -125,6 +126,8 @@ export interface GameConfig {
   events: RealEventData | null;
   /** 어제 시간대별 노선 날씨 (pipeline/weather_om.py). 메뉴의 '실제' 날씨가 쓴다 */
   realWeather: RealWeatherData | null;
+  /** 연구 데이터에 넣지 않을 주행의 기준 (data_quality.json) */
+  quality: QualityRules;
 }
 
 async function json<T>(url: string): Promise<T> {
@@ -134,11 +137,12 @@ async function json<T>(url: string): Promise<T> {
 }
 
 export async function loadConfig(base = "./data/"): Promise<GameConfig> {
-  const [catalog, profiles, traffic, rules] = await Promise.all([
+  const [catalog, profiles, traffic, rules, quality] = await Promise.all([
     loadCatalog(base),
     json<DriverProfiles>(`${base}driver_profiles.json`),
     json<TrafficDefaults>(`${base}traffic_defaults.json`),
     json<Rules>(`${base}rules_kr.json`),
+    json<QualityRules>(`${base}data_quality.json`),
   ]);
   // 실제 교통·단속 카메라는 없어도 게임은 돈다
   const optional = <T>(url: string) => json<T>(url).catch(() => null);
@@ -148,7 +152,7 @@ export async function loadConfig(base = "./data/"): Promise<GameConfig> {
     optional<RealEventData>("./events/latest.json"),
     optional<RealWeatherData>("./weather/latest.json"),
   ]);
-  return { catalog, profiles, traffic, rules, real, cameras, events, realWeather };
+  return { catalog, profiles, traffic, rules, real, cameras, events, realWeather, quality };
 }
 
 /** 편도 차로 수에 따른 지정차로 (도로교통법 시행규칙 별표9). 반환: [왼쪽 차로들, 오른쪽 차로들] */

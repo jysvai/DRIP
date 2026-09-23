@@ -2,13 +2,17 @@
 
 import type { DriveEvent, EventType, Summary } from "../rules/engine";
 import { EVENT_LABELS, VIOLATIONS } from "../rules/engine";
+import type { UploadStatus } from "../log/recorder";
+import { REJECT_LABELS, type QualityResult } from "../log/quality";
 
 export interface ReportInput {
   summary: Summary;
   events: DriveEvent[];
   reason: string;
   roadLabel: string;
-  upload: Promise<"ok" | "offline" | "error" | "no_consent">;
+  upload: Promise<UploadStatus>;
+  /** 연구 데이터 품질 검사 결과 */
+  quality: QualityResult;
   exportJson: () => string;
   fileName: string;
 }
@@ -80,15 +84,23 @@ export function showReport(input: ReportInput, onRetry: () => void, onMenu: () =
   document.body.appendChild(ov);
 
   const up = card.querySelector(".upload") as HTMLElement;
+  // 걸러진 이유는 크게만 알려 준다 (기준 수치는 data_quality.json)
+  const q = input.quality;
+  const why = q.reasons.map((r) => REJECT_LABELS[r]).join(", ");
+  const verdict = q.ok ? "연구 데이터 기준을 통과한 주행입니다." : `연구 데이터 기준에 맞지 않는 주행입니다 (${why}).`;
   void input.upload.then((st) => {
     up.textContent =
       st === "ok"
         ? "익명 주행 기록을 연구 데이터셋에 저장했습니다. 고맙습니다."
-        : st === "no_consent"
-          ? "연구 참여에 동의하지 않아 기록을 서버에 올리지 않았습니다. 기록은 파일로 받을 수 있습니다."
-          : st === "offline"
-            ? "서버에 연결되지 않은 빌드라 기록을 올리지 않았습니다. 기록은 파일로 받을 수 있습니다."
-            : "기록을 서버에 올리지 못했습니다. 파일로 받아 두세요.";
+        : st === "closed"
+          ? `지금은 시험 운영 기간이라 기록을 서버에 올리지 않습니다. ${verdict} 기록은 파일로 받을 수 있습니다.`
+          : st === "rejected"
+            ? `${verdict} 데이터셋이 흐려지지 않도록 서버에 올리지 않았습니다.`
+            : st === "no_consent"
+              ? "연구 참여에 동의하지 않아 기록을 서버에 올리지 않았습니다. 기록은 파일로 받을 수 있습니다."
+              : st === "offline"
+                ? "서버에 연결되지 않은 빌드라 기록을 올리지 않았습니다. 기록은 파일로 받을 수 있습니다."
+                : "기록을 서버에 올리지 못했습니다. 파일로 받아 두세요.";
   });
   (card.querySelector(".retry") as HTMLButtonElement).onclick = onRetry;
   (card.querySelector(".to-menu") as HTMLButtonElement).onclick = onMenu;

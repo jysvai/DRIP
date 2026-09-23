@@ -134,11 +134,20 @@ def unroute(df: pd.DataFrame) -> pd.DataFrame:
 def load_game(min_seconds: float) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Supabase에서 세션·사건·1초 기록을 읽는다 (서버 전용 DB 연결)."""
     from db import connect
+    from quality import accepted_sessions
 
     with connect() as c:
         sessions = pd.read_sql("select id, road_id, started_at, route from drip_sessions", c)
         events = pd.read_sql("select session_id, t, type, s, lane, speed_kmh from drip_events", c)
         samples = pd.read_sql("select session_id, t0, columns, data from drip_samples", c)
+        # 데이터 품질 기준(data_quality.json)을 통과한 주행만 쓴다 (이상한 주행이 사고 다발 구간을 흐리지 않게)
+        ok = accepted_sessions(c)
+    dropped = sessions["id"].astype(str).nunique() - len(ok)
+    if dropped:
+        print(f"품질 기준에 걸린 주행 {dropped}번을 뺍니다 (python pipeline/quality.py로 이유 확인)")
+    sessions = sessions[sessions["id"].astype(str).isin(ok)]
+    events = events[events["session_id"].astype(str).isin(ok)]
+    samples = samples[samples["session_id"].astype(str).isin(ok)]
     rows = []
     for _, r in samples.iterrows():
         cols = list(r["columns"])

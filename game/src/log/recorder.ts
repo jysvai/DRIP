@@ -1,13 +1,18 @@
 // 주행 기록: 세션 정보, 이벤트(법규 판정·아차사고·충돌), 1초 간격 주행 기록, 요약.
-// Supabase에 올리고(넣기만 가능한 키), 연결이 없으면 브라우저에만 모아 두었다가 결과 화면에서 파일로 받을 수 있다.
+// 주행 중에는 브라우저에만 모으고, 끝난 뒤 품질 검사(quality.ts)를 통과한 주행만 Supabase에 한꺼번에 올린다(넣기만 가능한 키).
+// 서버 적재는 빌드 변수 VITE_DRIP_COLLECT=on일 때만 한다 (공개 전에는 끈다). 올리지 않은 기록도 결과 화면에서 파일로 받을 수 있다.
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { DriveEvent, Summary } from "../rules/engine";
 import type { LegInfo } from "../road/road";
+import type { QualityResult } from "./quality";
 
-export const APP_VERSION = "0.2.0";
+export const APP_VERSION = "0.3.0";
 
-export const SAMPLE_COLUMNS = ["t", "s", "d", "lane", "speed_kmh", "ax", "ay", "headway_s", "ttc_s", "signal", "steer", "throttle", "brake", "limit_kmh", "near_count"] as const;
+/** 서버에 올리는지. 저장소 변수 VITE_DRIP_COLLECT가 on인 빌드만 올린다 (연구 공개 전에는 끈다) */
+export const COLLECTING = import.meta.env.VITE_DRIP_COLLECT === "on";
+
+export const SAMPLE_COLUMNS = ["t", "s", "d", "lane", "speed_kmh", "ax", "ay", "headway_s", "ttc_s", "signal", "steer", "throttle", "brake", "limit_kmh", "near_count", "flow_kmh", "lanes"] as const;
 export type Sample = (number | null)[];
 
 export interface SessionInfo {
@@ -43,27 +48,24 @@ function participantId(): string {
   }
 }
 
+/** 결과 화면에 보여 줄 저장 결과 */
+export type UploadStatus = "ok" | "closed" | "offline" | "error" | "no_consent" | "rejected";
+
 export class Recorder {
   readonly sessionId = crypto.randomUUID();
   readonly participant = participantId();
   private client: SupabaseClient | null = null;
-  private events: DriveEvent[] = [];
-  private eventQueue: DriveEvent[] = [];
-  private samples: Sample[] = [];
-  private sampleQueue: Sample[] = [];
-  private sampleT0 = 0;
-  private flushTimer = 0;
-  private sessionOk: Promise<boolean> = Promise.resolve(false);
-  uploaded = { events: 0, samples: 0, errors: 0 };
-  status: "offline" | "ok" | "error" = "offline";
+  readonly events: DriveEvent[] = [];
+  readonly samples: Sample[] = [];
+  status: "idle" | "uploading" | "ok" | "error" = "idle";
   info: SessionInfo | null = null;
   startedAt = new Date();
 
-  /** upload=false면 연구 참여에 동의하지 않은 것. 기록은 브라우저에만 둔다 */
-  constructor(upload = true) {
+  /** consent=false면 연구 참여에 동의하지 않은 것. 기록은 브라우저에만 둔다 */
+  constructor(readonly consent = true) {
     const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
     const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
-    if (upload && url && key) {
+    if (consent && COLLECTING && url && key) {
       this.client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
     }
   }
@@ -72,11 +74,28 @@ export class Recorder {
     return this.client !== null;
   }
 
+  /** 주행 중 화면에 보여 줄 기록 상태 */
+  get label(): string {
+    if (!COLLECTING) return "기록 (시험 운영 · 브라우저에만)";
+    if (!this.consent) return "기록 (브라우저에만)";
+    return this.client ? "기록 중" : "기록 (오프라인)";
+  }
+
   start(info: SessionInfo) {
     this.info = info;
     this.startedAt = new Date();
-    if (!this.client) return;
-    const row = {
+  }
+
+  event(e: DriveEvent) {
+    this.events.push(e);
+  }
+
+  sample(_t: number, row: Sample) {
+    this.samples.push(row);
+  }
+
+  private sessionRow(info: SessionInfo) {
+    return {
       id: this.sessionId,
       participant_id: this.participant,
       started_at: this.startedAt.toISOString(),
@@ -100,91 +119,57 @@ export class Recorder {
         lang: navigator.language,
       },
     };
+  }
+
+  /**
+   * 주행이 끝나면 부른다. 품질 검사를 통과한 주행만 세션 → 이벤트 → 1초 기록(30초씩 한 줄) → 요약 순서로 올린다.
+   * 세션을 먼저 넣어야 나머지가 참조할 수 있다.
+   */
+  async finish(summary: Summary, reason: string, quality: QualityResult): Promise<UploadStatus> {
+    if (!COLLECTING) return "closed";
+    if (!this.consent) return "no_consent";
+    if (!quality.ok) return "rejected";
     const client = this.client;
-    // 서버 표에 weather 열을 아직 안 넣었으면(supabase/schema.sql) 그 열만 빼고 다시 넣는다
-    const insert = async () => {
-      const first = await client.from("drip_sessions").insert(row);
-      if (!first.error || !/weather/.test(first.error.message)) return first;
-      const { weather: _w, ...rest } = row;
-      return client.from("drip_sessions").insert(rest);
+    if (!client || !this.info) return "offline";
+    this.status = "uploading";
+    const fail = (what: string, message: string): UploadStatus => {
+      this.status = "error";
+      console.warn(`[DRIP] ${what} 저장 실패`, message);
+      return "error";
     };
-    this.sessionOk = insert().then(({ error }) => {
-      this.status = error ? "error" : "ok";
-      if (error) {
-        this.uploaded.errors++;
-        console.warn("[DRIP] 세션 저장 실패", error.message);
-      }
-      return !error;
-    });
-  }
-
-  event(e: DriveEvent) {
-    this.events.push(e);
-    this.eventQueue.push(e);
-  }
-
-  sample(t: number, row: Sample) {
-    if (!this.sampleQueue.length) this.sampleT0 = t;
-    this.samples.push(row);
-    this.sampleQueue.push(row);
-  }
-
-  /** 주기적으로 호출. 이벤트는 5초, 주행 기록은 30초마다 올린다 */
-  tick(dt: number) {
-    this.flushTimer += dt;
-    if (this.flushTimer >= 5) {
-      this.flushTimer = 0;
-      void this.flushEvents();
-      if (this.sampleQueue.length >= 30) void this.flushSamples();
+    const session = await client.from("drip_sessions").insert(this.sessionRow(this.info));
+    if (session.error) return fail("세션", session.error.message);
+    const ev = this.events.map((e) => ({
+      session_id: this.sessionId,
+      t: e.t,
+      type: e.type,
+      s: e.s,
+      lane: e.lane,
+      speed_kmh: e.speedKmh,
+      limit_kmh: e.limitKmh,
+      detail: e.detail,
+    }));
+    for (let i = 0; i < ev.length; i += 200) {
+      const { error } = await client.from("drip_events").insert(ev.slice(i, i + 200));
+      if (error) return fail("이벤트", error.message);
     }
-  }
-
-  private async flushEvents() {
-    if (!this.client || !this.eventQueue.length) return;
-    if (!(await this.sessionOk)) return;
-    const batch = this.eventQueue.splice(0);
-    const { error } = await this.client.from("drip_events").insert(
-      batch.map((e) => ({
-        session_id: this.sessionId,
-        t: e.t,
-        type: e.type,
-        s: e.s,
-        lane: e.lane,
-        speed_kmh: e.speedKmh,
-        limit_kmh: e.limitKmh,
-        detail: e.detail,
-      })),
-    );
-    if (error) {
-      this.uploaded.errors++;
-      this.eventQueue.unshift(...batch);
-    } else this.uploaded.events += batch.length;
-  }
-
-  private async flushSamples() {
-    if (!this.client || !this.sampleQueue.length) return;
-    if (!(await this.sessionOk)) return;
-    const batch = this.sampleQueue.splice(0);
-    const t0 = this.sampleT0;
-    const { error } = await this.client.from("drip_samples").insert({ session_id: this.sessionId, t0, columns: [...SAMPLE_COLUMNS], data: batch });
-    if (error) {
-      this.uploaded.errors++;
-      this.sampleQueue.unshift(...batch);
-    } else this.uploaded.samples += batch.length;
-  }
-
-  async finish(summary: Summary, reason: string): Promise<boolean> {
-    if (!this.client) return false;
-    await this.flushEvents();
-    await this.flushSamples();
-    if (!(await this.sessionOk)) return false;
-    const { error } = await this.client.from("drip_summaries").insert({ session_id: this.sessionId, ended_reason: reason, summary });
-    if (error) this.uploaded.errors++;
-    return !error;
+    const rows = [];
+    for (let i = 0; i < this.samples.length; i += 30) {
+      const chunk = this.samples.slice(i, i + 30);
+      rows.push({ session_id: this.sessionId, t0: chunk[0][0] ?? 0, columns: [...SAMPLE_COLUMNS], data: chunk });
+    }
+    for (let i = 0; i < rows.length; i += 20) {
+      const { error } = await client.from("drip_samples").insert(rows.slice(i, i + 20));
+      if (error) return fail("주행 기록", error.message);
+    }
+    const { error } = await client.from("drip_summaries").insert({ session_id: this.sessionId, ended_reason: reason, summary: { ...summary, quality: quality.metrics, qualityVersion: quality.rulesVersion } });
+    if (error) return fail("요약", error.message);
+    this.status = "ok";
+    return "ok";
   }
 
   /** 결과 화면에서 내려받는 전체 기록 */
-  exportJson(summary: Summary): string {
+  exportJson(summary: Summary, quality: QualityResult | null = null): string {
     return JSON.stringify(
       {
         sessionId: this.sessionId,
@@ -193,6 +178,7 @@ export class Recorder {
         startedAt: this.startedAt.toISOString(),
         info: this.info,
         summary,
+        quality,
         events: this.events,
         sampleColumns: SAMPLE_COLUMNS,
         samples: this.samples,

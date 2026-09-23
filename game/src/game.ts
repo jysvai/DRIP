@@ -11,7 +11,8 @@ import { TrafficView } from "./render/trafficView";
 import { World } from "./render/world";
 import { WeatherView } from "./render/weather";
 import { RuleEngine, type PlayerFrame } from "./rules/engine";
-import { Recorder, type Sample } from "./log/recorder";
+import { Recorder, SAMPLE_COLUMNS, type Sample, type UploadStatus } from "./log/recorder";
+import { assessSession, loadParticipant, saveParticipant, updateParticipant, type QualityResult } from "./log/quality";
 import { Sound } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
@@ -89,6 +90,8 @@ export class Game {
   signal: -1 | 0 | 1 = 0;
   hazard = false;
   autopilot = false;
+  /** 한 번이라도 자동 운전을 켰으면 연구 데이터에 넣지 않는다 */
+  private autopilotUsed = false;
   fps = 0;
   private acc = 0;
   private last = performance.now();
@@ -427,6 +430,7 @@ export class Game {
       return;
     }
 
+    if (this.autopilot) this.autopilotUsed = true;
     const c = this.autopilot ? this.autoControls() : this.input.update(dt, p.speed);
     if (!this.autopilot) this.keyboardAssist(c, dt);
     this.controls = c;
@@ -469,7 +473,6 @@ export class Game {
       this.sampleTimer -= 1;
       this.recorder.sample(this.t, this.sample(lane));
     }
-    this.recorder.tick(dt);
 
     this.sound.update(p.rpm, c.throttle, p.speed, road.structureAt(p.s) === Structure.Tunnel, c.brake);
     this.sound.signal(this.signal !== 0 || this.hazard, this.t);
@@ -494,7 +497,18 @@ export class Game {
     const r2 = (x: number) => Math.round(x * 100) / 100;
     const fin = (x: number) => (Number.isFinite(x) ? r2(x) : null);
     let near = 0;
-    for (const a of this.traffic.agents) if (Math.abs(a.s - p.s) < 50) near++;
+    // 주변 차 흐름: 앞뒤 200m 안 같은 방향으로 움직이는 차의 평균 속도 (3대 미만이면 모름). 데이터 품질 검사가 정체를 알아보는 데 쓴다
+    let flowN = 0;
+    let flowSum = 0;
+    for (const a of this.traffic.agents) {
+      const ds = Math.abs(a.s - p.s);
+      if (ds < 50) near++;
+      if (ds < 200 && !a.parked) {
+        flowN++;
+        flowSum += a.v;
+      }
+    }
+    const flow = flowN >= 3 ? Math.round((flowSum / flowN) * 36) / 10 : null;
     return [
       r2(this.t),
       Math.round(p.s * 10) / 10,
@@ -511,6 +525,8 @@ export class Game {
       r2(c.brake),
       this.rules.limitAt(p.s),
       near,
+      flow,
+      this.road.lanesAt(p.s),
     ];
   }
 
@@ -638,10 +654,8 @@ export class Game {
     const f = this.frameInfo(0);
     this.rules.finish(f);
     const summary = this.rules.summary;
-    let upload: Promise<"ok" | "offline" | "error" | "no_consent">;
-    if (!this.settings.consent) upload = Promise.resolve("no_consent");
-    else if (!this.recorder.online) upload = Promise.resolve("offline");
-    else upload = this.recorder.finish(summary, reason).then((ok) => (ok ? "ok" : "error"));
+    const quality = this.assessQuality();
+    const upload: Promise<UploadStatus> = this.recorder.finish(summary, reason, quality);
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
     showReport(
       {
@@ -650,7 +664,8 @@ export class Game {
         reason,
         roadLabel: `${this.setup.originName} → ${this.setup.destName}${this.weather.kind === "clear" ? "" : ` · ${this.weather.label}`}`,
         upload,
-        exportJson: () => this.recorder.exportJson(summary),
+        quality,
+        exportJson: () => this.recorder.exportJson(summary, quality),
         fileName: `drip_${this.road.id.replace(/[^\w가-힣-]+/g, "_")}_${stamp}.json`,
       },
       () => {
@@ -659,6 +674,26 @@ export class Game {
       },
       () => location.reload(),
     );
+  }
+
+  /**
+   * 연구 데이터 품질 검사 (data_quality.json). 이번 주행과, 최근 주행이 여러 번 걸러진 참여자(브라우저)를 거른다.
+   * 참여자 기록은 동의했을 때만 남긴다 (올리지 않는 사람을 추적하지 않게).
+   */
+  private assessQuality(): QualityResult {
+    const q = assessSession(SAMPLE_COLUMNS, this.recorder.samples, this.rules.events, this.cfg.quality);
+    if (this.autopilotUsed) {
+      q.reasons.push("autopilot");
+      q.ok = false;
+    }
+    if (!this.settings.consent || this.autopilotUsed) return q;
+    const h = updateParticipant(loadParticipant(), q.ok, this.cfg.quality);
+    saveParticipant(h);
+    if (h.flagged && q.ok) {
+      q.reasons.push("participant");
+      q.ok = false;
+    }
+    return q;
   }
 
   /** 키보드 조향 보조: 조향 키를 놓으면 차 방향을 도로 방향에 맞춘다 (차로 위치는 그대로).
@@ -796,7 +831,7 @@ export class Game {
         brake: this.controls.brake,
         steer: this.controls.steer,
         night: this.world.night > 0.5,
-        recStatus: !this.settings.consent ? "기록 (브라우저에만)" : this.recorder.online ? (this.recorder.status === "error" ? "기록 (서버 오류)" : "기록 중") : "기록 (오프라인)",
+        recStatus: this.recorder.label,
         camera: CAMERA_LABELS[this.view.mode],
         inputMode: this.autopilot ? "자동 운전" : INPUT_LABELS[this.input.mode],
         section: this.rules.sectionState(p.s, this.t),
