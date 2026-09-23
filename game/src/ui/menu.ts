@@ -14,7 +14,7 @@ import { COLLECTING } from "../log/recorder";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
 export type CameraMode = "cockpit" | "chase" | "hood";
-export type Quality = "low" | "medium" | "high";
+export type Quality = "auto" | "low" | "medium" | "high" | "ultra";
 /** 화면 흔들림 (노면 요철·신축이음·충돌) */
 export type ShakeLevel = "on" | "low" | "off";
 
@@ -143,7 +143,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let camera: CameraMode = saved.camera ?? "cockpit";
     let sound = saved.sound ?? true;
     let voice = saved.voice ?? true;
-    let quality: Quality = saved.quality ?? (matchMedia("(pointer: coarse)").matches ? "low" : "high");
+    let quality: Quality = saved.quality ?? "auto";
     let shake: ShakeLevel = saved.shake ?? "on";
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
@@ -562,7 +562,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       body.appendChild(
         field("화면 흔들림", seg<ShakeLevel>([["on", "켜기"], ["low", "약하게"], ["off", "끄기"]], shake, (v) => (shake = v), "화면 흔들림"), "노면 요철·신축이음·충돌 때 화면이 흔들리는 정도. 멀미가 나면 줄이세요."),
       );
-      body.appendChild(field("그래픽", seg<Quality>([["low", "낮음"], ["medium", "보통"], ["high", "높음"]], quality, (v) => (quality = v), "그래픽 품질"), "화면이 끊기면 낮추세요."));
+      body.appendChild(field("그래픽", seg<Quality>([["auto", "자동"], ["low", "낮음"], ["medium", "보통"], ["high", "높음"], ["ultra", "최고"]], quality, (v) => (quality = v), "그래픽 품질"), "자동: 기기 성능을 재서 고르고, 주행 중 끊기면 낮춥니다."));
       body.appendChild(field("소리", seg<string>([["on", "켜기"], ["off", "끄기"]], sound ? "on" : "off", (v) => (sound = v === "on"), "소리")));
       body.appendChild(
         field(
