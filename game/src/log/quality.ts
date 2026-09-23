@@ -109,7 +109,7 @@ export function assessSession(columns: readonly string[], samples: readonly (rea
       m.crashes++;
       const rel = Number(e.detail?.relSpeedKmh ?? 0);
       if (rel >= r.crashes.seriousKmh) m.seriousCrashes++;
-    } else if (e.type === "near_miss") m.nearMisses++;
+    } else if (e.type === "near_miss" && e.detail?.cause !== "cut_in") m.nearMisses++;
   }
 
   const per10km = (n: number) => n / Math.max(1, m.distanceM / 10000);

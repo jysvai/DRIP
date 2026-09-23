@@ -33,6 +33,7 @@ import { planDigest, type DriveWindow } from "./sim/pacing";
 import { PlayerCar, type Controls } from "./sim/player";
 import { specFor, type PlayerSpec } from "./sim/vehicleSpec";
 import type { VehicleType } from "./render/vehicleModels";
+import { Rng } from "./sim/rng";
 import { Traffic, type Agent, type BusLaneZone, type PlayerState } from "./sim/traffic";
 import { Hud } from "./ui/hud";
 import type { DriveSettings } from "./ui/menu";
@@ -121,6 +122,9 @@ export class Game {
   private signalOffAt = -99;
   /** 노면 거칠기 (0 매끈 ~ 1 공사 구간) */
   private rough = 0;
+  /** 갑자기 끼어들기 사건: 다음까지 남은 달린 시간 (s) */
+  private cutInTimer = 0;
+  private eventRng: Rng;
   private gpu = "";
   private frameNo = 0;
   private pixel = new Uint8Array(4);
@@ -240,6 +244,8 @@ export class Game {
     const tr = this.trafficAt(s0);
     this.legIndex = road.legs.indexOf(road.legAt(s0));
     this.traffic = new Traffic(road, cfg, settings.seed);
+    this.eventRng = new Rng(settings.seed * 7 + 13);
+    this.cutInTimer = CUT_IN.first[0] + this.eventRng.next() * (CUT_IN.first[1] - CUT_IN.first[0]);
     this.traffic.density = Math.max(1, tr.density);
     this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
     // 날씨 반응: 비에는 속도를 거의 줄이지 않고(실측), 폭우·안개에는 줄인다 (driver_profiles.json weather)
@@ -568,6 +574,7 @@ export class Game {
     if (this.road.isRoute) this.updateLegTraffic();
     const ps = this.playerState();
     this.traffic.update(dt, ps, this.t);
+    this.cutIns(dt, ps);
     this.honks(dt);
     this.collide();
     if (this.state !== "run") return;
@@ -722,6 +729,33 @@ export class Game {
     this.lkaSide = 0;
     this.hud.toast(this.lka ? "차로 유지 보조 켜짐" : "차로 유지 보조 꺼짐", 1.4);
     this.rules.lkaToggle(this.frameInfo(0), this.lka);
+  }
+
+  /**
+   * 갑자기 끼어들기 (한국 고속도로에서 흔한 당황스러운 순간): 달린 시간 1~2.5분마다 한 번, 옆 차로 차가 바로 앞으로 들어온다
+   * (Traffic.cutIn). 시속 50km 아래·자동 운전·연결로에서는 쉬고, 들어올 차가 없으면 1초 뒤 다시 찾는다.
+   * 판정이 아니라 기록용 사건(cut_in)이고, 뒤 5초 안의 아차사고·충돌에는 cause가 붙는다.
+   * 언제 일어날지는 달린 시간으로만 정한다 (실제 사고 자료는 보지 않는다).
+   */
+  private cutIns(dt: number, ps: PlayerState) {
+    const p = this.player;
+    if (this.autopilot || p.speed < CUT_IN.minKmh / 3.6 || this.road.onConnector(p.s)) return;
+    this.cutInTimer -= dt;
+    if (this.cutInTimer > 0) return;
+    const r = this.traffic.cutIn(ps);
+    if (!r) {
+      this.cutInTimer = 1;
+      return;
+    }
+    this.cutInTimer = CUT_IN.every[0] + this.eventRng.next() * (CUT_IN.every[1] - CUT_IN.every[0]);
+    this.rules.cutIn(this.frameInfo(0), {
+      other: r.agent.type.id,
+      profile: r.agent.profileId,
+      fromLane: r.fromLane,
+      gapM: Math.round(r.gapM * 10) / 10,
+      dvKmh: Math.round(r.dvKmh),
+      signaled: r.signaled,
+    });
   }
 
   /** 차로 유지 보조 상태 (계기판 표시) */
@@ -1272,6 +1306,9 @@ export class Game {
     );
   }
 }
+
+/** 갑자기 끼어들기: 첫 사건까지, 그 뒤 사건 사이 달린 시간 (s), 일어나는 가장 낮은 속도 */
+const CUT_IN = { first: [45, 90], every: [60, 150], minKmh: 50 };
 
 /** 게임 속 시각 "HH:MM" (출발 시각 hour + 흐른 초) */
 function clockText(hour: number, sec: number): string {

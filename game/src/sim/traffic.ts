@@ -63,6 +63,13 @@ export interface Agent {
   passingStay: number;
   /** 왼쪽 차로(승용은 1차로, 대형차는 앞지르기 차로)를 달리는 차로로 쓰는 운전자 (앞지르기 뒤에도 돌아가지 않는다) */
   cruiser: boolean;
+  /** 급가속 버릇: 분당 빈도, 남은 시간 (s), 지금 세기 (0~1, 끝나면 0.7초 만에 줄어든다) */
+  surgeRate: number;
+  surgeT: number;
+  surgeK: number;
+  /** 차선 물기: 차로 가운데에서 치우치는 양 (m, 오른쪽 +, 0이면 안 문다)과 지금 치우친 양 */
+  lineBias: number;
+  lineNow: number;
   /** 플레이어 때문에 급제동했는지 (아차사고 판정용) */
   brakedByPlayer: number;
   /** 고장·사고로 서 있는 차 (움직이지 않는다) */
@@ -207,6 +214,11 @@ export class Traffic {
       busCompliant: this.rng.next() < pr.busLaneCompliance,
       passingStay: this.draw(pr.passingLaneStay, 2),
       cruiser: this.rng.next() < (pr.passingLaneCruise ?? 0),
+      surgeRate: opposite ? 0 : (pr.surge ?? 0),
+      surgeT: 0,
+      surgeK: 0,
+      lineBias: !opposite && this.rng.next() < (pr.lineRide ?? 0) ? (this.rng.next() < 0.5 ? -1 : 1) * (1.05 + this.rng.next() * 0.3) : 0,
+      lineNow: 0,
       brakedByPlayer: 0,
     };
     return a;
@@ -386,7 +398,20 @@ export class Traffic {
         continue;
       }
       const s = opposite ? -a.s : a.s;
-      const v0 = this.desiredSpeed(a, s);
+      let v0 = this.desiredSpeed(a, s);
+      // 급가속 버릇: 가끔 3~6초 동안 세게 몰아 앞차에 바짝 붙고, 끝나면 차간을 되찾느라 세게 선다
+      if (a.surgeRate > 0) {
+        if (a.surgeT > 0) a.surgeT -= dt;
+        else if (this.rng.next() < (a.surgeRate / 60) * dt) a.surgeT = 3 + this.rng.next() * 3;
+        a.surgeK = a.surgeT > 0 ? Math.min(1, a.surgeK + dt / 0.5) : Math.max(0, a.surgeK - dt / 0.7);
+      }
+      const T = a.T;
+      const aMax = a.aMax;
+      if (a.surgeK > 0) {
+        v0 = Math.min(a.type.maxSpeed / 3.6, v0 * (1 + 0.12 * a.surgeK));
+        a.T = T * (1 - 0.5 * a.surgeK);
+        a.aMax = Math.min(a.type.accel * 1.5, aMax * (1 + 0.3 * a.surgeK));
+      }
       // 가속: 지금 차로와 옮겨 가는 차로 중 더 조심스러운 쪽
       let acc = this.accelIn(a, a.lane, a.s, v0, !opposite);
       if (a.targetLane !== a.lane) acc = Math.min(acc, this.accelIn(a, a.targetLane, a.s, v0, !opposite));
@@ -395,6 +420,8 @@ export class Traffic {
         const end = this.laneEnd(a.lane, a.s);
         if (end < 400 && a.targetLane === a.lane) acc = Math.min(acc, idm(a.v, v0, Math.max(1, end - a.len / 2), a.v, a));
       }
+      a.T = T;
+      a.aMax = aMax;
       const leader = this.leaderOf(a, a.lane, a.s, !opposite);
       if (leader.isPlayer && acc < -this.cfg.rules.rules.nearMiss.inducedBrakeMs2) a.brakedByPlayer = time;
       a.acc = acc;
@@ -447,6 +474,13 @@ export class Traffic {
       const sr = Math.max(0, Math.min(road.length - 1, s));
       const center = (lane: number) => (opposite ? this.oppD(lane, sr) : road.laneCenter(lane, sr));
       const wobble = Math.sin(time * 0.35 + a.wander) * 0.12;
+      // 차선 물기: 차로를 바꾸지 않을 때 한쪽으로 치우친다 (길 밖 쪽이면 조금만). 차로를 바꿀 때는 서서히 가운데로
+      let line = 0;
+      if (a.lineBias && a.targetLane === a.lane) {
+        const outward = (a.lineBias < 0 && a.lane === 1) || (a.lineBias > 0 && a.lane >= road.lanesAt(sr));
+        line = a.lineBias * (outward ? 0.3 : 1) * (0.925 + 0.075 * Math.sin(time * 0.07 + a.wander));
+      }
+      a.lineNow += (line - a.lineNow) * Math.min(1, dt * 0.6);
       let d: number;
       if (a.targetLane !== a.lane) {
         const t = smoothstep(Math.min(1, a.lcProgress));
@@ -457,7 +491,7 @@ export class Traffic {
         d = center(a.lane) + wobble;
         a.yaw *= 0.9;
       }
-      a.d = d;
+      a.d = d + a.lineNow;
     }
   }
 
@@ -652,6 +686,53 @@ export class Traffic {
         this.agents.push(a);
       });
     }
+  }
+
+  /**
+   * 갑자기 끼어들기: 옆 차로 차가 플레이어 바로 앞(범퍼 사이 6~35m)으로 들어온다. 방향지시등은 없거나 움직이면서 켠다.
+   * 자기 차로가 막힌 차(앞차가 느리거나 가까운 차)를 먼저 고르고, 1차로에서 빠져나오는 차를 조금 더 고른다.
+   * 플레이어와 속도가 비슷한 차(-4~+3m/s)나 앞질러 가며 15m 안으로 칼치기하는 차(+6m/s까지)만 고른다:
+   * 훨씬 느린 차는 피할 수 없는 사고가 되고, 훨씬 빠른 차는 금방 멀어져 놀랍지 않다. 들어올 차가 없으면 null
+   */
+  cutIn(player: PlayerState): { agent: Agent; gapM: number; dvKmh: number; signaled: boolean; fromLane: number } | null {
+    const road = this.road;
+    if (road.structureAt(player.s) === Structure.Tunnel) return null;
+    const pl = road.laneOf(player.d, player.s);
+    const lanes = road.lanesAt(player.s);
+    if (pl < 1 || pl > lanes) return null;
+    this.buildLanes(this.agents, player);
+    let best: Agent | null = null;
+    let bestScore = -Infinity;
+    for (const a of this.agents) {
+      if (a.parked || a.targetLane !== a.lane || a.pendingLane || Math.abs(a.lane - pl) !== 1) continue;
+      const gap = a.s - a.len / 2 - (player.s + player.len / 2);
+      // 비슷한 속도(-4~+3m/s)거나, 앞질러 가며 바로 앞(15m 안)으로 칼치기하는 차(+6m/s까지)
+      const dv = a.v - player.v;
+      if (gap < 6 || gap > 35 || dv < -4 || dv > 6 || (dv > 3 && gap > 15)) continue;
+      if (!this.laneAllowed(a, pl, a.s)) continue;
+      // 들어갈 자리 앞이 비어 있어야 한다
+      if (this.leaderOf(a, pl, a.s, false).gap < 12) continue;
+      const own = this.leaderOf(a, a.lane, a.s, false);
+      const blocked = own.gap < 40 || own.v < a.v - 2;
+      // 막힌 차로에서 빠져나오는 차, 1차로에서 나오는 차, 가까운 차일수록 (놀랄 만큼)
+      const score = (blocked ? 2 : 0) + (a.lane === 1 ? 0.5 : 0) + (35 - gap) / 20 + this.rng.next();
+      if (score > bestScore) {
+        best = a;
+        bestScore = score;
+      }
+    }
+    if (!best) return null;
+    const a = best;
+    const fromLane = a.lane;
+    const signaled = this.rng.next() < 0.35;
+    a.signal = signaled ? (pl < a.lane ? -1 : 1) : 0;
+    a.signalOff = 0;
+    a.targetLane = pl;
+    a.lcProgress = 0;
+    a.lcDuration = 1.5 + this.rng.next() * 0.6;
+    a.lineNow = 0;
+    const gapM = a.s - a.len / 2 - (player.s + player.len / 2);
+    return { agent: a, gapM, dvKmh: (a.v - player.v) * 3.6, signaled, fromLane };
   }
 
   /** 차 주변을 비운다 (충돌 뒤 다시 출발할 때) */

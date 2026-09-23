@@ -17,7 +17,9 @@
     "designatedLaneCompliance": "지정차로(대형차 오른쪽 차로)를 지키는 비율 (0~1)",
     "busLaneCompliance": "버스전용차로를 비워 두는 비율 (0~1)",
     "passingLaneStay": "1차로에서 앞지르기 뒤 오른쪽으로 돌아가기까지 머무는 시간 (초)",
-    "passingLaneCruise": "앞지르기가 아니어도 왼쪽 차로로 가서 계속 달리는 운전자 비율 (0~1). 승용은 1차로, 지정차로를 지키는 대형차는 앞지르기 차로(편도 3차로의 2차로)"
+    "passingLaneCruise": "앞지르기가 아니어도 왼쪽 차로로 가서 계속 달리는 운전자 비율 (0~1). 승용은 1차로, 지정차로를 지키는 대형차는 앞지르기 차로(편도 3차로의 2차로)",
+    "surge": "갑자기 세게 가속해 앞차에 바짝 붙었다가 세게 서는 버릇이 나오는 빈도 (분당 번)",
+    "lineRide": "차선을 물고 달리는 운전자 비율 (0~1). 차 한쪽이 옆 차로로 10~40cm 넘어온다"
   },
   "profiles": {
     "standard": {
@@ -73,7 +75,9 @@
         18,
         15
       ],
-      "passingLaneCruise": 0.35
+      "passingLaneCruise": 0.35,
+      "surge": 0.1,
+      "lineRide": 0.02
     },
     "calm": {
       "name": "여유",
@@ -128,7 +132,9 @@
         6,
         3
       ],
-      "passingLaneCruise": 0.1
+      "passingLaneCruise": 0.1,
+      "surge": 0.0,
+      "lineRide": 0.0
     },
     "aggressive": {
       "name": "공격적",
@@ -183,7 +189,9 @@
         45,
         25
       ],
-      "passingLaneCruise": 0.5
+      "passingLaneCruise": 0.5,
+      "surge": 0.8,
+      "lineRide": 0.08
     },
     "novice": {
       "name": "초보",
@@ -238,7 +246,9 @@
         10,
         5
       ],
-      "passingLaneCruise": 0.1
+      "passingLaneCruise": 0.1,
+      "surge": 0.05,
+      "lineRide": 0.05
     },
     "taxi": {
       "name": "택시",
@@ -247,45 +257,45 @@
         0.07
       ],
       "timeHeadway": [
-        1.0,
-        0.25
+        0.85,
+        0.2
       ],
       "minGap": [
         1.8,
         0.3
       ],
       "accelScale": [
-        0.95,
+        1.05,
         0.1
       ],
       "comfortDecel": [
-        2.0,
-        0.3
+        2.8,
+        0.4
       ],
       "politeness": [
-        0.1,
-        0.05
+        0.05,
+        0.03
       ],
       "changeThreshold": [
-        0.12,
-        0.04
+        0.05,
+        0.02
       ],
       "keepRightBias": [
         0.1,
         0.05
       ],
       "safeDecel": [
-        4.0,
-        0.6
+        5.0,
+        0.7
       ],
-      "signalUse": 0.55,
+      "signalUse": 0.4,
       "signalLead": [
-        1.2,
-        0.6
+        0.8,
+        0.4
       ],
       "laneChangeTime": [
-        2.5,
-        0.5
+        2.2,
+        0.4
       ],
       "designatedLaneCompliance": 1,
       "busLaneCompliance": 0.95,
@@ -293,7 +303,9 @@
         25,
         10
       ],
-      "passingLaneCruise": 0.4
+      "passingLaneCruise": 0.4,
+      "surge": 1.5,
+      "lineRide": 0.05
     },
     "bus_driver": {
       "name": "버스 운전자",
@@ -302,41 +314,41 @@
         0.04
       ],
       "timeHeadway": [
-        1.6,
-        0.3
+        1.2,
+        0.25
       ],
       "minGap": [
         3.0,
         0.4
       ],
       "accelScale": [
-        0.8,
+        0.9,
         0.1
       ],
       "comfortDecel": [
-        1.6,
-        0.25
+        2.2,
+        0.3
       ],
       "politeness": [
-        0.2,
-        0.1
+        0.08,
+        0.05
       ],
       "changeThreshold": [
-        0.3,
-        0.08
+        0.12,
+        0.05
       ],
       "keepRightBias": [
         0.2,
         0.1
       ],
       "safeDecel": [
-        3.0,
-        0.5
+        4.0,
+        0.6
       ],
-      "signalUse": 0.6,
+      "signalUse": 0.45,
       "signalLead": [
-        2.0,
-        0.8
+        1.2,
+        0.6
       ],
       "laneChangeTime": [
         4.0,
@@ -348,7 +360,9 @@
         10,
         5
       ],
-      "passingLaneCruise": 0
+      "passingLaneCruise": 0,
+      "surge": 0.6,
+      "lineRide": 0.02
     },
     "truck_heavy": {
       "name": "대형 화물",
@@ -403,7 +417,9 @@
         12,
         6
       ],
-      "passingLaneCruise": 0.6
+      "passingLaneCruise": 0.6,
+      "surge": 0.1,
+      "lineRide": 0.03
     },
     "light_commercial": {
       "name": "소형 화물·승합",
@@ -458,7 +474,9 @@
         12,
         8
       ],
-      "passingLaneCruise": 0.1
+      "passingLaneCruise": 0.1,
+      "surge": 0.5,
+      "lineRide": 0.05
     },
     "van_family": {
       "name": "9인승 승합",
@@ -513,31 +531,152 @@
         18,
         15
       ],
-      "passingLaneCruise": 0.35
+      "passingLaneCruise": 0.35,
+      "surge": 0.1,
+      "lineRide": 0.02
+    },
+    "reckless": {
+      "name": "난폭",
+      "speedFactor": [
+        1.15,
+        0.07
+      ],
+      "timeHeadway": [
+        0.75,
+        0.2
+      ],
+      "minGap": [
+        1.6,
+        0.3
+      ],
+      "accelScale": [
+        1.05,
+        0.1
+      ],
+      "comfortDecel": [
+        2.8,
+        0.4
+      ],
+      "politeness": [
+        0.02,
+        0.02
+      ],
+      "changeThreshold": [
+        0.06,
+        0.03
+      ],
+      "keepRightBias": [
+        0.05,
+        0.05
+      ],
+      "safeDecel": [
+        5.5,
+        0.8
+      ],
+      "signalUse": 0.3,
+      "signalLead": [
+        0.6,
+        0.3
+      ],
+      "laneChangeTime": [
+        2.0,
+        0.4
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.9,
+      "passingLaneStay": [
+        25,
+        15
+      ],
+      "passingLaneCruise": 0.5,
+      "surge": 1.2,
+      "lineRide": 0.35
+    },
+    "lane1_slow": {
+      "name": "1차로 정속",
+      "speedFactor": [
+        0.86,
+        0.04
+      ],
+      "timeHeadway": [
+        1.6,
+        0.3
+      ],
+      "minGap": [
+        2.5,
+        0.4
+      ],
+      "accelScale": [
+        0.6,
+        0.1
+      ],
+      "comfortDecel": [
+        1.6,
+        0.3
+      ],
+      "politeness": [
+        0.05,
+        0.03
+      ],
+      "changeThreshold": [
+        0.3,
+        0.05
+      ],
+      "keepRightBias": [
+        0,
+        0
+      ],
+      "safeDecel": [
+        2.0,
+        0.4
+      ],
+      "signalUse": 0.85,
+      "signalLead": [
+        3.0,
+        1.0
+      ],
+      "laneChangeTime": [
+        3.8,
+        0.8
+      ],
+      "designatedLaneCompliance": 1,
+      "busLaneCompliance": 0.98,
+      "passingLaneStay": [
+        600,
+        60
+      ],
+      "passingLaneCruise": 1,
+      "surge": 0,
+      "lineRide": 0
     }
   },
   "assignment": {
     "승용": {
-      "standard": 0.6,
+      "standard": 0.56,
       "calm": 0.17,
-      "aggressive": 0.15,
-      "novice": 0.08
+      "aggressive": 0.13,
+      "novice": 0.08,
+      "reckless": 0.02,
+      "lane1_slow": 0.04
     },
     "SUV": {
-      "standard": 0.6,
+      "standard": 0.57,
       "calm": 0.15,
-      "aggressive": 0.18,
-      "novice": 0.07
+      "aggressive": 0.15,
+      "novice": 0.07,
+      "reckless": 0.02,
+      "lane1_slow": 0.04
     },
     "전기차": {
-      "standard": 0.62,
+      "standard": 0.6,
       "calm": 0.22,
-      "aggressive": 0.1,
-      "novice": 0.06
+      "aggressive": 0.08,
+      "novice": 0.06,
+      "lane1_slow": 0.04
     },
     "택시": {
-      "taxi": 0.85,
-      "standard": 0.15
+      "taxi": 0.9,
+      "standard": 0.1
     },
     "버스": {
       "bus_driver": 1
@@ -592,6 +731,34 @@
       "van_family": 0.5,
       "standard": 0.35,
       "calm": 0.15
+    },
+    "sedan_mid_fastback": {
+      "standard": 0.45,
+      "aggressive": 0.25,
+      "reckless": 0.18,
+      "calm": 0.07,
+      "novice": 0.05
+    },
+    "sedan_mid_rsm": {
+      "standard": 0.5,
+      "aggressive": 0.2,
+      "reckless": 0.15,
+      "calm": 0.1,
+      "novice": 0.05
+    },
+    "suv_mid_rsm": {
+      "standard": 0.5,
+      "aggressive": 0.2,
+      "reckless": 0.15,
+      "calm": 0.1,
+      "novice": 0.05
+    },
+    "suv_coupe_small": {
+      "standard": 0.5,
+      "aggressive": 0.2,
+      "reckless": 0.15,
+      "calm": 0.1,
+      "novice": 0.05
     }
   },
   "weather": {
@@ -609,13 +776,17 @@
     "calm": "speedFactor·signalUse R, 나머지 A",
     "aggressive": "speedFactor·signalUse·signalLead R, 나머지 A",
     "novice": "speedFactor·signalUse R, 나머지 A",
-    "taxi": "accelScale R(DTG 급가속 많음), comfortDecel R(급감속 적음), signalUse R(사업용 좌회전 방향지시등 위반 71%), speedFactor R",
-    "bus_driver": "speedFactor D(AVC 버스 0.958), designatedLaneCompliance D(1차로 위반율 6.34%), comfortDecel R, signalUse R",
+    "taxi": "accelScale R(DTG 급가속 많음), comfortDecel R(급감속 적음), signalUse R(사업용 좌회전 방향지시등 위반 71%), speedFactor R. 2026-09-23 한국 운전 특징(사용자 제공, A) 반영: 조금이라도 빠른 차로가 보이면 옮김(changeThreshold·politeness↓), 좁은 틈에 끼어듦(safeDecel↑), 방향지시등 없이(signalUse 0.4), 급가속·급감속(surge 1.5회/분, comfortDecel↑)",
+    "bus_driver": "speedFactor D(AVC 버스 0.958), designatedLaneCompliance D(1차로 위반율 6.34%), comfortDecel R, signalUse R. 2026-09-23 한국 운전 특징(사용자 제공, A) 반영: 끼어들기·급가감속·방향지시등 없이 들어오기를 택시보다 약하게 (signalUse 0.45, surge 0.6회/분)",
     "truck_heavy": "speedFactor D(AVC 대형화물 1.051, 화물 제한속도 기준, 90km/h 속도제한장치로 상한), designatedLaneCompliance D(AVC 0.903), comfortDecel R",
     "light_commercial": "speedFactor R(AVC 소형화물 0.914에 1.5톤 초과 화물이 섞인 것으로 보고 올림), keepRightBias R(2005 관측: 1.5톤 이하 화물 1차로 12.0%, 승용 29.9%)",
     "van_family": "standard와 같고 busLaneCompliance만 0.5 (전용차로 승합차 약 99%가 탑승 기준 미달, 비율 자체는 가정)",
     "assignment": "승용 성향 비율(보통 0.6·여유 0.17·공격적 0.15·초보 0.08)은 직접 근거를 못 찾은 가정값. validationTargets로 거꾸로 맞춘다",
-    "passingLaneCruise": "standard 0.35 R(추월 목적 없이 1차로 계속 주행 자기보고: 편도 3차로 35%, 2차로 40% 이상 — SBS 2023), 나머지 A. 게임에서 승용 1차로 점유가 AVC 0.44(3차로)·0.34(4차로)에 가깝게 되는지로 확인. truck_heavy 0.6 R: 지정차로를 지키는 대형화물이 앞지르기 차로(편도 3차로의 2차로)를 달리는 차로로 쓰는 비율. AVC 대형화물 2차로 점유 0.42에 맞춰 게임 측정 0.36~0.38"
+    "passingLaneCruise": "standard 0.35 R(추월 목적 없이 1차로 계속 주행 자기보고: 편도 3차로 35%, 2차로 40% 이상 — SBS 2023), 나머지 A. 게임에서 승용 1차로 점유가 AVC 0.44(3차로)·0.34(4차로)에 가깝게 되는지로 확인. truck_heavy 0.6 R: 지정차로를 지키는 대형화물이 앞지르기 차로(편도 3차로의 2차로)를 달리는 차로로 쓰는 비율. AVC 대형화물 2차로 점유 0.42에 맞춰 게임 측정 0.36~0.38",
+    "reckless": "A: 한국 커뮤니티에서 흔히 말하는 차선 물고 달리기·칼치기·급가감속 운전 (2026-09-23 사용자 제공). 모든 승용·SUV에 2%, K5급(sedan_mid_fastback)·르노 계열(SM6급·QM6급·아르카나급)은 typeOverrides로 15~18% — 특정 차종에 대한 인식이라 약하게만 깔았다. 측정 근거 없음",
+    "lane1_slow": "A: 1차로(앞지르기 차로) 정속 주행으로 뒤차를 막는 차 (2026-09-23 사용자 제공). 승용·SUV·전기차의 4%. 뒤차는 오른쪽으로 앞질러 다시 1차로로 끼어든다",
+    "surge": "A: 급가속했다가 앞차에 바짝 붙어 급감속하는 버릇. 한 번에 3~6초 동안 희망속도 +12%, 차간시간 절반, 가속 1.3배로 몰고, 끝나면 0.7초 만에 원래 차간시간으로 돌아가며 세게 선다. 게임 측정: 급가속(1.5m/s² 초과) 시간 비율 약 5배, 급감속(2.5m/s² 초과) 약 1.7배 (분당 3회로 잰 값)",
+    "lineRide": "A: 차선을 물고 달리는 차. 차로 가운데에서 1.05~1.35m 한쪽으로 치우쳐 차 옆면이 옆 차로로 넘어온다 (1차로 왼쪽·끝 차로 오른쪽처럼 길 밖 쪽은 조금만)"
   },
   "validationTargets": {
     "car_lane1_share": {

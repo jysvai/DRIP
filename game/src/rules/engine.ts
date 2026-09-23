@@ -33,7 +33,8 @@ export type EventType =
   | "crash"
   | "skip"
   | "lka_assist"
-  | "lka_toggle";
+  | "lka_toggle"
+  | "cut_in";
 
 export interface DriveEvent {
   t: number;
@@ -44,6 +45,9 @@ export interface DriveEvent {
   limitKmh: number;
   detail: Record<string, unknown>;
 }
+
+/** 옆 차가 끼어든 뒤 이 시간(초) 안의 아차사고·충돌은 끼어들기 때문으로 본다 */
+const CUT_IN_WINDOW = 5;
 
 export const EVENT_LABELS: Record<EventType, string> = {
   speeding: "과속",
@@ -69,6 +73,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   skip: "구간 건너뜀 (요약 주행)",
   lka_assist: "차로 유지 보조 작동",
   lka_toggle: "차로 유지 보조 켜기·끄기",
+  cut_in: "옆 차가 앞으로 끼어듦",
 };
 
 export const VIOLATIONS: EventType[] = [
@@ -155,6 +160,8 @@ export class RuleEngine {
   private lastHardAccel = -10;
   private lastHardBrake = -10;
   private lastNearMiss = -10;
+  /** 마지막으로 옆 차가 끼어든 시각 (게임이 일으킨 사건) */
+  private cutInAt = -99;
   onEvent: (e: DriveEvent) => void = () => {};
   /** 플레이어 차 구분: 화물·대형승합은 지정차로, 버스는 버스전용차로 통행 가능 */
   vehicleClass: "car" | "bus" | "truck" = "car";
@@ -496,14 +503,16 @@ export class RuleEngine {
         }
       }
       if (kind) {
-        this.emit(f, "near_miss", { kind, other, ttcSec: Number.isFinite(this.ttc) ? Math.round(this.ttc * 100) / 100 : null });
+        const cause = f.t - this.cutInAt < CUT_IN_WINDOW ? { cause: "cut_in" } : {};
+        this.emit(f, "near_miss", { kind, other, ttcSec: Number.isFinite(this.ttc) ? Math.round(this.ttc * 100) / 100 : null, ...cause });
         this.lastNearMiss = f.t;
       }
     }
   }
 
   crash(f: PlayerFrame, withWhat: string, relSpeedKmh: number) {
-    this.emit(f, "crash", { with: withWhat, relSpeedKmh: Math.round(relSpeedKmh) });
+    const cause = f.t - this.cutInAt < CUT_IN_WINDOW ? { cause: "cut_in" } : {};
+    this.emit(f, "crash", { with: withWhat, relSpeedKmh: Math.round(relSpeedKmh), ...cause });
   }
 
   /**
@@ -530,6 +539,15 @@ export class RuleEngine {
     this.lastLane = 0;
     this.accelWindow = [];
     this.signalDist = 0;
+  }
+
+  /**
+   * 주변 차가 갑자기 앞으로 끼어들었다 (게임이 일으킨 사건, 판정 아님). 뒤 5초 안의 아차사고·충돌에는 cause: "cut_in"을 붙여
+   * 플레이어 잘못과 구분하고, 이상 주행 거르기(아차사고 횟수)에서도 뺀다.
+   */
+  cutIn(f: PlayerFrame, detail: Record<string, unknown>) {
+    this.cutInAt = f.t;
+    this.emit(f, "cut_in", detail);
   }
 
   /** 주행 중 차로 유지 보조를 켜거나 껐다 (기록용) */

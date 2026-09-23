@@ -27,6 +27,10 @@ export interface DriverProfile {
   passingLaneStay: Dist;
   /** 앞지르기가 아니어도 왼쪽 차로로 가서 계속 달리는 운전자 비율 (0~1). 승용은 1차로("1차로 정속 주행"), 지정차로를 지키는 대형차는 앞지르기 차로까지 */
   passingLaneCruise?: number;
+  /** 급가속했다가 바짝 붙어 급감속하는 버릇이 나오는 빈도 (분당) */
+  surge?: number;
+  /** 차선을 물고 달리는 운전자 비율 (0~1) */
+  lineRide?: number;
 }
 
 /** 날씨에 따라 주변 차가 희망속도·차간시간을 바꾸는 배율 */

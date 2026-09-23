@@ -198,3 +198,93 @@ describe("돌발상황", () => {
     expect(car.hazard).toBe(true);
   });
 });
+
+describe("한국 운전 버릇", () => {
+  const cfg = makeConfig();
+  const road = makeRoad({ length: 12000, lanes: 3 });
+
+  function run(seed: number, sec: number, density = 15) {
+    const t = new Traffic(road, cfg, seed);
+    t.density = density;
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 27, len: 4.9, width: 1.86 };
+    t.fill(player);
+    for (let i = 0; i < sec * 20; i++) {
+      player.s += player.v * 0.05;
+      t.update(0.05, player, i * 0.05);
+    }
+    return { t, player };
+  }
+
+  it("옆 차로 차가 플레이어 바로 앞으로 끼어든다 (6~35m, 비슷한 속도로)", () => {
+    const { t, player } = run(11, 20);
+    let r = null;
+    for (let i = 0; i < 200 && !r; i++) {
+      player.s += player.v * 0.05;
+      t.update(0.05, player, 20 + i * 0.05);
+      r = t.cutIn(player);
+    }
+    expect(r).not.toBeNull();
+    expect(r!.gapM).toBeGreaterThanOrEqual(6);
+    expect(r!.gapM).toBeLessThanOrEqual(35);
+    expect(r!.dvKmh).toBeGreaterThan(-4 * 3.6 - 0.01);
+    expect(r!.dvKmh).toBeLessThan(6 * 3.6 + 0.01);
+    if (r!.dvKmh > 3 * 3.6) expect(r!.gapM).toBeLessThanOrEqual(15);
+    expect(r!.agent.targetLane).toBe(2);
+    expect(Math.abs(r!.fromLane - 2)).toBe(1);
+    // 짧게 (2초 안팎) 들어온다
+    expect(r!.agent.lcDuration).toBeLessThan(2.2);
+  });
+
+  it("들어올 차가 없으면 끼어들지 않는다", () => {
+    const t = new Traffic(road, cfg, 3);
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 27, len: 4.9, width: 1.86 };
+    expect(t.cutIn(player)).toBeNull();
+  });
+
+  it("차선을 무는 차는 옆면이 옆 차로로 넘어오고, 보통 차는 차로 안에 있다", () => {
+    const t = new Traffic(road, cfg, 5);
+    t.density = 12;
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 27, len: 4.9, width: 1.86 };
+    t.fill(player);
+    const riders = t.agents.filter((a) => a.s > player.s && !a.parked).slice(0, 16);
+    for (const a of t.agents) a.lineBias = 0;
+    riders.forEach((a, i) => (a.lineBias = i % 2 ? 1.2 : -1.2));
+    for (let i = 0; i < 30 * 20; i++) {
+      player.s += player.v * 0.05;
+      t.update(0.05, player, i * 0.05);
+    }
+    const off = (a: (typeof t.agents)[number]) => Math.abs(a.d - road.laneCenter(a.lane, a.s)) + a.width / 2 - 3.6 / 2;
+    // 차로를 바꾸는 중이 아니고, 길 밖 쪽(1차로 왼쪽·3차로 오른쪽)으로 무는 차가 아닌 것
+    const inward = (a: (typeof t.agents)[number]) => !((a.lineBias < 0 && a.lane === 1) || (a.lineBias > 0 && a.lane === 3));
+    const still = riders.filter((a) => t.agents.includes(a) && a.targetLane === a.lane && a.laneTime > 8 && inward(a));
+    expect(still.length).toBeGreaterThan(2);
+    for (const a of still) expect(off(a)).toBeGreaterThan(0);
+    for (const a of t.agents.filter((a) => !a.lineBias && a.targetLane === a.lane && !a.parked)) expect(off(a)).toBeLessThan(0);
+  });
+
+  it("급가속 버릇이 있는 차가 버릇 없는 차보다 급가속·급감속이 잦다", () => {
+    const t = new Traffic(road, cfg, 9);
+    t.density = 20;
+    const player: PlayerState = { s: 3000, d: road.laneCenter(2, 3000), v: 27, len: 4.9, width: 1.86 };
+    t.fill(player);
+    t.agents.forEach((a, i) => {
+      a.surgeRate = i % 2 ? 3 : 0;
+      a.lineBias = 0;
+    });
+    const n = { 3: { all: 0, acc: 0, brk: 0 }, 0: { all: 0, acc: 0, brk: 0 } } as Record<number, { all: number; acc: number; brk: number }>;
+    for (let i = 0; i < 90 * 20; i++) {
+      player.s += player.v * 0.05;
+      t.update(0.05, player, i * 0.05);
+      for (const a of t.agents) {
+        const c = n[a.surgeRate];
+        if (!c || a.parked) continue;
+        c.all++;
+        if (a.acc > 1.5) c.acc++;
+        if (a.acc < -2.5) c.brk++;
+      }
+    }
+    // 급가속(1.5m/s² 넘게)은 여러 배, 급감속(2.5m/s² 넘게)도 더 잦다
+    expect(n[3].acc / n[3].all).toBeGreaterThan((2.5 * n[0].acc) / n[0].all);
+    expect(n[3].brk / n[3].all).toBeGreaterThan((1.2 * n[0].brk) / n[0].all);
+  });
+});
