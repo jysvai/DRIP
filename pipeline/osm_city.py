@@ -478,7 +478,37 @@ def build(region: str, refresh: bool):
     # 고도: 교차로마다 지형, 토막 안은 두 끝 사이를 곧게 (다리는 강 위로, 터널은 산 속으로)
     terrain = Terrain()
     lls = np.array(node_ll)
-    z = terrain.sample(lls[:, 1], lls[:, 0])
+    # 국도: 분리대로 나뉜 상·하행(짝 있는 한 방향 도로)은 두 차도 가운데(분리대) 줄의 지형을 함께 쓴다.
+    # 차도마다 제 자리 지형을 재면 비탈을 가로지르는 곳에서 9m 떨어진 두 차도 높이가 1m 넘게 달라진다
+    if R["dem"]:
+        node_edges = defaultdict(list)
+        for ed in edges:
+            node_edges[ed["a"]].append(ed)
+            node_edges[ed["b"]].append(ed)
+        mx = np.array([p[0] for p in node_xy], dtype=float)
+        my = np.array([p[1] for p in node_xy], dtype=float)
+        for n, eds in node_edges.items():
+            # 분리대 도로의 점 (교차로 점도 그 도로 차도들 방향으로)
+            paired = [ed for ed in eds if ed["oneway"] and ed["sep"] > 0]
+            if not paired:
+                continue
+            dx = dy = 0.0
+            for ed in paired:
+                pts = ed["pts"]
+                d = pts[1] - pts[0] if ed["a"] == n else pts[-1] - pts[-2]
+                dl = float(np.hypot(*d)) or 1.0
+                dx += d[0] / dl
+                dy += d[1] / dl
+            dl = float(np.hypot(dx, dy))
+            if dl < 0.5 * len(paired):  # 방향이 엇갈리면 (서로 다른 차도가 만나는 점) 그대로
+                continue
+            half = sum(ed["sep"] for ed in paired) / len(paired) / 2
+            mx[n] -= dy / dl * half
+            my[n] += dx / dl * half
+        slon, slat = to_ll.transform(mx, my)
+        z = terrain.sample(np.asarray(slat), np.asarray(slon))
+    else:
+        z = terrain.sample(lls[:, 1], lls[:, 0])
 
     def q(v: float) -> int:
         return int(round(v * 10))
@@ -497,6 +527,13 @@ def build(region: str, refresh: bool):
             u = np.linspace(0.0, cum[-1], max(3, int(cum[-1] // 20) + 1))
             px = np.interp(u, cum, pts[:, 0])
             py = np.interp(u, cum, pts[:, 1])
+            if ed["oneway"] and ed["sep"] > 0:
+                # 분리대 가운데 줄 (왼쪽으로 sep/2)
+                i = np.clip(np.searchsorted(cum, u, side="right") - 1, 0, len(seg) - 1)
+                tx = seg[i, 0] / np.maximum(L[i], 1e-6)
+                ty = seg[i, 1] / np.maximum(L[i], 1e-6)
+                px = px - ty * ed["sep"] / 2
+                py = py + tx * ed["sep"] / 2
             todo.append((k, u, px, py))
         if todo:
             allx = np.concatenate([t[2] for t in todo])

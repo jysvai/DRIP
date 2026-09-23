@@ -9,10 +9,10 @@ import * as THREE from "three";
 import type { World } from "./world";
 import { asphaltTexture, disposeGroup, grayTexture, makeBroadleafGeometry, makePineGeometry, tiledNoise, xorshift } from "./roadChunks";
 import type { CityEdge, Dem } from "../city/graph";
-import type { CityNet, Link, LinkGeom } from "../city/net";
+import type { CityNet, JunctionSurface, Link, LinkGeom } from "../city/net";
 import { CENTER_GAP, CITY_LANE, CROSSWALK, STOP_GAP } from "../city/net";
 import type { Signals } from "../city/signals";
-import { convexHull, pointAt, type PolyPoint } from "../city/geom";
+import { pointAt, type PolyPoint } from "../city/geom";
 
 const TILE = 200;
 const GROUND_CELL = 20;
@@ -572,6 +572,10 @@ export class CityScene {
     const mB = realTo ? sStop : geo.length;
     const wA = sigFrom ? sStart - STOP_GAP * sc : realFrom ? sStart : 0;
     const wB = sigTo ? sStop + STOP_GAP * sc : realTo ? sStop : geo.length;
+    // 정지선 너머(교차로 안)의 차도는 교차로 바닥 바로 밑에 깐다. 링크 제 높이로 깔면 비탈의 교차로에서 기운 바닥을 뚫고 나오거나 차를 덮는다
+    const sfTo = realTo ? net.junctionSurface(l.to) : null;
+    const sfFrom = realFrom ? net.junctionSurface(l.from) : null;
+    const plateAt = (s: number) => (sfTo && s > sStop ? sfTo : sfFrom && s < sStart ? sfFrom : null);
     // 점마다: 폭(차로 수 변화는 ±15m로 부드럽게), 왼쪽으로 더 까는 폭, 분리대 반 폭, 보도 폭
     const lanesAt = (s: number) => net.spanAt(l.id, s / sc).lanes;
     const width = new Float64Array(n);
@@ -647,15 +651,18 @@ export class CityScene {
         const [tx, ty] = s === geo.cum[k] ? dir(k) : [q.tx, q.ty];
         const rx = ty;
         const ry = -tx;
-        const zl = q.z! + h;
         const lx = q.x + rx * dL(k);
         const ly = q.y + ry * dL(k);
         const Rx = q.x + rx * dR(k);
         const Ry = q.y + ry * dR(k);
+        // 차도·갓길만 교차로 바닥에 맞춘다 (보도는 모서리 보도와 이어지게 제 높이)
+        const plate = g === road ? plateAt(s) : null;
+        const zl = plate ? this.plateZ(plate, lx, ly) + h - 0.03 : q.z! + h;
+        const zr = plate ? this.plateZ(plate, Rx, Ry) + h - 0.03 : q.z! + h;
         const [ul, vl] = planar ? uvOf(lx, ly) : [0, s / 4];
         const [ur, vr] = planar ? uvOf(Rx, Ry) : [1, s / 4];
         const a = g.v(lx - x0, zl, -(ly - y0), 0, 1, 0, color, ul, vl);
-        const c = g.v(Rx - x0, zl, -(Ry - y0), 0, 1, 0, color, ur, vr);
+        const c = g.v(Rx - x0, zr, -(Ry - y0), 0, 1, 0, color, ur, vr);
         if (prev) g.quad(prev[0], prev[1], c, a);
         prev = [a, c];
         if (s === sHi) break;
@@ -713,10 +720,10 @@ export class CityScene {
             wall(b.concrete, k, k + 1, (kk) => curbD(kk) + sw[kk], -2.5, 0.15, 1, curbC, wA, wB);
           } else {
             strip(road, k, k + 1, curbD, (kk) => curbD(kk) + SHOULDER, 0.02, shoulderC, true);
-            // 땅이 차도보다 낮은 곳(둑·높이가 다른 상·하행 사이)은 옹벽으로 보인다. 땅이 높으면 묻힌다
-            wall(b.concrete, k, k + 1, (kk) => curbD(kk) + SHOULDER, -4, 0.02, 1, skirtC);
+            // 땅이 차도보다 낮은 곳(둑·높이가 다른 상·하행 사이)은 옹벽으로 보인다. 땅이 높으면 묻힌다. 교차로 안에는 세우지 않는다
+            wall(b.concrete, k, k + 1, (kk) => curbD(kk) + SHOULDER, -4, 0.02, 1, skirtC, mA, mB);
           }
-          if (kind[k] !== 0) wall(b.concrete, k, k + 1, (kk) => -width[kk] / 2 - leftX[kk], -4, 0.02, -1, skirtC);
+          if (kind[k] !== 0) wall(b.concrete, k, k + 1, (kk) => -width[kk] / 2 - leftX[kk], -4, 0.02, -1, skirtC, mA, mB);
         }
       }
       // 분리대 (짝 있는 넓은 곳): 연석으로 쌓고 넓으면 풀
@@ -792,10 +799,10 @@ export class CityScene {
     };
     if (sigTo && sStop > 0 && owns(sStop)) {
       this.patch(geo, sStop - 0.5, sStop, (s) => -this.widthAt(width, geo, s) / 2 - 0.02, (s) => this.widthAt(width, geo, s) / 2 + 0.05, WHITE, x0, y0, b.marks);
-      this.crosswalk(geo, sStop + STOP_GAP * sc, sStop + (STOP_GAP + CROSSWALK) * sc, width, x0, y0, b.marks);
+      this.crosswalk(geo, sStop + STOP_GAP * sc, sStop + (STOP_GAP + CROSSWALK) * sc, width, x0, y0, b.marks, sfTo);
     }
     if (sigFrom && sStart > 0 && owns(Math.max(0, sStart - (STOP_GAP + CROSSWALK) * sc))) {
-      this.crosswalk(geo, Math.max(0, sStart - (STOP_GAP + CROSSWALK) * sc), Math.max(0, sStart - STOP_GAP * sc), width, x0, y0, b.marks);
+      this.crosswalk(geo, Math.max(0, sStart - (STOP_GAP + CROSSWALK) * sc), Math.max(0, sStart - STOP_GAP * sc), width, x0, y0, b.marks, sfFrom);
     }
   }
 
@@ -810,8 +817,13 @@ export class CityScene {
     this.patch(geo, s0, s1, (s) => d(s) - w / 2, (s) => d(s) + w / 2, c, x0, y0, g);
   }
 
-  /** 노면 위 조각: s0~s1 (2m마다 꺾음), 가로 dL(s)~dR(s) */
-  private patch(geo: LinkGeom, s0: number, s1: number, dL: (s: number) => number, dR: (s: number) => number, c: THREE.Color, x0: number, y0: number, g: G) {
+  /** 교차로 바닥 높이 (바닥 밖으로 늘여 짐작한 값은 모서리 높이 범위 안으로) */
+  private plateZ(sf: JunctionSurface, x: number, y: number): number {
+    return Math.max(sf.zLo, Math.min(sf.zHi, this.net.junctionZ(sf, x, y)));
+  }
+
+  /** 노면 위 조각: s0~s1 (2m마다 꺾음), 가로 dL(s)~dR(s). plate가 있으면 그 교차로 바닥 위에 */
+  private patch(geo: LinkGeom, s0: number, s1: number, dL: (s: number) => number, dR: (s: number) => number, c: THREE.Color, x0: number, y0: number, g: G, plate: JunctionSurface | null = null) {
     if (s1 <= s0) return;
     const q: PolyPoint & { z?: number } = { x: 0, y: 0, tx: 1, ty: 0 };
     const parts = Math.max(1, Math.ceil((s1 - s0) / 2));
@@ -821,18 +833,22 @@ export class CityScene {
       this.at(geo, s, q);
       const l = dL(s);
       const r = dR(s);
-      const a = g.v(q.x + q.ty * l - x0, q.z! + 0.03, -(q.y - q.tx * l - y0), 0, 1, 0, c);
-      const b = g.v(q.x + q.ty * r - x0, q.z! + 0.03, -(q.y - q.tx * r - y0), 0, 1, 0, c);
+      const lx = q.x + q.ty * l;
+      const ly = q.y - q.tx * l;
+      const rx = q.x + q.ty * r;
+      const ry = q.y - q.tx * r;
+      const a = g.v(lx - x0, (plate ? this.plateZ(plate, lx, ly) : q.z!) + 0.03, -(ly - y0), 0, 1, 0, c);
+      const b = g.v(rx - x0, (plate ? this.plateZ(plate, rx, ry) : q.z!) + 0.03, -(ry - y0), 0, 1, 0, c);
       if (prev) g.quad(prev[0], prev[1], b, a);
       prev = [a, b];
     }
   }
 
   /** 횡단보도: 길 방향으로 긴 흰 막대 (폭 0.5m, 1m 간격) */
-  private crosswalk(geo: LinkGeom, s0: number, s1: number, width: Float64Array, x0: number, y0: number, g: G) {
+  private crosswalk(geo: LinkGeom, s0: number, s1: number, width: Float64Array, x0: number, y0: number, g: G, plate: JunctionSurface | null) {
     const w = this.widthAt(width, geo, (s0 + s1) / 2);
     for (let d = -w / 2 + 0.3; d + 0.5 <= w / 2 + 0.1; d += 1) {
-      this.patch(geo, s0, s1, () => d, () => d + 0.5, WHITE, x0, y0, g);
+      this.patch(geo, s0, s1, () => d, () => d + 0.5, WHITE, x0, y0, g, plate);
     }
   }
 
@@ -859,31 +875,27 @@ export class CityScene {
     const net = this.net;
     const j = net.junctions[jid];
     const q: PolyPoint & { z?: number } = { x: 0, y: 0, tx: 1, ty: 0 };
-    const pts: [number, number][] = [];
-    let zSum = 0;
-    let zN = 0;
-    const edge = (lid: number, inbound: boolean) => {
-      const l = net.links[lid];
-      const geo = net.geom(lid);
-      const s = inbound ? (l.length - l.stopDist) * geo.scale : l.startDist * geo.scale;
-      this.at(geo, s, q);
-      const w = net.spanAt(lid, s / geo.scale).lanes * CITY_LANE;
-      const left = -w / 2 - 0.3;
-      const right = w / 2 + 0.25;
-      pts.push([q.x + q.ty * left, q.y - q.tx * left], [q.x + q.ty * right, q.y - q.tx * right]);
-      zSum += q.z!;
-      zN++;
-    };
-    for (const id of j.inbound) edge(id, true);
-    for (const id of j.outbound) edge(id, false);
-    if (pts.length >= 3) {
-      const hull = convexHull(pts);
-      const z = zSum / Math.max(1, zN) + 0.012;
+    // 바닥: 모서리마다 그 접근로 끝 높이 그대로, 가운데는 모서리들에 맞춘 평면 높이 (차도 같은 바닥 높이를 쓴다)
+    const sf = net.junctionSurface(jid);
+    if (sf) {
       const c = new THREE.Color(0.6, 0.6, 0.6);
       const ox = this.ox;
       const oy = this.oy;
-      const base = hull.map(([X, Y]) => b.road.v(X - x0, z, -(Y - y0), 0, 1, 0, c, (((X + ox) % 1000) + 1000) / 4, (((Y + oy) % 1000) + 1000) / 4));
-      for (let i = 1; i + 1 < base.length; i++) b.road.tri(base[0], base[i], base[i + 1]);
+      for (const [p0, p1, p2] of sf.tris) {
+        // 삼각형 면의 법선 (장면 좌표: x 동, y 위, z 남)
+        const ux = p1[0] - p0[0];
+        const uy = p1[1] - p0[1];
+        const uz = p1[2] - p0[2];
+        const wx = p2[0] - p0[0];
+        const wy = p2[1] - p0[1];
+        const wz = p2[2] - p0[2];
+        const nx = uy * wz - uz * wy;
+        const ny = uz * wx - ux * wz;
+        const nz = ux * wy - uy * wx;
+        const L = Math.hypot(nx, ny, nz) || 1;
+        const v = ([X, Y, Z]: [number, number, number]) => b.road.v(X - x0, Z + 0.012, -(Y - y0), nx / L, nz / L, -ny / L, c, (((X + ox) % 1000) + 1000) / 4, (((Y + oy) % 1000) + 1000) / 4);
+        b.road.tri(v(p0), v(p1), v(p2));
+      }
     }
     // 모서리 보도: 우회전 이동마다 들어오는 링크 보도 끝 → 나가는 링크 보도 시작
     for (const mid of j.movements) {
@@ -1149,8 +1161,9 @@ export class CityScene {
     const zd = this.dem!.height(x, y);
     const g = this.net.graph;
     let best: { edge: CityEdge; u: number; dist: number } | null = null;
-    // 땅 한 칸(20m) 안에 걸친 도로 가운데 가장 낮은 것보다 땅이 높으면 그 도로를 덮는다
-    // (예: 9m 떨어진 상·하행 차도의 높이가 1m 넘게 다르면). 그 아래로 맞추고, 높은 쪽 차도 가장자리는 옹벽으로 보인다
+    // 이 점과 삼각형으로 이어지는 땅(대각선까지 한 칸 반, 30m)이 걸친 도로 가운데 가장 낮은 것보다 땅이 높으면 그 도로를 덮는다.
+    // 깎은 비탈을 지나는 길(점 하나는 길 위, 옆 점은 산 쪽으로 올라간 곳)이나 높이가 다른 상·하행 차도 사이가 그렇다.
+    // 그 아래로 맞추고, 높은 쪽 차도 가장자리는 옹벽으로 보인다
     let cap = Infinity;
     for (const id of g.edgesIn(x - 60, y - 60, x + 60, y + 60)) {
       const e = g.edges[id];
@@ -1158,7 +1171,7 @@ export class CityScene {
       const r = g.nearestEdge(x, y, 60, (f) => f.id === id);
       if (!r) continue;
       if (!best || r.dist < best.dist) best = r;
-      if (r.dist - roadHalf(e) < GROUND_CELL) cap = Math.min(cap, this.drawnZ(e, r.u) - 0.35);
+      if (r.dist - roadHalf(e) < GROUND_CELL * 1.5) cap = Math.min(cap, this.drawnZ(e, r.u) - 0.35);
     }
     if (!best) return { z: zd, road: Infinity };
     const d = best.dist - roadHalf(best.edge);

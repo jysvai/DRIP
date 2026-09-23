@@ -64,6 +64,10 @@ export interface CityInfo {
    * 도는 곳뿐 아니라 직진인데 오른쪽 차로가 다른 길로 갈라지는 곳도 (예: 3차로 중 1차로만 이어지는 갈림길)
    */
   keep?: [number, number, number][];
+  /** 반대편 차도가 경로 차도보다 높은 만큼 [s, m] (분리대로 떨어진 상·하행). 반대편 차를 그 높이에 그린다 */
+  oppDz?: [number, number][];
+  /** 교차로 바닥이 옆으로 가며 달라지는 높이 [s, 왼쪽 6m, 왼쪽 3m, 오른쪽 3m, 오른쪽 6m (가운데보다 높은 만큼)]. 교차로 밖은 0 */
+  side?: [number, number, number, number, number][];
   /** 경로 위 링크 자리 [s0, s1, 링크, u0, u1]: s0~s1이 그 링크의 u0~u1 */
   links: [number, number, number, number, number][];
 }
@@ -357,9 +361,9 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
     out.push({ x: pts[j].x + (pts[j + 1].x - pts[j].x) * tt, y: pts[j].y + (pts[j + 1].y - pts[j].y) * tt, z: pts[j].z + (pts[j + 1].z - pts[j].z) * tt });
     outTag.push(tt < 0.5 ? tag[j] : tag[j + 1]);
   }
-  // 높이는 ±20m로 한 번 더 부드럽게 (교차로 곡선과 링크 사이 꺾임)
+  // 높이는 ±2m로만 살짝 고른다 (교차로 바닥과 링크가 만나는 꺾임). 더 넓게 고르면 비탈 꼭대기에서 차가 그린 길보다 가라앉는다
   const zs = out.map((p) => p.z);
-  const W = 10;
+  const W = 1;
   for (let i = 0; i < n; i++) {
     let sum = 0;
     let cnt = 0;
@@ -368,6 +372,70 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
       cnt++;
     }
     out[i].z = sum / cnt;
+  }
+
+  // 반대편 차도 높이 차: 분리대로 떨어진 상·하행(짝 있는 일방) 차도는 높이가 따로라 20m마다 건너편 차도를 찾아 잰다
+  const oppDz: [number, number][] = [];
+  for (let i = 0; i < n; i += 10) {
+    let dz = 0;
+    if (outTag[i] >= 0) {
+      const p = out[i];
+      const a = out[Math.max(0, i - 1)];
+      const b = out[Math.min(n - 1, i + 1)];
+      const hl = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      const tx = (b.x - a.x) / hl;
+      const ty = (b.y - a.y) / hl;
+      const own = net.graph.nearestEdge(p.x, p.y, 4);
+      if (own && own.edge.oneway && own.edge.sep > 0) {
+        // 건너편 차도 가운데: 왼쪽으로 sep
+        const qx = p.x - ty * own.edge.sep;
+        const qy = p.y + tx * own.edge.sep;
+        const other = net.graph.nearestEdge(qx, qy, 6, (e) => e.oneway && e.id !== own.edge.id && !e.bridge === !own.edge.bridge);
+        if (other) {
+          const lid = net.dirLink[other.edge.id * 2];
+          const sp = lid >= 0 ? net.links[lid].spans.find((x) => x.edge === other.edge.id) : undefined;
+          if (sp) {
+            const o = net.pointOnLink(lid, sp.u0 + other.u, q);
+            // 건너편이 반대로 가는 차도일 때만
+            if (o.tx * tx + o.ty * ty < -0.5) dz = o.z - p.z;
+          }
+        }
+      }
+    }
+    oppDz.push([i * step, Math.round(dz * 100) / 100]);
+  }
+
+  // 교차로 바닥이 옆으로 가며 달라지는 높이 (비탈의 교차로에서 옆 차로 차가 바닥에 묻히거나 뜨지 않게)
+  const side: [number, number, number, number, number][] = [];
+  const zero = (s: number): [number, number, number, number, number] => [s, 0, 0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const tg = outTag[i];
+    if (tg >= 0) continue;
+    const mvId = plan.movements[-1 - tg];
+    const jn = mvId !== undefined ? net.movements[mvId].junction : -1;
+    const sf = jn >= 0 && !net.junctions[jn].minor ? net.junctionSurface(jn) : null;
+    if (!sf) continue;
+    const a = out[Math.max(0, i - 1)];
+    const b = out[Math.min(n - 1, i + 1)];
+    const hl = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const rx = (b.y - a.y) / hl;
+    const ry = -(b.x - a.x) / hl;
+    const p = out[i];
+    const zc = net.junctionZ(sf, p.x, p.y);
+    const row = zero(i * step);
+    for (const [near, far, sign] of [[2, 1, -1], [3, 4, 1]]) {
+      // 바닥 밖으로 나가면 바로 안쪽 값을 그대로 쓴다 (바닥 밖을 늘려 짐작하면 크게 틀린다)
+      let dz = 0;
+      for (const [col, d] of [[near, 3], [far, 6]]) {
+        const x = p.x + rx * d * sign;
+        const y = p.y + ry * d * sign;
+        if (net.onJunction(sf, x, y)) dz = net.junctionZ(sf, x, y) - zc;
+        row[col] = Math.round(dz * 100) / 100;
+      }
+    }
+    if (!side.length || side[side.length - 1][0] < i * step - step * 1.5) side.push(zero(Math.max(0, (i - 1) * step)));
+    side.push(row);
+    if (i + 1 >= n || outTag[i + 1] >= 0) side.push(zero(Math.min((n - 1) * step, (i + 1) * step)));
   }
 
   // 3) 조각별 s 범위
@@ -520,6 +588,8 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
       boxes,
       stops,
       keep,
+      oppDz,
+      side,
       links: linkMap,
     },
   };

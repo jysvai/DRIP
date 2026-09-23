@@ -341,7 +341,8 @@ export class TrafficView {
     const w = road.toWorld(s, a.d, this.world3);
     road.sample(s, this.rs);
     const heading = w.heading + (a.opposite ? Math.PI : 0) + a.yaw;
-    this.world.toScene(w.e, w.n, w.z, this.p);
+    // 시내·국도의 반대편 차도는 높이가 따로일 수 있다 (분리대로 떨어진 상·하행)
+    this.world.toScene(w.e, w.n, a.opposite ? w.z + road.oppDzAt(s) : w.z, this.p);
     this.e.set(0, heading, Math.atan(this.rs.grade) * (a.opposite ? -1 : 1));
     this.q.setFromEuler(this.e);
     this.m.compose(this.p, this.q, this.sv.set(1, 1, 1));

@@ -747,18 +747,18 @@ export class CityTraffic implements TrafficCity {
     const len = cum[cum.length - 1];
     const len1 = cumLengths(part1)[part1.length / 2 - 1];
     const len2 = mp.cum[mp.cum.length - 1];
+    // 높이: 접근로·나갈 길은 10m마다 그 링크 높이, 교차로 안은 이동 경로 높이 (비탈에서 차가 뜨거나 묻히지 않게)
     const zAt = (id: number, u: number) => net.pointOnLink(id, u).z;
-    const path: Path = {
-      pts,
-      cum,
-      len,
-      z: [
-        [0, zAt(A.id, sFrom / ga.scale)],
-        [len1, mp.z[0]],
-        [len1 + len2, mp.z[mp.z.length - 1]],
-        [len, zAt(B.id, sEnd / gb.scale)],
-      ],
-    };
+    const z: [number, number][] = [];
+    const n1 = Math.max(1, Math.ceil((sStop - sFrom) / 10));
+    for (let k = 0; k < n1; k++)
+      z.push([(len1 * k) / n1, zAt(A.id, (sFrom + ((sStop - sFrom) * k) / n1) / ga.scale)]);
+    for (let i = 0; i < mp.z.length; i++) z.push([len1 + mp.cum[i], mp.z[i]]);
+    const len3 = len - len1 - len2;
+    const n3 = Math.max(1, Math.ceil((sEnd - sStart) / 10));
+    for (let k = 1; k <= n3; k++)
+      z.push([len1 + len2 + (len3 * k) / n3, zAt(B.id, (sStart + ((sEnd - sStart) * k) / n3) / gb.scale)]);
+    const path: Path = { pts, cum, len, z };
     // 경로 도로(또는 그 반대편)로 들어가면 넘길 곳
     let handoff: Free["handoff"] = null;
     const ri = this.byLink.get(B.id);
@@ -817,15 +817,18 @@ export class CityTraffic implements TrafficCity {
 
   private zOf(p: Path, u: number): number {
     const z = p.z;
-    for (let i = 1; i < z.length; i++) {
-      if (u <= z[i][0] || i === z.length - 1) {
-        const [u0, z0] = z[i - 1];
-        const [u1, z1] = z[i];
-        const t = u1 > u0 ? Math.max(0, Math.min(1, (u - u0) / (u1 - u0))) : 0;
-        return z0 + (z1 - z0) * t;
-      }
+    if (z.length < 2) return z[0][1];
+    let lo = 1;
+    let hi = z.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (z[mid][0] < u) lo = mid + 1;
+      else hi = mid;
     }
-    return z[0][1];
+    const [u0, z0] = z[lo - 1];
+    const [u1, z1] = z[lo];
+    const t = u1 > u0 ? Math.max(0, Math.min(1, (u - u0) / (u1 - u0))) : 0;
+    return z0 + (z1 - z0) * t;
   }
 
   private poseOf(f: Free) {

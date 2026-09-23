@@ -11,6 +11,20 @@ import { connector } from "../road/route";
 import type { CityEdge, CityGraph, RoadClass } from "./graph";
 import { cumLengths, headingBetween, offsetPoly, pointAt, resample, wrapAngle, type Poly, type PolyPoint } from "./geom";
 
+/**
+ * 교차로 바닥: 접근로 끝마다 양쪽 모서리 [x, y, 높이]와 가운데 점을 겹침 없이 이은 삼각형들 (들로네 삼각분할).
+ * 모든 접근로 끝이 바닥 가장자리가 되므로 비탈의 교차로도 접근로와 턱 없이 이어진다
+ */
+export interface JunctionSurface {
+  tris: [number, number, number][][];
+  cx: number;
+  cy: number;
+  cz: number;
+  /** 모서리 높이의 가장 낮은·높은 값 */
+  zLo: number;
+  zHi: number;
+}
+
 /** 시내 차로 폭 (m). 서울 간선도로는 3.0~3.5m */
 export const CITY_LANE = 3.25;
 /** 왕복 도로 가운데 중앙선(노란 겹선) 폭 */
@@ -154,6 +168,7 @@ export class CityNet {
   readonly dirLink: Int32Array;
   private geoms = new Map<number, LinkGeom>();
   private paths = new Map<string, { pts: Poly; cum: Float64Array; z: Float64Array }>();
+  private surfaces = new Map<number, JunctionSurface | null>();
 
   constructor(readonly graph: CityGraph) {
     const g = graph;
@@ -526,6 +541,72 @@ export class CityNet {
     return l.spans.find((x) => u <= x.u1 + 1e-6) ?? l.spans[l.spans.length - 1];
   }
 
+  /** 교차로 바닥 (그림과 차가 같은 높이를 쓴다). 접근로가 모자라면 null */
+  junctionSurface(jid: number): JunctionSurface | null {
+    if (this.surfaces.has(jid)) return this.surfaces.get(jid)!;
+    const j = this.junctions[jid];
+    const pts: [number, number, number][] = [];
+    const q: PolyPoint = { x: 0, y: 0, tx: 1, ty: 0 };
+    const add = (lid: number, inbound: boolean) => {
+      const l = this.links[lid];
+      const u = inbound ? l.length - l.stopDist : l.startDist;
+      const p = this.pointOnLink(lid, u, q);
+      const w = this.spanAt(lid, u).lanes * CITY_LANE;
+      const left = -w / 2 - 0.3;
+      const right = w / 2 + 0.25;
+      pts.push([p.x + p.ty * left, p.y - p.tx * left, p.z], [p.x + p.ty * right, p.y - p.tx * right, p.z]);
+    };
+    for (const id of j.inbound) add(id, true);
+    for (const id of j.outbound) add(id, false);
+    let sf: JunctionSurface | null = null;
+    if (pts.length >= 3) {
+      const [a, gx, gy] = fitPlane(pts);
+      const cx = pts.reduce((m, h) => m + h[0], 0) / pts.length;
+      const cy = pts.reduce((m, h) => m + h[1], 0) / pts.length;
+      const C: [number, number, number] = [cx, cy, a + gx * cx + gy * cy];
+      // 모서리들과 가운데를 겹침 없이 삼각형으로 잇는다 (바닥이 두 겹이면 높은 쪽이 차를 덮는다). 겹친 점은 하나로
+      const uniq: [number, number, number][] = [];
+      for (const p of [C, ...pts]) if (!uniq.some((u) => Math.hypot(p[0] - u[0], p[1] - u[1]) < 0.05)) uniq.push(p);
+      const tris = delaunay(uniq);
+      const zs = pts.map((p) => p[2]);
+      if (tris.length) sf = { tris, cx, cy, cz: C[2], zLo: Math.min(...zs), zHi: Math.max(...zs) };
+    }
+    this.surfaces.set(jid, sf);
+    return sf;
+  }
+
+  /** (x, y)가 교차로 바닥 위인지 (가장자리 10cm까지) */
+  onJunction(sf: JunctionSurface, x: number, y: number): boolean {
+    for (const [a, b, c] of sf.tris) {
+      const det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      if (Math.abs(det) < 1e-9) continue;
+      const l1 = ((x - a[0]) * (c[1] - a[1]) - (y - a[1]) * (c[0] - a[0])) / det;
+      const l2 = ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])) / det;
+      if (Math.min(1 - l1 - l2, l1, l2) * Math.sqrt(Math.abs(det)) >= -0.1) return true;
+    }
+    return false;
+  }
+
+  /** 교차로 바닥 높이 (바닥 밖은 가장 가까운 삼각형 평면을 늘여서) */
+  junctionZ(sf: JunctionSurface, x: number, y: number): number {
+    let best = -Infinity;
+    let z = sf.cz;
+    for (const [a, b, c] of sf.tris) {
+      const det = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      if (Math.abs(det) < 1e-9) continue;
+      const l1 = ((x - a[0]) * (c[1] - a[1]) - (y - a[1]) * (c[0] - a[0])) / det;
+      const l2 = ((b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])) / det;
+      const l0 = 1 - l1 - l2;
+      const inside = Math.min(l0, l1, l2);
+      if (inside > best) {
+        best = inside;
+        z = l0 * a[2] + l1 * b[2] + l2 * c[2];
+        if (inside >= -1e-9) break;
+      }
+    }
+    return z;
+  }
+
   /**
    * 이동 경로: 들어오는 링크 정지선에서 나가는 링크 시작까지 부드러운 곡선 (양 끝 포함, 약 1m 간격).
    * dFrom·dTo: 차도 가운데에서 오른쪽으로 옮긴 거리 (차로 하나를 따라갈 때)
@@ -546,10 +627,12 @@ export class CityNet {
     const pts = new Float64Array(n * 2);
     const z = new Float64Array(n);
     const all = [p0, ...mid, p1];
+    // 큰 교차로는 그린 바닥 높이를 따라간다 (갈라지기·합치기만 하는 곳은 두 끝 사이를 곧게)
+    const sf = this.junctions[mv.junction].minor ? null : this.junctionSurface(mv.junction);
     all.forEach((p, i) => {
       pts[2 * i] = p.e;
       pts[2 * i + 1] = p.n;
-      z[i] = p.z;
+      z[i] = sf && i > 0 && i < all.length - 1 ? this.junctionZ(sf, p.e, p.n) : p.z;
     });
     const out = { pts, cum: cumLengths(pts), z };
     this.paths.set(key, out);
@@ -570,4 +653,81 @@ export class CityNet {
     groups.sort((x, y) => wrapAngle(Math.PI / 2 - x.head) - wrapAngle(Math.PI / 2 - y.head));
     return groups.map((x) => x.links);
   }
+}
+
+/** 들로네 삼각분할: 점들의 볼록 껍질을 겹침 없이 덮는 반시계 삼각형들 (점이 몇십 개뿐이라 하나씩 넣는다) */
+export function delaunay(ps: [number, number, number][]): [number, number, number][][] {
+  const n = ps.length;
+  if (n < 3) return [];
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of ps) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  const big = Math.max(x1 - x0, y1 - y0, 1) * 50;
+  const mx = (x0 + x1) / 2;
+  const my = (y0 + y1) / 2;
+  const P: number[][] = [...ps, [mx - big, my - big], [mx + big, my - big], [mx, my + big]];
+  const ccw = (a: number, b: number, c: number) => (P[b][0] - P[a][0]) * (P[c][1] - P[a][1]) - (P[b][1] - P[a][1]) * (P[c][0] - P[a][0]);
+  const tri = (a: number, b: number, c: number): number[] => (ccw(a, b, c) >= 0 ? [a, b, c] : [a, c, b]);
+  // (x, y)가 반시계 삼각형의 외접원 안인지
+  const inCircle = ([a, b, c]: number[], x: number, y: number) => {
+    const ax = P[a][0] - x;
+    const ay = P[a][1] - y;
+    const bx = P[b][0] - x;
+    const by = P[b][1] - y;
+    const cx = P[c][0] - x;
+    const cy = P[c][1] - y;
+    return (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay) + (cx * cx + cy * cy) * (ax * by - bx * ay) > 0;
+  };
+  let tris: number[][] = [[n, n + 1, n + 2]];
+  for (let i = 0; i < n; i++) {
+    const [x, y] = P[i];
+    const bad = tris.filter((t) => inCircle(t, x, y));
+    const edges = new Map<string, [number, number]>();
+    for (const t of bad) {
+      for (let k = 0; k < 3; k++) {
+        const u = t[k];
+        const v = t[(k + 1) % 3];
+        const key = u < v ? `${u},${v}` : `${v},${u}`;
+        if (edges.has(key)) edges.delete(key);
+        else edges.set(key, [u, v]);
+      }
+    }
+    tris = tris.filter((t) => !bad.includes(t));
+    for (const [u, v] of edges.values()) tris.push(tri(u, v, i));
+  }
+  return tris.filter((t) => t.every((k) => k < n) && ccw(t[0], t[1], t[2]) > 1e-6).map((t) => t.map((k) => ps[k]));
+}
+
+/** 점들에 가장 잘 맞는 평면 z = a + b·x + c·y (최소제곱). 점이 한 줄로 서 있으면 평평하게 */
+export function fitPlane(p: [number, number, number][]): [number, number, number] {
+  const n = p.length;
+  const mx = p.reduce((m, q) => m + q[0], 0) / n;
+  const my = p.reduce((m, q) => m + q[1], 0) / n;
+  const mz = p.reduce((m, q) => m + q[2], 0) / n;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  let sxz = 0;
+  let syz = 0;
+  for (const [x, y, z] of p) {
+    const dx = x - mx;
+    const dy = y - my;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+    sxz += dx * (z - mz);
+    syz += dy * (z - mz);
+  }
+  const det = sxx * syy - sxy * sxy;
+  if (Math.abs(det) < 1e-6) return [mz, 0, 0];
+  const b = (sxz * syy - syz * sxy) / det;
+  const c = (syz * sxx - sxz * sxy) / det;
+  return [mz - b * mx - c * my, b, c];
 }

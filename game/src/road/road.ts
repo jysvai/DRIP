@@ -374,7 +374,8 @@ export class Road {
     const p = this.sample(s, scratch);
     out.e = p.e + d * p.tn;
     out.n = p.n - d * p.te;
-    out.z = p.z;
+    // 시내 교차로 바닥은 비탈을 따라 옆으로도 기운다 (옆 차로는 그 자리 바닥 높이에)
+    out.z = this.city?.side ? p.z + sideDz(this.city.side, s, d) : p.z;
     out.heading = p.heading;
     return out;
   }
@@ -509,6 +510,11 @@ export class Road {
     return this.junctions.find((j) => j.s > s);
   }
 
+  /** 시내: 반대편 차도가 이 차도보다 높은 만큼 (m). 분리대로 떨어진 상·하행만 0이 아니다 */
+  oppDzAt(s: number): number {
+    return lerpPoints(this.city?.oppDz, s);
+  }
+
   /** 주변 지형 높이(도로 높이 기준 상대값, m). offsets 열 k, s 위치 */
   terrainRel(s: number, k: number): number {
     const rows = this.terrain.rows;
@@ -523,6 +529,45 @@ export class Road {
 }
 
 const scratch = {} as RoadSample;
+
+/** 가운데에서 옆으로 d m 간 자리가 가운데보다 높은 만큼. 행은 [s, -6m, -3m, +3m, +6m 높이 차], 행 사이는 곧게 */
+function sideDz(r: [number, number, number, number, number][], s: number, d: number): number {
+  if (!r.length || s <= r[0][0] || s >= r[r.length - 1][0] || d === 0) return 0;
+  let lo = 1;
+  let hi = r.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (r[mid][0] < s) lo = mid + 1;
+    else hi = mid;
+  }
+  const a = r[lo - 1];
+  const b = r[lo];
+  const t = b[0] > a[0] ? (s - a[0]) / (b[0] - a[0]) : 0;
+  const k = d < 0 ? 2 : 3;
+  const m = d < 0 ? 1 : 4;
+  const near = a[k] + (b[k] - a[k]) * t;
+  const far = a[m] + (b[m] - a[m]) * t;
+  const ad = Math.abs(d);
+  return ad <= 3 ? (near * ad) / 3 : near + (far - near) * Math.min(1, (ad - 3) / 3);
+}
+
+/** [s, 값] 점들 사이를 곧게 (범위 밖은 끝 값, 없으면 0) */
+function lerpPoints(r: [number, number][] | undefined, s: number): number {
+  if (!r || !r.length) return 0;
+  if (s <= r[0][0]) return r[0][1];
+  let lo = 1;
+  let hi = r.length - 1;
+  if (s >= r[hi][0]) return r[hi][1];
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (r[mid][0] < s) lo = mid + 1;
+    else hi = mid;
+  }
+  const [s0, a] = r[lo - 1];
+  const [s1, b] = r[lo];
+  const t = s1 > s0 ? (s - s0) / (s1 - s0) : 0;
+  return a + (b - a) * t;
+}
 
 /** 앞뒤 w점 이동 평균 (양 끝은 있는 점만) */
 function boxSmooth(v: Float64Array, w: number) {
