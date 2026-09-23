@@ -537,7 +537,8 @@ export class RuleEngine {
         for (const a of agents) {
           if (a.opposite || Math.abs(a.s - f.s) > (a.len + f.len) / 2) continue;
           const lat = Math.abs(a.d - f.d) - (a.width + f.width) / 2;
-          if (lat > 0 && lat < r.nearMiss.lateralGapM) {
+          // 둘 다 서 있는 정체·신호 대기 줄에서 옆 차가 붙어 선 것은 아차사고가 아니다
+          if (lat > 0 && lat < r.nearMiss.lateralGapM && (kmh > 5 || a.v > 1.5)) {
             kind = "side";
             other = a.type.id;
             break;

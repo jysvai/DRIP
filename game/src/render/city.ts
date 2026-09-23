@@ -961,7 +961,7 @@ export class CityScene {
         bd.h = Math.max(7, floors * 3.4);
         bd.glass = bd.h > 42 || (tall > 0.5 && rand() < 0.5);
         bd.tower = bd.h > 50 && rand() < 0.6;
-        bd.base = this.groundZ(cx, cy);
+        bd.base = this.groundAt(cx, cy) + 0.8;
         out.push(bd);
         this.occupy(bd);
       }
@@ -1027,6 +1027,21 @@ export class CityScene {
     const out: number[] = [];
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) out.push(...(this.nodeGrid.get(this.cell(x + dx * 100, y + dy * 100, 100)) ?? []));
     return out;
+  }
+
+  /**
+   * 땅 표면 높이: 교차점 높이를 거리로 섞어 0.8m 내리되, 가장 가까운 도로(다리 빼고)보다 0.6m 아래로.
+   * 도로는 교차점 사이를 곧게 가서, 긴 토막 가운데에서는 옆 골목 교차점으로 섞은 땅이 도로보다 높을 수 있다
+   */
+  private groundAt(x: number, y: number): number {
+    const z = this.groundZ(x, y) - 0.8;
+    const g = this.net.graph;
+    const near = g.nearestEdge(x, y, 45, (e) => !e.bridge);
+    if (!near) return z;
+    const e = near.edge;
+    const t = e.length > 0 ? Math.max(0, Math.min(1, near.u / e.length)) : 0;
+    const rz = g.nodes[e.a].z + (g.nodes[e.b].z - g.nodes[e.a].z) * t;
+    return Math.min(z, rz - 0.6);
   }
 
   /** 땅 높이: 가까운 교차점 높이의 거리 가중 평균 */
@@ -1103,7 +1118,7 @@ export class CityScene {
       for (let j = 0; j <= n; j++) {
         const X = x0 + i * GROUND_CELL;
         const Y = y0 + j * GROUND_CELL;
-        const z = this.groundZ(X, Y) - 0.8;
+        const z = this.groundAt(X, Y);
         idx[i].push(g.v(X - x0, z, -(Y - y0), 0, 1, 0, c, (X + this.ox) / 16, (Y + this.oy) / 16));
       }
     }

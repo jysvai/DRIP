@@ -327,6 +327,16 @@ export class TrafficView {
   /** 도로 위 자리 → this.m (차체 기울기 전) */
   private place(a: Agent) {
     const road = this.road;
+    if (a.pose) {
+      // 시내 도로망 위를 달리는 차: 자리와 방향을 그대로
+      const q = a.pose;
+      this.world.toScene(q.e, q.n, q.z, this.p);
+      this.rs.kappa = q.kappa;
+      this.e.set(0, q.heading, 0);
+      this.q.setFromEuler(this.e);
+      this.m.compose(this.p, this.q, this.sv.set(1, 1, 1));
+      return;
+    }
     const s = Math.max(0, Math.min(road.length - 1, a.opposite ? -a.s : a.s));
     const w = road.toWorld(s, a.d, this.world3);
     road.sample(s, this.rs);
@@ -378,7 +388,7 @@ export class TrafficView {
     return v;
   }
 
-  update(agents: Agent[], opposite: Agent[], time: number, camera: THREE.Vector3, maxDist?: number) {
+  update(agents: Agent[], opposite: Agent[], time: number, camera: THREE.Vector3, maxDist?: number, extra?: Agent[]) {
     const set = this.world.settings;
     const draw = Math.min(maxDist ?? set.drawDistance, set.drawDistance);
     const near2 = set.lodNear * set.lodNear;
@@ -416,6 +426,7 @@ export class TrafficView {
     };
     for (const a of agents) measure(a);
     for (const a of opposite) measure(a);
+    if (extra) for (const a of extra) measure(a);
     // 2) 가까운 차부터 (먼저 그린 차가 뒤차 화소를 가린다)
     list.sort(byDist);
 

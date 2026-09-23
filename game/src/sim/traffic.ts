@@ -3,7 +3,7 @@
 // 돌발상황(고장·사고로 선 차)은 비상등을 켠 채 서 있는 차로 넣고, 옆을 지나는 차는 구경하느라 속도를 줄인다.
 
 import type { Road } from "../road/road";
-import { LANE_WIDTH, Structure } from "../road/road";
+import { Structure } from "../road/road";
 import type { VehicleType } from "../render/vehicleModels";
 import { paletteFor } from "../render/vehicleModels";
 import { designatedLanes, type DriverProfile, type GameConfig } from "./config";
@@ -74,6 +74,20 @@ export interface Agent {
   brakedByPlayer: number;
   /** 고장·사고로 서 있는 차 (움직이지 않는다) */
   parked?: boolean;
+  /** 시내: 경로 밖(도로망 위)을 달리는 차의 자리·방향. 있으면 s·d 대신 이것으로 그린다 */
+  pose?: { e: number; n: number; z: number; heading: number; kappa: number } | null;
+  /** 시내: 적색 신호에 우회전하려고 정지선에 선 시각 (없으면 -1) */
+  hold?: number;
+  /** 지울 차 (다음 정리 때 뺀다) */
+  gone?: boolean;
+}
+
+/** 시내 주행에서 교통에 신호·교차로를 알려 주는 쪽 (city/traffic.ts) */
+export interface TrafficCity {
+  /** 차 앞에서 서야 할 곳까지 거리 (적색 신호 정지선, 교차로를 막은 차). 없으면 Infinity */
+  stopFor(a: Agent, time: number): number;
+  /** 이 차로가 앞에서 끝나는 거리 (차로 감소, 다음 교차로에서 갈 곳이 없는 차로). 없으면 Infinity */
+  laneEnd(lane: number, s: number): number;
 }
 
 export interface PlayerState {
@@ -96,7 +110,7 @@ const TRUCK_PASSING_SPAWN = 0.45;
 const REGION_AHEAD = 2300;
 const MAX_DECEL = 9;
 
-function idm(v: number, v0: number, gap: number, dv: number, a: Agent): number {
+export function idm(v: number, v0: number, gap: number, dv: number, a: Agent): number {
   const vr = v0 > 0.1 ? v / v0 : 2;
   const free = 1 - vr * vr * vr * vr;
   if (gap === Infinity) return a.aMax * free;
@@ -124,6 +138,11 @@ export class Traffic {
   weatherSpeed = 1;
   /** 돌발상황: 플레이어가 가까이 오면 선 차를 놓는다 */
   incidents: Incident[] = [];
+  /** 시내 주행이면 신호·교차로 */
+  city: TrafficCity | null = null;
+  /** 차를 두는 범위 (플레이어 뒤·앞 m). 시내는 건물에 가려 가까이만 둔다 */
+  private behind = REGION_BEHIND;
+  private ahead = REGION_AHEAD;
   private incidentsPlaced = new Set<Incident>();
   private nextId = 1;
   private rng: Rng;
@@ -139,6 +158,16 @@ export class Traffic {
   ) {
     this.rng = new Rng(seed);
     this.setComposition(cfg.traffic.composition);
+  }
+
+  setRegion(behind: number, ahead: number) {
+    this.behind = behind;
+    this.ahead = ahead;
+  }
+
+  /** 시내: 도로망 위를 달릴 새 차 (습관·차종을 같은 방식으로 뽑는다) */
+  create(opposite = false): Agent {
+    return this.make(this.pickType(), 0, 1, 0, opposite);
   }
 
   setComposition(comp: Record<string, number>) {
@@ -224,10 +253,10 @@ export class Traffic {
     return a;
   }
 
-  /** 우리 방향 s 위치에서 반대편 차로 중심 d (반대편 1차로 = 분리대 쪽) */
-  private oppD(lane: number, s: number) {
-    const w = this.road.widthAt(s);
-    return -w / 2 - 3 - (lane - 0.5) * LANE_WIDTH;
+  /** 우리 방향 s 위치에서 반대편 차로 중심 d (반대편 1차로 = 분리대 쪽). 고속도로 분리대는 3m */
+  oppD(lane: number, s: number) {
+    const road = this.road;
+    return -road.widthAt(s) / 2 - road.medianAt(s) - (lane - 0.5) * road.laneWidth;
   }
 
   private desiredSpeed(a: Agent, s: number): number {
@@ -257,8 +286,8 @@ export class Traffic {
     this.agents = [];
     this.opposite = [];
     const road = this.road;
-    const s0 = Math.max(0, player.s - REGION_BEHIND + 50);
-    const s1 = Math.min(road.length - 1, player.s + REGION_AHEAD - 50);
+    const s0 = Math.max(0, player.s - this.behind + 50);
+    const s1 = Math.min(road.length - 1, player.s + this.ahead - 50);
     const spacing = 1000 / this.density;
     const playerLane = road.laneOf(player.d, player.s);
     for (let lane = 1; lane <= 8; lane++) {
@@ -277,7 +306,7 @@ export class Traffic {
     const oppSpacing = spacing / this.cfg.traffic.oppositeDensityFactor;
     for (let lane = 1; lane <= 8; lane++) {
       for (let s = s0 + this.rng.next() * oppSpacing; s < s1; s += oppSpacing * (0.6 + this.rng.next() * 0.8)) {
-        if (lane > road.lanesAt(s) || road.structureAt(s) === Structure.Tunnel) continue;
+        if (lane > road.oppLanesAt(s) || road.structureAt(s) === Structure.Tunnel) continue;
         const a = this.make(this.pickType(), -s, lane, 0, true);
         a.v = this.desiredSpeed(a, s) * 0.9;
         a.d = this.oppD(lane, s);
@@ -420,6 +449,11 @@ export class Traffic {
         const end = this.laneEnd(a.lane, a.s);
         if (end < 400 && a.targetLane === a.lane) acc = Math.min(acc, idm(a.v, v0, Math.max(1, end - a.len / 2), a.v, a));
       }
+      // 시내: 적색 신호 정지선, 교차로를 막은 차
+      if (this.city) {
+        const stop = this.city.stopFor(a, time);
+        if (stop < 300) acc = Math.min(acc, idm(a.v, v0, Math.max(0.1, stop), a.v, a));
+      }
       a.T = T;
       a.aMax = aMax;
       const leader = this.leaderOf(a, a.lane, a.s, !opposite);
@@ -472,6 +506,15 @@ export class Traffic {
 
       // 가로 위치
       const sr = Math.max(0, Math.min(road.length - 1, s));
+      // 시내 반대편: 차로가 줄면 바깥 차로 차는 안쪽으로, 반대편 차도가 없어지면(일방통행) 뺀다
+      if (opposite && road.city) {
+        const n = road.oppLanesAt(sr);
+        if (n === 0 && !road.inJunction(sr)) a.gone = true;
+        else if (n > 0 && a.lane > n && a.targetLane === a.lane) {
+          a.lineNow += this.oppD(a.lane, sr) - this.oppD(n, sr);
+          a.lane = a.targetLane = n;
+        }
+      }
       const center = (lane: number) => (opposite ? this.oppD(lane, sr) : road.laneCenter(lane, sr));
       const wobble = Math.sin(time * 0.35 + a.wander) * 0.12;
       // 차선 물기: 차로를 바꾸지 않을 때 한쪽으로 치우친다 (길 밖 쪽이면 조금만). 차로를 바꿀 때는 서서히 가운데로
@@ -499,10 +542,13 @@ export class Traffic {
   private laneEnd(lane: number, s: number): number {
     const road = this.road;
     let end = Infinity;
-    for (let ds = 0; ds <= 600; ds += 50) {
-      if (road.lanesAt(Math.min(road.length - 1, s + ds)) < lane) {
-        end = ds;
-        break;
+    if (this.city) end = this.city.laneEnd(lane, s);
+    else {
+      for (let ds = 0; ds <= 600; ds += 50) {
+        if (road.lanesAt(Math.min(road.length - 1, s + ds)) < lane) {
+          end = ds;
+          break;
+        }
       }
     }
     for (const z of this.workZones) {
@@ -594,7 +640,7 @@ export class Traffic {
 
   private decideOpposite(a: Agent, v0: number) {
     // 반대편은 보기만 하는 교통이라 간단하게: 오른쪽 차로 선호 + 앞지르기
-    const lanes = 3;
+    const lanes = this.road.city ? this.road.oppLanesAt(Math.max(0, Math.min(this.road.length - 1, -a.s))) : 3;
     const aCur = this.accelIn(a, a.lane, a.s, v0, false);
     for (const dir of [-1, 1] as const) {
       const tl = a.lane + dir;
@@ -629,17 +675,21 @@ export class Traffic {
   /** 범위 밖 차를 지우고, 빈 곳에 새 차를 넣는다 */
   private maintain(player: PlayerState) {
     const road = this.road;
-    const sMin = player.s - REGION_BEHIND;
-    const sMax = player.s + REGION_AHEAD;
-    this.agents = this.agents.filter((a) => a.s > sMin - 100 && a.s < sMax + 100 && a.s < road.length - 5);
-    this.opposite = this.opposite.filter((a) => -a.s > sMin - 100 && -a.s < sMax + 100 && -a.s > 5);
+    const sMin = player.s - this.behind;
+    const sMax = player.s + this.ahead;
+    this.agents = this.agents.filter((a) => !a.gone && a.s > sMin - 100 && a.s < sMax + 100 && a.s < road.length - 5);
+    this.opposite = this.opposite.filter((a) => !a.gone && -a.s > sMin - 100 && -a.s < sMax + 100 && -a.s > 5);
     if (!(this.density > 0)) return;
     const spacing = 1000 / this.density;
 
     const spawnLane = (list: Agent[], opposite: boolean, lane: number, at: number, ahead: boolean) => {
       const sPos = Math.max(1, Math.min(road.length - 2, at));
-      if (lane > road.lanesAt(sPos)) return;
+      if (lane > (opposite ? road.oppLanesAt(sPos) : road.lanesAt(sPos))) return;
+      // 길 처음·끝에 붙어 있으면 범위가 잘려 플레이어 자리에 놓일 수 있다
+      if (!opposite && Math.abs(sPos - player.s) < 30) return;
       if (opposite && road.structureAt(sPos) === Structure.Tunnel) return;
+      // 시내: 교차로 곡선 위에는 새 차를 두지 않는다
+      if (road.city && road.inJunction(sPos)) return;
       const coord = opposite ? -sPos : sPos;
       // 그 차로에서 가장 가까운 차와 거리
       let nearest = Infinity;
@@ -669,7 +719,7 @@ export class Traffic {
   private placeIncidents(player: PlayerState) {
     const road = this.road;
     for (const i of this.incidents) {
-      if (this.incidentsPlaced.has(i) || i.s - player.s > REGION_AHEAD - 100 || i.s < player.s + 150) continue;
+      if (this.incidentsPlaced.has(i) || i.s - player.s > this.ahead - 100 || i.s < player.s + 150) continue;
       this.incidentsPlaced.add(i);
       const lanes = road.lanesAt(i.s);
       incidentVehicleS(i).forEach((s, k) => {
