@@ -306,4 +306,57 @@ describe("시내 교통 (강동역 → 삼원타워)", () => {
       expect(r.overlaps / Math.max(1, r.samples)).toBeLessThan(0.002);
       expect(r.redRuns).toBeLessThanOrEqual(Math.ceil(r.crossings * 0.03));
     }, 60_000);
+
+  it("고가·지하차도로 위아래를 지나는 차와는 (평면으로 겹쳐도) 부딪히지 않는다", () => {
+    let time = 0;
+    const traffic = new Traffic(road, makeConfig(), 11);
+    traffic.density = 15;
+    const ct = new CityTraffic(
+      net,
+      signals,
+      road,
+      traffic,
+      () => 8 * 3600 + time,
+      new Rng(34),
+    );
+    traffic.city = ct;
+    traffic.setRegion(300, 900);
+    const s = 700;
+    const player: PlayerState = { s, d: 60, v: 0, len: 4.8, width: 1.9 };
+    const w = road.toWorld(s, 0);
+    const [ox, oy] = net.graph.origin;
+    const far: PlayerBody = {
+      s,
+      x: w.e - ox,
+      y: w.n - oy,
+      hx: 1,
+      hy: 0,
+      v: 0,
+      len: 0.1,
+      w: 0.1,
+    };
+    traffic.fill(player);
+    const cars = (ct as unknown as { cars: { a: Agent }[] }).cars;
+    for (let i = 0; i < 30 * 60 && !cars.some((f) => f.a.pose); i++) {
+      time = i / 30;
+      traffic.update(1 / 30, player, time);
+      ct.update(1 / 30, time, far);
+    }
+    const q = cars.find((f) => f.a.pose)!.a.pose!;
+    const at = (z?: number): PlayerBody => ({
+      s,
+      x: q.e - ox,
+      y: q.n - oy,
+      z,
+      hx: Math.cos(q.heading),
+      hy: Math.sin(q.heading),
+      v: 0,
+      len: 4.8,
+      w: 1.9,
+    });
+    expect(ct.hit(at(q.z))).not.toBeNull();
+    expect(ct.hit(at(undefined))).not.toBeNull();
+    expect(ct.hit(at(q.z + 7))).toBeNull();
+    expect(ct.hit(at(q.z - 7))).toBeNull();
+  }, 60_000);
 });

@@ -1,5 +1,5 @@
 // 시내·국도 도로 그래프 (pipeline/osm_city.py가 만든 public/city/<region>.json): 교차로(node)와 그 사이 도로 토막(edge), 찾을 곳.
-// 국도 지역(kind "rural")은 지형 격자(dem)·물 덮임과 도로 토막 높이 굴곡(zs)이 함께 온다.
+// 국도 지역(kind "rural")은 지형 격자(dem)·물 덮임이 함께 온다. 도로 토막 높이 굴곡(zs)은 두 지역 모두 (고가·지하차도, 국도는 지형)
 // 좌표는 파일 원점(UTM-K) 기준 m. 절대 좌표는 x + origin[0], y + origin[1].
 
 import type { Poly } from "./geom";
@@ -247,6 +247,18 @@ export class CityGraph {
   }
 
   /** 가장 가까운 도로 토막 위 점 (filter를 통과하는 것만, radius m 안) */
+  /** 토막 e에서 (x, y)의 radius 안에 드는 선분마다 가장 가까운 자리 (굽이진 산길은 한 토막의 여러 곳이 가깝다) */
+  forEachNear(e: CityEdge, x: number, y: number, radius: number, fn: (u: number, dist: number) => void) {
+    const p = e.pts;
+    let acc = 0;
+    for (let i = 0; i + 3 < p.length; i += 2) {
+      const len = Math.hypot(p[i + 2] - p[i], p[i + 3] - p[i + 1]);
+      const r = segmentNearest(x, y, p[i], p[i + 1], p[i + 2], p[i + 3]);
+      if (r.d2 <= radius * radius) fn(acc + r.t * len, Math.sqrt(r.d2));
+      acc += len;
+    }
+  }
+
   nearestEdge(x: number, y: number, radius: number, filter: (e: CityEdge) => boolean = () => true): { edge: CityEdge; u: number; dist: number } | null {
     let best: { edge: CityEdge; u: number; dist: number } | null = null;
     for (const id of this.edgesIn(x - radius, y - radius, x + radius, y + radius)) {

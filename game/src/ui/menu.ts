@@ -15,7 +15,7 @@ import type { PedalMode } from "../sim/input";
 import { digestForLegs, playDistance } from "../sim/pacing";
 import { searchCityPlaces, type CityGraph, type CityPlace } from "../city/graph";
 import type { CityNet } from "../city/net";
-import { findCityRoute, type CityRoutePlan } from "../city/route";
+import { drivable, findCityRoute, type CityRoutePlan } from "../city/route";
 import { loadCity } from "../city/load";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
@@ -527,7 +527,8 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       let items: CityPlace[] = [];
       let active = 0;
       const show = () => {
-        items = city ? searchCityPlaces(city.graph.places, input.value, 8) : [];
+        const c = city;
+        items = c ? searchCityPlaces(c.graph.places, input.value, 30).filter((p) => drivable(c.net, p)).slice(0, 8) : [];
         active = 0;
         list.innerHTML = items.map((p, i) => `<li role="option" data-i="${i}" class="${i === active ? "on" : ""}"><b>${esc(p.name)}</b><small>${CITY_KIND[p.kind] ?? p.kind}</small></li>`).join("");
         list.style.display = items.length ? "" : "none";

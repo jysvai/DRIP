@@ -439,7 +439,7 @@ export class Game {
     const [ox, oy] = this.city!.net.graph.origin;
     const w = this.road.toWorld(p.s, p.d, this.tmpW);
     const h = w.heading + p.theta;
-    return { s: p.s, x: w.e - ox, y: w.n - oy, hx: Math.cos(h), hy: Math.sin(h), v: p.vx, len: p.spec.length, w: p.spec.width };
+    return { s: p.s, x: w.e - ox, y: w.n - oy, z: w.z, hx: Math.cos(h), hy: Math.sin(h), v: p.vx, len: p.spec.length, w: p.spec.width };
   }
 
   /** 경로의 다음 노선으로 넘어가면 그 노선의 교통량으로 바꾼다 (새로 나타나는 차부터 적용) */

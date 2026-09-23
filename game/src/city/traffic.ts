@@ -117,6 +117,8 @@ export interface PlayerBody {
   s: number;
   x: number;
   y: number;
+  /** 차도 높이 (m). 고가·지하차도로 위아래를 지나는 차와는 부딪히지 않는다 */
+  z?: number;
   hx: number;
   hy: number;
   v: number;
@@ -1152,6 +1154,7 @@ export class CityTraffic implements TrafficCity {
       const dx = f.x - p.x;
       const dy = f.y - p.y;
       if (dx * dx + dy * dy > 100) continue;
+      if (p.z !== undefined && f.a.pose && Math.abs(f.a.pose.z - p.z) > 3) continue;
       if (
         obbOverlap(dx, dy, phx, phy, p.len, p.w, f.hx, f.hy, f.a.len, f.a.width)
       )

@@ -583,6 +583,7 @@ export class CityScene {
     const median = new Float64Array(n);
     const sw = new Float64Array(n);
     const kind = new Uint8Array(n); // 0 왕복 한 줄, 1 짝 있음, 2 일방
+    const onBridge = new Uint8Array(n);
     for (let k = 0; k < n; k++) {
       const s = geo.cum[k];
       let sum = 0;
@@ -593,6 +594,7 @@ export class CityScene {
       }
       width[k] = (sum / cnt) * CITY_LANE;
       const sp = net.spanAt(l.id, s / sc);
+      onBridge[k] = sp.bridge ? 1 : 0;
       if (sp.twoWay) {
         kind[k] = 0;
         leftX[k] = CENTER_GAP / 2 + 0.02;
@@ -708,7 +710,14 @@ export class CityScene {
       if (!this.rural) {
         strip(b.walk, k0, k1, curbD, (k) => curbD(k) + sw[k], 0.15, walkC, true, wA, wB);
         wall(b.concrete, k0, k1, curbD, 0.0, 0.15, -1, curbC, wA, wB);
-        wall(b.concrete, k0, k1, (k) => curbD(k) + sw[k], -2.5, 0.15, 1, curbC, wA, wB);
+        // 보도 바깥·한 방향 차도 왼쪽 가장자리: 다리는 상판 두께, 땅 위 길은 옹벽까지 (고가로 오르는 길·지하차도 옆 윗길. 땅이 높으면 묻힌다)
+        const skirtC = new THREE.Color(0.62, 0.62, 0.6);
+        const leftEdge = (kk: number) => -width[kk] / 2 - (kind[kk] === 1 && median[kk] >= 0.45 ? median[kk] + 0.02 : leftX[kk]);
+        for (let k = k0; k < k1; k++) {
+          const deep = onBridge[k] ? -2.5 : -8;
+          wall(b.concrete, k, k + 1, (kk) => curbD(kk) + sw[kk], deep, 0.15, 1, curbC, wA, wB);
+          if (kind[k] !== 0) wall(b.concrete, k, k + 1, leftEdge, deep, kind[k] === 1 && median[k] >= 0.45 ? 0.18 : 0.02, -1, skirtC, mA, mB);
+        }
       } else {
         // 국도: 읍내는 보도, 밖은 연석 없는 포장 갓길
         const shoulderC = new THREE.Color(0.5, 0.5, 0.49);
@@ -1139,16 +1148,24 @@ export class CityScene {
   }
 
   /**
-   * 땅 표면 높이: 교차점 높이를 거리로 섞어 0.8m 내리되, 가장 가까운 도로(다리 빼고)보다 0.6m 아래로.
-   * 도로는 교차점 사이를 곧게 가서, 긴 토막 가운데에서는 옆 골목 교차점으로 섞은 땅이 도로보다 높을 수 있다
+   * 땅 표면 높이: 교차점 높이를 거리로 섞어 0.8m 내리되, 도로(다리 빼고)보다 0.6m 아래로.
+   * 도로는 교차점 사이를 곧게 가서, 긴 토막 가운데에서는 옆 골목 교차점으로 섞은 땅이 도로보다 높을 수 있다.
+   * 이 점과 삼각형으로 이어지는 땅(대각선까지 한 칸 반)이 걸친 도로 가운데 가장 낮은 것에 맞춘다:
+   * 지하차도로 내려가는 길 옆 칸이 윗길 높이면 그 사이 땅이 내려간 차도를 덮는다. 높은 쪽 차도 가장자리는 옹벽으로 보인다
    */
   private groundAt(x: number, y: number): number {
     if (this.dem) return this.ruralGround(x, y).z;
-    const z = this.groundZ(x, y) - 0.8;
     const g = this.net.graph;
-    const near = g.nearestEdge(x, y, 45, (e) => !e.bridge);
-    if (!near) return z;
-    return Math.min(z, g.edgeZ(near.edge, near.u) - 0.6);
+    let z = this.groundZ(x, y) - 0.8;
+    const R = GROUND_CELL * 1.5;
+    for (const id of g.edgesIn(x - R - 25, y - R - 25, x + R + 25, y + R + 25)) {
+      const e = g.edges[id];
+      if (e.bridge) continue;
+      g.forEachNear(e, x, y, roadHalf(e) + R, (u) => {
+        z = Math.min(z, this.drawnZ(e, u) - 0.6);
+      });
+    }
+    return z;
   }
 
   // ---------------- 국도 땅 ----------------
@@ -1162,7 +1179,8 @@ export class CityScene {
     const g = this.net.graph;
     let best: { edge: CityEdge; u: number; dist: number } | null = null;
     // 이 점과 삼각형으로 이어지는 땅(대각선까지 한 칸 반, 30m)이 걸친 도로 가운데 가장 낮은 것보다 땅이 높으면 그 도로를 덮는다.
-    // 깎은 비탈을 지나는 길(점 하나는 길 위, 옆 점은 산 쪽으로 올라간 곳)이나 높이가 다른 상·하행 차도 사이가 그렇다.
+    // 깎은 비탈을 지나는 길(점 하나는 길 위, 옆 점은 산 쪽으로 올라간 곳)이나 높이가 다른 상·하행 차도 사이, 굽이진 산길의 아래 굽이가 그렇다
+    // (한 토막의 가까운 곳을 모두 본다: 가장 가까운 곳 하나만 보면 위 굽이 높이로 깔려 아래 굽이를 덮는다).
     // 그 아래로 맞추고, 높은 쪽 차도 가장자리는 옹벽으로 보인다
     let cap = Infinity;
     for (const id of g.edgesIn(x - 60, y - 60, x + 60, y + 60)) {
@@ -1171,7 +1189,9 @@ export class CityScene {
       const r = g.nearestEdge(x, y, 60, (f) => f.id === id);
       if (!r) continue;
       if (!best || r.dist < best.dist) best = r;
-      if (r.dist - roadHalf(e) < GROUND_CELL * 1.5) cap = Math.min(cap, this.drawnZ(e, r.u) - 0.35);
+      g.forEachNear(e, x, y, roadHalf(e) + GROUND_CELL * 1.5, (u) => {
+        cap = Math.min(cap, this.drawnZ(e, u) - 0.35);
+      });
     }
     if (!best) return { z: zd, road: Infinity };
     const d = best.dist - roadHalf(best.edge);

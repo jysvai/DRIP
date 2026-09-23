@@ -504,12 +504,14 @@ export class CityNet {
       z[k] = g.edgeZ(e, (d.fwd ? t : 1 - t) * e.length);
     }
     const w = Math.round(12 / GEOM_STEP);
+    // 양 끝으로 갈수록 창을 양쪽 같게 줄인다 (한쪽만 잘린 창은 끝 높이를 안쪽으로 끌어 교차점에서 이웃 링크와 층이 진다)
     const smooth = (src: Float64Array, win: number) => {
       const out = new Float64Array(src.length);
       for (let k = 0; k < src.length; k++) {
         let sum = 0;
         let cnt = 0;
-        for (let q = Math.max(0, k - win); q <= Math.min(src.length - 1, k + win); q++) {
+        const r = Math.min(win, k, src.length - 1 - k);
+        for (let q = k - r; q <= k + r; q++) {
           sum += src[q];
           cnt++;
         }

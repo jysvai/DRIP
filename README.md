@@ -34,7 +34,7 @@
 | `pipeline/` | 데이터 수집·가공 스크립트 (Python) |
 | `game/` | 운전 게임 (Vite + TypeScript + three.js). 사이트의 `/play/`로 배포 |
 | `game/public/roads/` | 전국 고속도로 주행선 129개 (`pipeline/osm_roads.py`)와 도로망 `network.json` (분기점에서 갈아타는 곳 560곳, `pipeline/network.py`) |
-| `game/public/city/` | 시내 도로망 `seoul.json` (교차점 1만 3천여 곳·도로 토막 1만 8천여 개·신호 2,481곳·역·건물 이름 5,408곳), 국도 도로망 `gyeonggi_east.json` (지형 격자·물 포함). `pipeline/osm_city.py` |
+| `game/public/city/` | 시내 도로망 `seoul.json` (교차점 1만 3천여 곳·도로 토막 1만 8천여 개·신호 2,481곳·역·건물 이름 5,408곳), 국도 도로망 `gyeonggi_east.json` (지형 격자·물 포함). `pipeline/osm_city.py`, 높이는 `pipeline/city_heights.py` (다리·터널 잇기, 기울기 상한, 교차로 눕히기, 고가·지하차도 위아래 벌리기) |
 | `game/public/data/` | 차종 79가지, 운전 습관, 교통 기본값, 한국 법규, 고속도로 단속 카메라 (JSON, 코드 수정 없이 바꿀 수 있음. `game/DATA.md` 참고) |
 | `game/public/traffic/latest.json` | 전날 실제 교통 (주행선별 시간대 밀도·속도·차종 구성). `pipeline/traffic_ex.py`가 만든다 |
 | `supabase/` | 주행 기록 DB 스키마 (브라우저 키는 넣기만 가능) |

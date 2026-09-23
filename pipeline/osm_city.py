@@ -16,7 +16,7 @@
 그래프
   node: 교차로(도로 두 개 이상이 만나는 점)나 막다른 끝. [x, y, z(m), 신호(0/1), 이어진 도로 수]
   edge: node a → b 사이 도로 한 토막. 좌표는 원점 기준 0.1m 정수, 1m 오차로 줄인 꺾은선.
-        cls(도로 등급), lanes(한 방향 차로 수), speed(제한속도), oneway(1이면 a→b만), name, bridge, tunnel
+        cls(도로 등급), lanes(한 방향 차로 수), speed(제한속도), oneway(1이면 a→b만), name, bridge, tunnel, sep, zs(높이 굴곡)
 
 신호: OSM 신호등이 교차로 30m 안에 있거나, 대로·로(primary·secondary)끼리 만나는 교차로면 신호가 있는 것으로 본다
       (OSM에는 서울 신호등의 일부만 들어 있다). 차로 수·제한속도가 없는 도로는 등급별 기본값 (안전속도 5030: 간선 50km/h).
@@ -26,6 +26,9 @@
 차로 수: 한 방향 도로에 왕복 차로 수를 적은 경우가 있어 등급별 상한으로 자른다.
 국도 지역(dem): 도로 토막 높이는 40m마다 지형을 따라가고(등급별 기울기 상한, 다리·터널은 양 끝 사이를 곧게), 지역 전체에 지형 격자(dem m 간격, 0.1m 정수를
       행마다 앞 값과의 차로)와 물(강·호수) 덮임(0~8)을 같은 격자로 넣는다. 게임이 산·들·강을 그린다.
+높이 다듬기(city_heights.py, 두 지역 모두): 다리·터널 안은 양 끝 사이를 잇고, 등급별 기울기 상한으로 솟은 점(빌딩이 섞인 지형)을 깎고, 교차로 앞과
+      한 교차로로 묶이는 교차점들을 눕히고, 교차점 없이 겹쳐 지나는 고가·지하차도는 위·아래 차도를 6.5m 벌린다.
+      zs: 토막 높이 굴곡 (a→b 고른 간격, 0.1m 정수. 0이면 양 끝 교차점 높이 사이를 곧게).
 좌표는 UTM-K(EPSG:5179) 미터. 도로 데이터 © OpenStreetMap contributors (ODbL).
 """
 
@@ -43,6 +46,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from pyproj import Transformer
 
+from city_heights import settle
 from osm_roads import OVERPASS_URLS, USER_AGENT, Terrain, parse_lanes, parse_speed
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,6 +253,13 @@ def area_polygons(osm: dict, keep) -> list[tuple[list, list]]:
     return out
 
 
+def layer_of(tags: dict) -> int:
+    try:
+        return max(-5, min(5, int(float(tags.get("layer", "0").split(";")[0]))))
+    except ValueError:
+        return 0
+
+
 def lanes_per_direction(tags: dict, cls: str, oneway: bool) -> int:
     default = CLASS_INFO[cls][1]
     fwd = parse_lanes(tags.get("lanes:forward"))
@@ -376,6 +387,7 @@ def build(region: str, refresh: bool):
                             "ref": t.get("ref", ""),
                             "bridge": t.get("bridge", "no") not in ("no", ""),
                             "tunnel": t.get("tunnel", "no") not in ("no", ""),
+                            "layer": layer_of(t),
                         })
                         deg[a] += 1
                         deg[b] += 1
@@ -475,7 +487,7 @@ def build(region: str, refresh: bool):
                 found.append(best)
         ed["sep"] = round(float(np.median(found)), 1) if mine and len(found) >= max(1, len(mine) // 2) else -1.0
 
-    # 고도: 교차로마다 지형, 토막 안은 두 끝 사이를 곧게 (다리는 강 위로, 터널은 산 속으로)
+    # 고도: 교차로마다 지형 (다리·터널 안, 기울기, 입체 교차는 아래 높이 다듬기에서)
     terrain = Terrain()
     lls = np.array(node_ll)
     # 국도: 분리대로 나뉜 상·하행(짝 있는 한 방향 도로)은 두 차도 가운데(분리대) 줄의 지형을 함께 쓴다.
@@ -564,6 +576,13 @@ def build(region: str, refresh: bool):
                 n = max(2, int(round(u[-1] / PROFILE_STEP)) + 1)
                 profiles[k] = [q(v) for v in np.interp(np.linspace(0.0, u[-1], n), u, zs)]
 
+    # 높이 다듬기: 다리·터널 안은 양 끝 사이로, 기울기 상한, 고가·지하차도는 위·아래 차도를 벌린다 (city_heights.py)
+    z, profiles, st = settle(node_xy, z, edges, profiles, PROFILE_STEP, [deg[i] for i in range(len(node_xy))], 1.5 if R["dem"] else 1.0)
+    print(
+        f"높이 다듬기: 점 {st['samples']}개 (다리·터널 안 {st['free']}), 1m 넘게 옮긴 점 {st['moved_1m']} (최대 {st['moved_max']:.1f}m),"
+        f" 겹쳐 지나는 곳 {st['crossings']} 중 위·아래가 정해진 {st['separated']}, 올리고 내린 점 {st['lifted']} ({st['rounds']}번), 덜 벌어진 곳 {st['short_left']}"
+    )
+
     # 국도: 지형 격자와 물 덮임
     dem = None
     if R["dem"]:
@@ -650,8 +669,7 @@ def build(region: str, refresh: bool):
         for x, y in pts[1:-1]:
             flat += [q(x), q(y)]
         row = [ed["a"], ed["b"], flat, round(ed["len"], 1), ed["cls"], ed["lanes"], ed["speed"], int(ed["oneway"]), ed["name"], ed["ref"], int(ed["bridge"]), int(ed["tunnel"]), ed["sep"]]
-        if R["dem"]:
-            row.append(profiles.get(len(out_edges), 0))
+        row.append(profiles.get(len(out_edges), 0))
         out_edges.append(row)
 
     # 찾을 곳: 이름이 같으면 하나만 (역은 출입구·승강장이 여러 점이라 가운데로)
@@ -674,7 +692,7 @@ def build(region: str, refresh: bool):
         "origin": [float(origin[0]), float(origin[1])],
         "scale": 0.1,
         "nodeFields": ["x", "y", "z", "signal", "degree"],
-        "edgeFields": ["a", "b", "pts", "length", "cls", "lanes", "speed", "oneway", "name", "ref", "bridge", "tunnel", "sep"] + (["zs"] if R["dem"] else []),
+        "edgeFields": ["a", "b", "pts", "length", "cls", "lanes", "speed", "oneway", "name", "ref", "bridge", "tunnel", "sep", "zs"],
         "classes": {"m": "도시고속도로", "t": "자동차전용·간선", "p": "대로", "s": "로", "r": "길", "ml": "연결로", "tl": "연결로", "pl": "연결로", "sl": "연결로", "rl": "연결로"},
         "nodes": out_nodes,
         "nodeNames": [[i, name] for i, name in sorted(node_names.items())],

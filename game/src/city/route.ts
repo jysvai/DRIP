@@ -95,16 +95,121 @@ interface Snap {
   dist: number;
 }
 
-/** 장소에서 가까운 링크 자리 몇 곳 (양방향·중앙분리 도로 양쪽) */
-function snaps(net: CityNet, x: number, y: number, radius = SNAP_RADIUS): Snap[] {
+/**
+ * 출발·도착을 붙일 수 있는 링크. 서로 오갈 수 있는 가장 큰 묶음(강한 연결 요소)으로 나갈 수 있어야 출발(leave),
+ * 그 묶음에서 들어올 수 있어야 도착(reach). 지역 경계에서 잘린 도로 조각이나 한 방향 막다른 길에 붙이면 길을 찾지 못한다
+ * (예: 경기 동부의 위례·광나루한강공원). 막다른 산골 길(용문사)은 끝에서 돌 수 없어 묶음 밖이지만 들어가고 나올 수 있다
+ */
+const reachCache = new WeakMap<CityNet, { leave: Uint8Array; reach: Uint8Array }>();
+export function snapLinks(net: CityNet): { leave: Uint8Array; reach: Uint8Array } {
+  const have = reachCache.get(net);
+  if (have) return have;
+  const main = mainLinks(net);
+  const L = net.links.length;
+  const rural = net.graph.kind === "rural";
+  const back: number[][] = Array.from({ length: L }, () => []);
+  for (let i = 0; i < L; i++) {
+    if (!routable(net.links[i].cls, rural)) continue;
+    for (const m of net.movementsFrom(i)) if (routable(net.links[m.to].cls, rural)) back[m.to].push(i);
+  }
+  const spread = (fwd: boolean) => {
+    const seen = Uint8Array.from(main);
+    const todo: number[] = [];
+    for (let i = 0; i < L; i++) if (main[i]) todo.push(i);
+    while (todo.length) {
+      const i = todo.pop()!;
+      const nxt = fwd ? net.movementsFrom(i).map((m) => m.to) : back[i];
+      for (const j of nxt) {
+        if (seen[j] || !routable(net.links[j].cls, rural)) continue;
+        seen[j] = 1;
+        todo.push(j);
+      }
+    }
+    return seen;
+  };
+  const out = { leave: spread(false), reach: spread(true) };
+  reachCache.set(net, out);
+  return out;
+}
+
+const mainCache = new WeakMap<CityNet, Uint8Array>();
+/** 길찾기 링크 가운데 서로 오갈 수 있는 가장 큰 묶음 (강한 연결 요소) */
+export function mainLinks(net: CityNet): Uint8Array {
+  const have = mainCache.get(net);
+  if (have) return have;
+  const L = net.links.length;
+  const rural = net.graph.kind === "rural";
+  const ok = (i: number) => routable(net.links[i].cls, rural);
+  const next = (i: number) => net.movementsFrom(i).map((m) => m.to).filter(ok);
+  // 타잔 (되부름 없이)
+  const index = new Int32Array(L).fill(-1);
+  const low = new Int32Array(L);
+  const onStack = new Uint8Array(L);
+  const comp = new Int32Array(L).fill(-1);
+  const stack: number[] = [];
+  const size: number[] = [];
+  let counter = 0;
+  for (let root = 0; root < L; root++) {
+    if (index[root] >= 0 || !ok(root)) continue;
+    const work: [number, number[], number][] = [[root, next(root), 0]];
+    index[root] = low[root] = counter++;
+    stack.push(root);
+    onStack[root] = 1;
+    while (work.length) {
+      const top = work[work.length - 1];
+      const [v, out] = top;
+      if (top[2] < out.length) {
+        const w = out[top[2]++];
+        if (index[w] < 0) {
+          index[w] = low[w] = counter++;
+          stack.push(w);
+          onStack[w] = 1;
+          work.push([w, next(w), 0]);
+        } else if (onStack[w]) low[v] = Math.min(low[v], index[w]);
+        continue;
+      }
+      work.pop();
+      if (work.length) {
+        const u = work[work.length - 1][0];
+        low[u] = Math.min(low[u], low[v]);
+      }
+      if (low[v] === index[v]) {
+        const c = size.length;
+        let n = 0;
+        for (;;) {
+          const w = stack.pop()!;
+          onStack[w] = 0;
+          comp[w] = c;
+          n++;
+          if (w === v) break;
+        }
+        size.push(n);
+      }
+    }
+  }
+  let big = 0;
+  for (let c = 1; c < size.length; c++) if (size[c] > size[big]) big = c;
+  const main = new Uint8Array(L);
+  for (let i = 0; i < L; i++) main[i] = comp[i] === big && size.length ? 1 : 0;
+  mainCache.set(net, main);
+  return main;
+}
+
+/**
+ * 장소에서 가까운 링크 자리 몇 곳 (양방향·중앙분리 도로 양쪽). 출발(leave)·도착(reach)으로 쓸 수 있는 링크만.
+ * 자동차전용·간선(t)은 1.5km 안에 다른 길이 없을 때만 (국도 지역의 역은 국도 옆에 있기도 하다: 국수역)
+ */
+function snaps(net: CityNet, x: number, y: number, role: "leave" | "reach", radius = SNAP_RADIUS, allowT = false): Snap[] {
   const g = net.graph;
   const out: Snap[] = [];
+  const main = snapLinks(net)[role];
   const cand = g.edgesIn(x - radius, y - radius, x + radius, y + radius);
   let best = Infinity;
   const found: { edge: number; u: number; dist: number }[] = [];
   for (const id of cand) {
     const e = g.edges[id];
-    if (!routable(e.cls, g.kind === "rural") || e.cls === "t" || e.cls.endsWith("l")) continue;
+    if (!routable(e.cls, g.kind === "rural") || (e.cls === "t" && !allowT) || e.cls.endsWith("l")) continue;
+    if (!main[net.dirLink[id * 2]] && !main[net.dirLink[id * 2 + 1]]) continue;
     const r = g.nearestEdge(x, y, radius, (f) => f.id === id);
     if (!r) continue;
     found.push({ edge: id, u: r.u, dist: r.dist });
@@ -116,7 +221,7 @@ function snaps(net: CityNet, x: number, y: number, radius = SNAP_RADIUS): Snap[]
     const e = g.edges[f.edge];
     for (const fwd of [true, false]) {
       const lid = net.dirLink[f.edge * 2 + (fwd ? 0 : 1)];
-      if (lid < 0) continue;
+      if (lid < 0 || !main[lid]) continue;
       const l = net.links[lid];
       const sp = l.spans.find((s) => s.edge === f.edge)!;
       const u = sp.u0 + (fwd ? f.u : e.length - f.u);
@@ -124,8 +229,20 @@ function snaps(net: CityNet, x: number, y: number, radius = SNAP_RADIUS): Snap[]
     }
   }
   // 국도 지역의 명소는 큰길에서 멀 수 있다 (예: 두물머리는 좁은 마을길 끝)
-  if (!out.length && radius < SNAP_FAR) return snaps(net, x, y, SNAP_FAR);
+  if (!out.length && radius < SNAP_FAR) return snaps(net, x, y, role, SNAP_FAR, allowT);
+  if (!out.length && !allowT) return snaps(net, x, y, role, SNAP_RADIUS, true);
   return out;
+}
+
+const placeCache = new WeakMap<CityNet, Map<string, boolean>>();
+/** 차로 가고 나올 수 있는 곳인지 (산봉우리·지역 밖으로만 이어진 동네는 찾기 목록에서 뺀다) */
+export function drivable(net: CityNet, p: { name: string; x: number; y: number }): boolean {
+  let m = placeCache.get(net);
+  if (!m) placeCache.set(net, (m = new Map()));
+  const key = `${p.name}|${Math.round(p.x)}|${Math.round(p.y)}`;
+  let ok = m.get(key);
+  if (ok === undefined) m.set(key, (ok = snaps(net, p.x, p.y, "leave").length > 0 && snaps(net, p.x, p.y, "reach").length > 0));
+  return ok;
 }
 
 function linkSpeed(net: CityNet, id: number): number {
@@ -136,8 +253,8 @@ function linkSpeed(net: CityNet, id: number): number {
 
 /** 두 곳 사이 가장 빠른 길 (시내 도로만). 못 찾으면 null */
 export function findCityRoute(net: CityNet, from: CityPlace | { name: string; x: number; y: number }, to: CityPlace | { name: string; x: number; y: number }): CityRoutePlan | null {
-  const starts = snaps(net, from.x, from.y);
-  const goals = snaps(net, to.x, to.y);
+  const starts = snaps(net, from.x, from.y, "leave");
+  const goals = snaps(net, to.x, to.y, "reach");
   if (!starts.length || !goals.length) return null;
   const L = net.links.length;
   const rural = net.graph.kind === "rural";
