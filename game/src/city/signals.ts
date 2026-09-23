@@ -1,5 +1,5 @@
 // 교차로 신호: 서울 간선도로에 흔한 동시신호.
-//   주도로 직진(+우회전) → 주도로 좌회전(보호) → 교차도로 직진 → 교차도로 좌회전, 각 끝에 황색 3초·전적색 2초.
+//   주도로 직진(+우회전) → 주도로 좌회전(보호) → 교차도로 직진 → 교차도로 좌회전, 각 끝에 황색(3~5초)·전적색 2초.
 //   맞은편이 없는 접근로(삼거리의 가지)는 직진·좌회전을 한 현시에 준다.
 // 등화: 가로형 4색 [적색 | 황색 | 녹색 좌회전 화살표 | 녹색]. 우회전은 신호와 상관없이 (적색이면 일시정지 뒤) 할 수 있다.
 // 교차로마다 주기 안 시작 시각(offset)을 교차로 번호로 흩뜨린다 (연동 신호는 아직 없다).
@@ -7,8 +7,17 @@
 import type { CityNet, Turn } from "./net";
 import { wrapAngle } from "./geom";
 
+/** 황색 시간 기본값 (s): 50km/h 길 */
 export const YELLOW = 3;
 export const ALL_RED = 2;
+
+/**
+ * 황색 시간 (s): 인지·반응 1초 + 접근 속도에서 3.05m/s²로 서는 시간 (ITE 황색 시간 식), 3~5초.
+ * 50km/h 3초, 60~70km/h 4초, 80km/h 5초. 빠른 국도에서 설 수도 지나갈 수도 없는 구간(딜레마 구간)이 생기지 않게
+ */
+export function yellowFor(kmh: number): number {
+  return Math.max(YELLOW, Math.min(5, Math.round(1 + kmh / 3.6 / (2 * 3.05))));
+}
 
 type PhaseKind = "S" | "L" | "SL";
 
@@ -17,6 +26,8 @@ export interface Phase {
   /** 이 현시에 가는 접근로 (approaches 번호) */
   approaches: number[];
   green: number;
+  /** 황색 시간 (s) */
+  yellow: number;
   /** 주기 안에서 녹색이 시작하는 시각 (s) */
   start: number;
 }
@@ -85,6 +96,7 @@ export class Signals {
     const head = (a: number) => net.links[approaches[a][0]].headIn;
     const best = (a: number) => Math.max(...approaches[a].map((l) => rank(net.links[l].cls)));
     const cls = (a: number) => approaches[a].map((l) => net.links[l].cls).sort((x, y) => rank(y) - rank(x))[0];
+    const yellow = (axis: number[]) => yellowFor(Math.max(...axis.flatMap((a) => approaches[a].map((l) => net.links[l].speed))));
     // 맞은편 접근로끼리 짝 (방향 차이 180°±40°)
     const axes: number[][] = [];
     const used = new Set<number>();
@@ -109,20 +121,21 @@ export class Signals {
     let t = 0;
     for (const axis of axes) {
       const top = axis.map(cls).sort((x, y) => rank(y) - rank(x))[0];
+      const y = yellow(axis);
       if (axis.length === 1) {
         const g = greenFor("SL", top);
-        phases.push({ kind: "SL", approaches: axis, green: g, start: t });
-        t += g + YELLOW + ALL_RED;
+        phases.push({ kind: "SL", approaches: axis, green: g, yellow: y, start: t });
+        t += g + y + ALL_RED;
         continue;
       }
       const gs = greenFor("S", top);
-      phases.push({ kind: "S", approaches: axis, green: gs, start: t });
-      t += gs + YELLOW + ALL_RED;
+      phases.push({ kind: "S", approaches: axis, green: gs, yellow: y, start: t });
+      t += gs + y + ALL_RED;
       const lefts = axis.filter(hasLeft);
       if (lefts.length) {
         const gl = greenFor("L", top);
-        phases.push({ kind: "L", approaches: lefts, green: gl, start: t });
-        t += gl + YELLOW + ALL_RED;
+        phases.push({ kind: "L", approaches: lefts, green: gl, yellow: y, start: t });
+        t += gl + y + ALL_RED;
       }
     }
     return { junction: jid, cycle: t, offset: hash(jid) * t, phases, approaches, approachOf };
@@ -162,7 +175,7 @@ export class Signals {
     const { phase, into } = this.current(p, t);
     if (!this.allows(phase, a, turn)) return "stop";
     if (into < phase.green) return "go";
-    if (into < phase.green + YELLOW) return "yellow";
+    if (into < phase.green + phase.yellow) return "yellow";
     return "stop";
   }
 
@@ -190,8 +203,8 @@ export class Signals {
     if (!p) return out;
     const { phase, into } = this.current(p, t);
     if (!phase.approaches.includes(approach)) return out;
-    const amber = into >= phase.green && into < phase.green + YELLOW;
-    const red = into >= phase.green + YELLOW;
+    const amber = into >= phase.green && into < phase.green + phase.yellow;
+    const red = into >= phase.green + phase.yellow;
     if (red) return out;
     if (amber) return { red: false, yellow: true, left: false, green: false };
     if (phase.kind === "L") return { red: true, yellow: false, left: true, green: false };
