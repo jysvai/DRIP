@@ -8,7 +8,11 @@ const key = (k: string, label = "") => `<kbd${label ? ` aria-label="${label}"` :
 const DRIVE: [string, string, string][] = [
   [`${key("↑", "위쪽 화살표")}${key("W")}`, "가속 페달", "누르는 동안 깊게 밟히고, 떼면 그 깊이로 유지 (속도·rpm 유지)"],
   [`${key("↓", "아래쪽 화살표")}${key("S")}`, "발 떼기 · 브레이크", "먼저 가속 페달에서 발을 떼고, 계속 누르면 브레이크"],
-  [`${key("←", "왼쪽 화살표")}${key("→", "오른쪽 화살표")}${key("A")}${key("D")}`, "핸들", "놓으면 차가 차로 방향으로 곧게 돌아옵니다"],
+  [
+    `${key("←", "왼쪽 화살표")}${key("→", "오른쪽 화살표")}${key("A")}${key("D")}`,
+    "핸들",
+    "톡 치면 살짝, 누르고 있으면 점점 크게 (느릴 때는 빠르게 크게). 놓으면 길 방향으로 곧게 서고 굽은 길은 따라갑니다 · 시내 교차로에서 도는 것은 직접",
+  ],
 ];
 
 const MORE: [string, string][] = [
@@ -39,7 +43,7 @@ export function controlsHtml(): string {
     <dl class="ctl-list ctl-cols">${MORE.map(([k, t]) => `<div><dt>${k}</dt><dd>${t}</dd></div>`).join("")}</dl>
     <div class="ctl-pad">
       ${ICON.gamepad}
-      <p><b>게임패드 · 레이싱 휠</b>은 연결하면 바로 씁니다. 왼쪽 스틱·휠 조향, RT 가속, LT 브레이크, LB·RB 방향지시등, B 비상등, Y 시점, Start 일시정지.</p>
+      <p><b>게임패드 · 레이싱 휠</b>은 연결하면 바로 씁니다 (키보드와 번갈아 써도 움직이는 쪽으로 바뀝니다). 왼쪽 스틱·휠 조향, RT 가속, LT 브레이크, LB·RB 방향지시등, B 비상등, X 경적, Y 시점, Back 후진, Start 일시정지. 휠 페달이 안 먹으면 메뉴 차량 탭의 "휠·페달 맞추기".</p>
     </div>
   </div>`;
 }

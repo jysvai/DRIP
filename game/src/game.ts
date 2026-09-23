@@ -32,7 +32,7 @@ import { planIncidents, type Incident } from "./sim/incidents";
 import { realEventsFor, realEventsStamp } from "./sim/realEvents";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
-import { Input } from "./sim/input";
+import { Input, type DeviceKind } from "./sim/input";
 import { LKA, laneKeep, type LkaState } from "./sim/assist";
 import { planDigest, type DriveWindow } from "./sim/pacing";
 import { PlayerCar, type Controls } from "./sim/player";
@@ -73,7 +73,7 @@ function josa(word: string, a: string, b: string): string {
   return (m[0].charCodeAt(0) - 0xac00) % 28 ? b : a;
 }
 
-const INPUT_LABELS = { keyboard: "키보드", mouse: "마우스 조향", gamepad: "게임패드" } as const;
+const INPUT_LABELS: Record<DeviceKind, string> = { keyboard: "키보드", mouse: "마우스 조향", pad: "게임패드", wheel: "레이싱 휠" };
 
 export class Game {
   readonly world: World;
@@ -136,6 +136,10 @@ export class Game {
   private clockOffset = 0;
   /** 차로 유지 보조: 켜짐 여부, 지금 막고 있는 쪽(-1 왼쪽, 1 오른쪽), 경고 표시가 남은 시간과 그쪽 */
   lka = true;
+  /** 키보드 핸들을 놓으면 길 방향·굽이를 따라가게 잡아 준다 (메뉴 "곡선에서 핸들 유지") */
+  private steerHold = true;
+  /** 지난 프레임의 조작 장치 (바뀌면 기록) */
+  private device: DeviceKind = "keyboard";
   private lkaSide = 0;
   private lkaWarn = 0;
   private warnSide = 0;
@@ -359,6 +363,16 @@ export class Game {
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.lka = settings.lka ?? true;
     this.input.pedal = settings.pedal ?? "hold";
+    this.input.steerSens = settings.steerSens ?? "normal";
+    this.input.wheelRange = settings.wheelRange ?? 900;
+    this.input.calibration = settings.wheelCal ?? null;
+    {
+      const sp = this.player.spec;
+      const L = sp.lf + sp.lr;
+      this.input.car = { wheelbase: L, maxSteer: sp.maxSteer, understeer: (sp.mass * sp.lr) / L / sp.cf - (sp.mass * sp.lf) / L / sp.cr };
+    }
+    this.steerHold = settings.steerHold ?? true;
+    this.device = this.input.device;
     this.startS = s0;
     // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다
     if (!city && (settings.pace ?? "digest") === "digest") {
@@ -385,7 +399,17 @@ export class Game {
       seed: settings.seed,
       inputMode: this.input.mode,
       camera: settings.camera,
-      drive: { pace: this.digest ? "digest" : "full", windows: this.digest ? this.digest.map((w) => [Math.round(w.s0), Math.round(w.s1)]) : null, lka: this.lka, pedal: this.input.pedal },
+      drive: {
+        pace: this.digest ? "digest" : "full",
+        windows: this.digest ? this.digest.map((w) => [Math.round(w.s0), Math.round(w.s1)]) : null,
+        lka: this.lka,
+        pedal: this.input.pedal,
+        steerHold: this.steerHold,
+        steerSens: this.input.steerSens,
+        device: this.device,
+        wheelRange: this.input.wheelRange,
+        wheelCal: !!this.input.calibration,
+      },
     });
 
     this.sound.enabled = settings.sound;
@@ -641,6 +665,11 @@ export class Game {
 
     if (this.autopilot) this.autopilotUsed = true;
     const c = this.autopilot ? this.autoControls() : this.input.update(dt, p.speed);
+    // 주행 중 키보드 ↔ 게임패드·휠을 바꾸면 기록에 남긴다 (조작 장치에 따라 운전이 달라서 분석 때 나눈다)
+    if (!this.autopilot && this.input.device !== this.device) {
+      this.rules.inputSwitch(this.frameInfo(0), this.device, this.input.device);
+      this.device = this.input.device;
+    }
     if (!this.autopilot) this.keyboardAssist(c, dt);
     this.laneKeep(c, dt);
     this.controls = c;
@@ -1305,20 +1334,23 @@ export class Game {
     return q;
   }
 
-  /** 키보드 조향 보조: 조향 키를 놓으면 차 방향을 도로 방향에 맞춘다 (차로 위치는 그대로).
-   *  키보드는 반대로 꺾어 바로잡기가 어려워서 넣는다. 마우스·게임패드·휠에는 쓰지 않는다. */
+  /** 키보드 조향 보조 ("곡선에서 핸들 유지"): 조향 키를 놓으면 차 방향을 도로 방향에 맞추고 굽은 길은 그 굽이만큼 핸들을 잡는다 (차로 위치는 그대로).
+   *  키보드는 반대로 꺾어 바로잡기가 어려워서 넣는다. 마우스·게임패드·휠에는 쓰지 않는다.
+   *  시내 교차로에서 도는 곳은 운전자가 직접 돌린다 (놓아도 저절로 돌지 않게 그동안은 풀어 둔다). */
   private keyboardAssist(c: Controls, dt: number) {
-    if (this.input.mode !== "keyboard" || this.input.steeringKeyDown) {
+    if (!this.steerHold || this.input.mode !== "keyboard" || this.input.steeringKeyDown) {
       this.assistWeight = 0;
       return;
     }
-    this.assistWeight = Math.min(1, this.assistWeight + dt / 0.3);
     const p = this.player;
+    const kappa = this.road.sample(p.s).kappa;
+    const turning = Math.abs(kappa) > 1 / 200 && this.turnBoxAt(p.s);
+    this.assistWeight = turning ? Math.max(0, this.assistWeight - dt / 0.3) : Math.min(1, this.assistWeight + dt / 0.3);
+    if (this.assistWeight <= 0) return;
     const sp = p.spec;
     const v = Math.max(3, p.vx);
     const L = sp.lf + sp.lr;
     const K = (sp.mass * sp.lr) / L / sp.cf - (sp.mass * sp.lf) / L / sp.cr; // 언더스티어 계수
-    const kappa = this.road.sample(p.s).kappa;
     // 차가 실제로 가는 방향(차 방향 + 옆미끄럼)과 길 방향의 차이. 차 방향만 맞추면 굽은 길에서 바깥으로 밀린다
     const course = p.theta + p.vy / v;
     // 바퀴각(왼쪽 +) = 굽은 길 따라가기 (L+Kv²)κ − 진행 방향 오차를 1초에 줄이기 (L+Kv²)·course/v.
@@ -1326,6 +1358,14 @@ export class Game {
     const wheel = (L + K * v * v) * (kappa - course / (v * 1.0));
     const assist = Math.max(-0.5, Math.min(0.5, -wheel / sp.maxSteer));
     c.steer += assist * this.assistWeight;
+  }
+
+  /** 시내: s가 (갈라지기·합치기만 하는 곳이 아닌) 교차로 안인지 */
+  private turnBoxAt(s: number): boolean {
+    const boxes = this.road.city?.boxes;
+    if (!boxes) return false;
+    for (const [s0, s1, , minor] of boxes) if (!minor && s >= s0 && s <= s1) return true;
+    return false;
   }
 
   /** 검수용: 화면이 가려져 requestAnimationFrame이 멈춰도 시뮬레이션을 sec초 진행하고 한 번 그린다 */
@@ -1520,7 +1560,7 @@ export class Game {
         night: this.world.night > 0.5,
         recStatus: this.recorder.label,
         camera: CAMERA_LABELS[this.view.mode],
-        inputMode: this.autopilot ? "자동 운전" : INPUT_LABELS[this.input.mode],
+        inputMode: this.autopilot ? "자동 운전" : INPUT_LABELS[this.input.device],
         section: this.rules.sectionState(p.s, this.t),
       },
       dt,

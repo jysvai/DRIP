@@ -358,6 +358,19 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 .help-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s-4); padding: var(--s-4) var(--s-4) var(--s-4) var(--s-6); border-bottom: 1px solid var(--c-rule-soft); }
 .help-head h2 { margin: 0; font-size: var(--t-xl); }
 .help-card .controls { padding: var(--s-5) var(--s-6) var(--s-6); }
+.pad-setup { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.pad-card { width: min(560px, 100%); }
+.pad-body { display: grid; gap: var(--s-3); padding: var(--s-5) var(--s-6) var(--s-6); }
+.pad-body p { margin: 0; }
+.pad-name { color: var(--c-muted); font-size: var(--t-sm); }
+.pad-step { font-size: var(--t-lg); font-weight: 700; }
+.pad-axes { display: grid; gap: var(--s-2); }
+.pad-axis { display: grid; grid-template-columns: 120px 1fr 48px; align-items: center; gap: var(--s-3); color: var(--c-muted); font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+.pad-axis.on { color: var(--c-ink); font-weight: 700; }
+.pad-axis .bar { position: relative; height: 8px; background: var(--c-paper); border: 1px solid var(--c-rule); border-radius: 4px; }
+.pad-axis .bar i { position: absolute; top: -3px; width: 4px; height: 12px; margin-left: -2px; background: var(--c-route); border-radius: 2px; }
+.pad-axis b { text-align: right; }
+.pad-actions { display: flex; justify-content: flex-end; }
 .controls { display: grid; gap: var(--s-5); }
 .ctl-drive { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s-6); align-items: center; }
 .arrows { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(2, 44px); gap: 4px; }

@@ -6,6 +6,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { DriveEvent, Summary } from "../rules/engine";
 import type { LegInfo } from "../road/road";
 import type { QualityResult } from "./quality";
+import type { DeviceKind, SteerSens } from "../sim/input";
 
 export const APP_VERSION = "0.4.0";
 
@@ -34,9 +35,21 @@ export interface SessionInfo {
   route: LegInfo[] | null;
   /**
    * 주행 방식: digest(요약 주행)면 windows 구간만 실제로 달리고 사이는 건너뛴다 (건너뛴 길에는 1초 기록이 없다).
-   * lka: 차로 유지 보조를 켜고 출발했는지 (주행 중 L로 바꾸면 이벤트로 남는다)
+   * lka: 차로 유지 보조를 켜고 출발했는지 (주행 중 L로 바꾸면 이벤트로 남는다).
+   * 조작: pedal(키보드 페달 방식), steerHold(키보드 "곡선에서 핸들 유지"), steerSens(조향 감도), device(출발할 때 조작 장치, 바꾸면 input_switch 이벤트),
+   * wheelRange(휠 회전각), wheelCal(휠 페달을 맞췄는지)
    */
-  drive: { pace: "digest" | "full"; windows: [number, number][] | null; lka: boolean; pedal: "hold" | "momentary" };
+  drive: {
+    pace: "digest" | "full";
+    windows: [number, number][] | null;
+    lka: boolean;
+    pedal: "hold" | "momentary";
+    steerHold: boolean;
+    steerSens: SteerSens;
+    device: DeviceKind;
+    wheelRange: number;
+    wheelCal: boolean;
+  };
 }
 
 function participantId(): string {
