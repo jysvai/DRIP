@@ -1,8 +1,10 @@
 // 전국 고속도로망 지도 (2D 캔버스): 메뉴에서 경로를 보여 주고, 지도를 눌러 출발지·도착지를 고른다.
-// 좌표는 network.json 기준(원점에서 동쪽·북쪽 m).
+// 좌표는 network.json 기준(원점에서 동쪽·북쪽 m). 시내 도로망도 같은 좌표계(UTM-K)라 원점만 옮겨 그린다.
 
 import type { Network, Place } from "../road/route";
 import { netPoint, placePoint } from "../road/route";
+import type { CityGraph } from "../city/graph";
+import type { CityNet } from "../city/net";
 import { FONT_UI, PAL } from "./palette";
 
 interface Pin {
@@ -28,6 +30,10 @@ export class NetMap {
   private roads: { ref: string; pts: Float32Array }[] = [];
   private placePts: { p: Place; x: number; y: number }[] = [];
   private routeLines: Float32Array[] = [];
+  /** 시내 도로 (큰길·골목) */
+  private cityLines: { pts: Float32Array; major: boolean }[] = [];
+  /** 시내 모드: 시내 도로를 그리고 고속도로 지명은 가린다 */
+  showCity = false;
   private pins: Pin[] = [];
   private hover: { p: Place; x: number; y: number } | null = null;
   private drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
@@ -82,7 +88,7 @@ export class NetMap {
     this.canvas.width = Math.round(this.w * this.dpr);
     this.canvas.height = Math.round(this.h * this.dpr);
     // 크기가 바뀌면 마지막으로 맞춘 영역을 다시 맞춘다 (처음 만들 때는 캔버스 크기가 0이다)
-    if (this.lastFit) this.fit(this.lastFit.box, false, this.lastFit.margin);
+    if (this.lastFit) this.fit(this.lastFit.box, false, this.lastFit.margin, this.lastFit.minMpp);
     this.dirty = true;
   }
 
@@ -102,15 +108,15 @@ export class NetMap {
     return [x0, y0, x1, y1];
   }
 
-  private lastFit: { box: [number, number, number, number]; margin: number } | null = null;
+  private lastFit: { box: [number, number, number, number]; margin: number; minMpp?: number } | null = null;
 
-  private fit(box: [number, number, number, number], animate: boolean, margin = 60) {
+  private fit(box: [number, number, number, number], animate: boolean, margin = 60, minMpp = 40) {
     const [x0, y0, x1, y1] = box;
     if (!Number.isFinite(x0)) return;
-    this.lastFit = { box, margin };
+    this.lastFit = { box, margin, minMpp };
     const w = Math.max(100, this.w - this.padLeft - this.padRight - margin * 2);
     const h = Math.max(100, this.h - this.padBottom - margin * 2);
-    const mpp = Math.max(40, Math.max((x1 - x0) / w, (y1 - y0) / h));
+    const mpp = Math.max(minMpp, Math.max((x1 - x0) / w, (y1 - y0) / h));
     // 패널이 덮지 않는 영역 가운데에 오게
     const cx = (x0 + x1) / 2 - ((this.padLeft - this.padRight) / 2) * mpp;
     const cy = (y0 + y1) / 2 - (this.padBottom / 2) * mpp;
@@ -126,6 +132,47 @@ export class NetMap {
 
   fitAll(animate = true) {
     this.fit(this.bounds(this.roads.map((r) => r.pts)), animate, 30);
+  }
+
+  /** 시내 도로망 (한 번만) */
+  setCityGraph(graph: CityGraph) {
+    if (this.cityLines.length) return;
+    const dx = graph.origin[0] - this.net.origin[0];
+    const dy = graph.origin[1] - this.net.origin[1];
+    for (const e of graph.edges) {
+      const pts = new Float32Array(e.pts.length);
+      for (let i = 0; i < e.pts.length; i += 2) {
+        pts[i] = e.pts[i] + dx;
+        pts[i + 1] = e.pts[i + 1] + dy;
+      }
+      this.cityLines.push({ pts, major: /^(t|p|s)/.test(e.cls) });
+    }
+    this.dirty = true;
+  }
+
+  /** 시내 경로: 링크 모양을 이어 그리고 출발·도착 핀을 꽂는다 */
+  setCityRoute(net: CityNet | null, links: number[] | null, from?: { name: string; x: number; y: number } | null, to?: { name: string; x: number; y: number } | null) {
+    this.routeLines = [];
+    this.pins = [];
+    const dx = net ? net.graph.origin[0] - this.net.origin[0] : 0;
+    const dy = net ? net.graph.origin[1] - this.net.origin[1] : 0;
+    if (net && links?.length) {
+      const pts: number[] = [];
+      for (const id of links) {
+        const g = net.geom(id);
+        for (let i = 0; i < g.pts.length; i += 2) pts.push(g.pts[i] + dx, g.pts[i + 1] + dy);
+      }
+      this.routeLines.push(new Float32Array(pts));
+    }
+    for (const [p, color] of [
+      [from, PAL.route],
+      [to, PAL.danger],
+    ] as [{ name: string; x: number; y: number } | null | undefined, string][]) {
+      if (p) this.pins.push({ x: p.x + dx, y: p.y + dy, label: p.name, color, end: p === to });
+    }
+    const box = this.routeLines.length ? this.bounds(this.routeLines) : this.bounds([new Float32Array(this.pins.flatMap((p) => [p.x, p.y]))]);
+    this.fit(box, true, 90, 4);
+    this.dirty = true;
   }
 
   /** 경로 조각들을 지도에 그린다 */
@@ -234,7 +281,7 @@ export class NetMap {
         const sy = e.clientY - r.top;
         const [wx, wy] = this.toWorld(sx, sy);
         const f = Math.exp(e.deltaY * 0.0015);
-        this.mpp = Math.max(8, Math.min(4000, this.mpp * f));
+        this.mpp = Math.max(this.showCity ? 2 : 8, Math.min(4000, this.mpp * f));
         // 커서 아래 지점이 그대로 있게
         this.cx = wx - (sx - this.w / 2) * this.mpp;
         this.cy = wy - (this.h / 2 - sy) * this.mpp;
@@ -247,7 +294,7 @@ export class NetMap {
   }
 
   zoom(f: number) {
-    this.target = { cx: this.cx, cy: this.cy, mpp: Math.max(8, Math.min(4000, this.mpp * f)) };
+    this.target = { cx: this.cx, cy: this.cy, mpp: Math.max(this.showCity ? 2 : 8, Math.min(4000, this.mpp * f)) };
   }
 
   private tick() {
@@ -298,6 +345,24 @@ export class NetMap {
     g.beginPath();
     for (const r of this.roads) this.path(g, r.pts);
     g.stroke();
+    // 시내 도로: 가까이 볼 때만 (골목은 더 가까이)
+    if (this.showCity && this.mpp < 120) {
+      const [vx0, vy1] = this.toWorld(0, 0);
+      const [vx1, vy0] = this.toWorld(this.w, this.h);
+      for (const major of [false, true]) {
+        if (!major && this.mpp > 30) continue;
+        g.strokeStyle = this.routeLines.length ? PAL.roadDim : PAL.road;
+        g.lineWidth = major ? Math.max(1, Math.min(4, 60 / this.mpp)) : 1;
+        g.beginPath();
+        for (const l of this.cityLines) {
+          if (l.major !== major) continue;
+          const p = l.pts;
+          if (p[0] < vx0 - 500 || p[0] > vx1 + 500 || p[1] < vy0 - 500 || p[1] > vy1 + 500) continue;
+          this.path(g, p);
+        }
+        g.stroke();
+      }
+    }
 
     // 경로: 짙은 테두리 위에 밝은 선 (내비 경로선처럼)
     if (this.routeLines.length) {
@@ -318,7 +383,7 @@ export class NetMap {
     g.textBaseline = "middle";
     g.lineJoin = "round";
     const shown: [number, number][] = [];
-    for (const q of this.placePts) {
+    for (const q of this.showCity ? [] : this.placePts) {
       const major = q.p.kind === "도시";
       if (!major && this.mpp > 120) continue;
       if (!major && q.p.kind !== "JC" && this.mpp > 50) continue;

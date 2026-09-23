@@ -1,4 +1,4 @@
-// 플레이어 주행을 한국 고속도로 법규(rules_kr.json)로 판정한다.
+// 플레이어 주행을 한국 도로교통법(rules_kr.json)으로 판정한다. 고속도로 규칙에 더해 시내 주행이면 신호·교차로 규칙을 본다.
 // 판정 결과는 주행 중에는 보여주지 않고 기록만 한다. 결과 화면과 데이터셋에 쓰인다.
 
 import type { Road } from "../road/road";
@@ -9,6 +9,8 @@ import { zoneLimit, type WorkZone } from "../sim/workzones";
 import { incidentBlockS, type Incident } from "../sim/incidents";
 import { iceAt, type IcePatch } from "../sim/ice";
 import type { Agent, BusLaneZone } from "../sim/traffic";
+import type { CityStop } from "../city/route";
+import type { Go } from "../city/signals";
 
 export type EventType =
   | "speeding"
@@ -34,7 +36,15 @@ export type EventType =
   | "skip"
   | "lka_assist"
   | "lka_toggle"
-  | "cut_in";
+  | "cut_in"
+  | "red_light"
+  | "right_on_red"
+  | "stop_line"
+  | "turn_signal"
+  | "turn_lane"
+  | "center_line"
+  | "signal_amber"
+  | "junction_pass";
 
 export interface DriveEvent {
   t: number;
@@ -74,6 +84,14 @@ export const EVENT_LABELS: Record<EventType, string> = {
   lka_assist: "차로 유지 보조 작동",
   lka_toggle: "차로 유지 보조 켜기·끄기",
   cut_in: "옆 차가 앞으로 끼어듦",
+  red_light: "신호 위반 (적색 신호에 정지선 통과)",
+  right_on_red: "적색 신호 우회전 전 일시정지 안 함",
+  stop_line: "정지선 넘어 정지 (횡단보도 침범)",
+  turn_signal: "방향지시등 없음·늦음 (30m 전 미만)",
+  turn_lane: "회전할 수 없는 차로에서 회전",
+  center_line: "중앙선 침범",
+  signal_amber: "황색 신호 판단 (통과·정지)",
+  junction_pass: "교차로 통과",
 };
 
 export const VIOLATIONS: EventType[] = [
@@ -89,7 +107,27 @@ export const VIOLATIONS: EventType[] = [
   "designated_lane",
   "camera_speeding",
   "section_speeding",
+  "red_light",
+  "right_on_red",
+  "stop_line",
+  "turn_signal",
+  "turn_lane",
+  "center_line",
 ];
+
+/** 고속도로에만 있는 판정 (시내 결과 화면에서는 뺀다) */
+export const HIGHWAY_ONLY: EventType[] = ["min_speed", "late_signal", "tunnel_lane_change", "shoulder", "passing_lane", "bus_lane", "designated_lane", "camera_speeding", "section_speeding"];
+/** 시내에만 있는 판정 */
+export const CITY_ONLY: EventType[] = ["red_light", "right_on_red", "stop_line", "turn_signal", "turn_lane", "center_line"];
+
+/**
+ * 시내 규칙 (도로교통법):
+ *   진로 변경·회전 신호는 30m 전 (시행령 별표2, 고속도로는 100m)
+ *   적색 신호 우회전은 정지선 직전에 일시정지 (시행규칙 별표2, 2023.1.22 시행): 정지선 앞 25m 안에서 3km/h 아래로 떨어져야 멈춘 것으로 본다
+ *   정지선 침범: 적색 신호에 차 앞이 정지선을 0.5m 넘어 선 채로 1초
+ *   중앙선 침범: 차체 가운데가 중앙선(한 줄 왕복 도로의 차도 왼쪽 끝) 너머로 1초 (교차로 안은 빼고)
+ */
+const URBAN = { signalLeadM: 30, rightStopKmh: 3, rightStopWithinM: 25, stopLineOverM: 0.5, centerLineSec: 1 };
 
 export interface PlayerFrame {
   t: number;
@@ -182,6 +220,12 @@ export class RuleEngine {
 
   /** 악천후 감속 배율 (weather.legalFactor): 젖은 노면 0.8, 가시거리 100m 이내 0.5 */
   weatherFactor = 1;
+
+  /** 시내: 경로의 교차로와 지금 그 방향 신호 (게임이 정해 준다) */
+  city: { stops: CityStop[]; light: (st: CityStop) => Go } | null = null;
+  /** 다가가는 교차로: 정지선 앞 25m 안에서 가장 느렸던 속도, 황색이 켜진 순간의 거리·속도, 정지선 넘어 선 시간 */
+  private approach: { st: CityStop; minKmh: number; amber: { distM: number; kmh: number } | null; lastLight: Go; overStop: number; amberDone: boolean } | null = null;
+  private centerSince = -1;
 
   /** 표지판에 적힌 제한속도 (화물차 제한속도, 공사 구간 임시 제한속도) */
   postedAt(s: number): number {
@@ -408,8 +452,10 @@ export class RuleEngine {
     }
     this.signalDir = f.signal;
 
-    // ---- 차로 변경 ----
-    if (lane !== this.lastLane && lane >= 1 && lane <= lanes && this.lastLane >= 1) {
+    // ---- 차로 변경 ---- (시내 교차로 안은 차로 번호가 들어온 도로에서 나갈 도로로 바뀌어서 보지 않는다)
+    const inBox = !!this.city && road.inJunction(f.s);
+    if (inBox) this.lastLane = 0;
+    if (!inBox && lane !== this.lastLane && lane >= 1 && lane <= lanes && this.lastLane >= 1) {
       const dir = lane < this.lastLane ? -1 : 1;
       const on = this.signalDir === dir;
       const recent = !on && this.lastSignalDir === dir && f.t - this.signalOffAt < 2;
@@ -420,7 +466,8 @@ export class RuleEngine {
       this.emit(f, "lane_change", { from: this.lastLane, to: lane, signaled, signalDistanceM: Math.round(dist) }, lane);
       if (r.turnSignal.enabled) {
         if (!signaled) this.emit(f, "no_signal", { from: this.lastLane, to: lane }, lane);
-        else if (dist < r.turnSignal.leadDistanceM) this.emit(f, "late_signal", { signalDistanceM: Math.round(dist) }, lane);
+        else if (this.city && dist < URBAN.signalLeadM) this.emit(f, "turn_signal", { laneChange: true, signaled: true, signalDistanceM: Math.round(dist) }, lane);
+        else if (!this.city && dist < r.turnSignal.leadDistanceM) this.emit(f, "late_signal", { signalDistanceM: Math.round(dist) }, lane);
       }
       if (r.tunnelLaneChange.enabled && road.structureAt(f.s) === Structure.Tunnel) this.emit(f, "tunnel_lane_change", {}, lane);
       // 공사로 막히는 차로에서 빠져나온 곳: 막히는 지점까지 남은 거리 (미리 합류하는지, 끝에서 끼어드는지)
@@ -429,12 +476,13 @@ export class RuleEngine {
       const inc = this.incidents.find((i) => i.lane === this.lastLane && f.s > incidentBlockS(i) - 2000 && f.s < incidentBlockS(i));
       if (inc) this.incidentMerge.set(inc, Math.round(incidentBlockS(inc) - f.s));
     }
-    if (lane >= 1 && lane <= lanes) this.lastLane = lane;
+    if (!inBox && lane >= 1 && lane <= lanes) this.lastLane = lane;
+    if (this.city) this.checkCity(f, lane, kmh);
     this.checkIncidents(f, lane, kmh, limit);
     this.checkIce(f, lane, kmh);
 
-    // ---- 갓길 ----
-    if (r.shoulder.enabled) {
+    // ---- 갓길 ---- (시내는 보도라 연석에 막힌다)
+    if (r.shoulder.enabled && !this.city) {
       const w = road.widthAt(f.s);
       const onShoulder = f.d - f.width * 0.25 > w / 2 || f.d + f.width * 0.25 < -w / 2;
       if (onShoulder && kmh > 5) {
@@ -446,8 +494,8 @@ export class RuleEngine {
       } else if (this.shoulderSince <= f.t) this.shoulderSince = -1;
     }
 
-    // ---- 1차로 계속 주행 ----
-    if (r.passingLane.enabled && lanes >= 2) {
+    // ---- 1차로 계속 주행 ---- (고속도로만)
+    if (r.passingLane.enabled && lanes >= 2 && !this.city) {
       if (lane === 1) {
         if (this.lane1Start < 0) this.lane1Start = f.s;
         if (f.s - this.lane1Start >= r.passingLane.maxDistanceM) {
@@ -508,6 +556,70 @@ export class RuleEngine {
         this.lastNearMiss = f.t;
       }
     }
+  }
+
+  /**
+   * 시내 교차로: 정지선을 지나는 순간의 신호·방향지시등·차로, 적색 우회전 일시정지, 정지선 침범, 황색 신호 판단, 중앙선 침범.
+   * 교차로마다 한 번 junction_pass(신호 색·회전·차로)를 남겨 신호 준수율의 분모로 쓴다.
+   */
+  private checkCity(f: PlayerFrame, lane: number, kmh: number) {
+    const city = this.city!;
+    const road = this.road;
+    const front = f.s + f.len / 2;
+    // 다가가는 교차로: 차 앞이 정지선을 60m 넘기 전이고 교차로를 아직 빠져나가지 않은 첫 곳
+    const st = city.stops.find((x) => x.s > front - 60 && x.sExit > f.s) ?? null;
+    if (st && this.approach?.st !== st) this.approach = { st, minKmh: Infinity, amber: null, lastLight: st.signal ? city.light(st) : "go", overStop: 0, amberDone: false };
+    const ap = this.approach;
+    if (st && ap && ap.st === st) {
+      const dist = st.s - front;
+      const light: Go = st.signal ? city.light(st) : "go";
+      if (dist >= 0 && dist <= URBAN.rightStopWithinM) ap.minKmh = Math.min(ap.minKmh, kmh);
+      // 황색이 켜진 순간 (150m 안에서 다가가는 중): 딜레마 구간 분석용
+      if (light === "yellow" && ap.lastLight === "go" && dist > 0 && dist < 150) ap.amber = { distM: Math.round(dist * 10) / 10, kmh: Math.round(kmh) };
+      if (ap.amber && !ap.amberDone && dist > 0 && f.speed < 0.3) {
+        this.emit(f, "signal_amber", { decision: "stop", junction: st.name, onsetDistM: ap.amber.distM, onsetKmh: ap.amber.kmh, stopDistM: Math.round(dist * 10) / 10 }, lane);
+        ap.amberDone = true;
+      }
+      ap.lastLight = light;
+      // 정지선 침범: 적색에 앞이 정지선을 넘어 선 채로 1초
+      if (st.signal && light === "stop" && dist < -URBAN.stopLineOverM && dist > -(URBAN.stopLineOverM + 8) && f.speed < 0.3) {
+        ap.overStop += f.dt;
+        if (ap.overStop >= 1 && ap.overStop - f.dt < 1) this.emit(f, "stop_line", { junction: st.name, overM: Math.round(-dist * 10) / 10 }, lane);
+      }
+      // 정지선을 지나는 순간
+      const prevFront = front - f.speed * f.dt;
+      if (prevFront < st.s && front >= st.s) {
+        const turnDir = st.turn === "L" ? -1 : st.turn === "R" ? 1 : 0;
+        this.emit(f, "junction_pass", { junction: st.name, turn: st.turn, light: st.signal ? light : "none", allowed: st.lanes }, lane);
+        if (st.signal && light === "stop") {
+          if (st.turn === "R") {
+            if (ap.minKmh > URBAN.rightStopKmh) this.emit(f, "right_on_red", { junction: st.name, minKmh: Number.isFinite(ap.minKmh) ? Math.round(ap.minKmh) : null }, lane);
+          } else this.emit(f, "red_light", { junction: st.name, turn: st.turn }, lane);
+        }
+        if (ap.amber && !ap.amberDone) {
+          this.emit(f, "signal_amber", { decision: "go", junction: st.name, onsetDistM: ap.amber.distM, onsetKmh: ap.amber.kmh, light }, lane);
+          ap.amberDone = true;
+        }
+        if (turnDir) {
+          const on = this.signalDir === turnDir;
+          const recent = !on && this.lastSignalDir === turnDir && f.t - this.signalOffAt < 2;
+          const dist = on ? this.signalDist : recent ? this.lastSignalDist : 0;
+          if (!on && !recent) this.emit(f, "turn_signal", { junction: st.name, turn: st.turn, signaled: false, signalDistanceM: 0 }, lane);
+          else if (dist < URBAN.signalLeadM) this.emit(f, "turn_signal", { junction: st.name, turn: st.turn, signaled: true, signalDistanceM: Math.round(dist) }, lane);
+        }
+        if (st.turn !== "S" && lane >= 1 && (lane < st.lanes[0] || lane > st.lanes[1])) this.emit(f, "turn_lane", { junction: st.name, turn: st.turn, lane, allowed: st.lanes }, lane);
+      }
+    }
+    // 중앙선 침범: 한 줄 왕복 도로에서 차 가운데가 중앙선(차도 왼쪽 끝) 너머로 1초
+    const w = road.widthAt(f.s);
+    const twoWay = road.oppLanesAt(f.s) > 0 && !road.hardMedianAt(f.s);
+    if (twoWay && !road.inBox(f.s) && f.d < -w / 2) {
+      if (this.centerSince < 0) this.centerSince = f.t;
+      if (f.t - this.centerSince >= URBAN.centerLineSec) {
+        this.emit(f, "center_line", { overM: Math.round((-w / 2 - f.d) * 10) / 10 }, 0);
+        this.centerSince = f.t + 1e9; // 돌아올 때까지 한 번만
+      }
+    } else this.centerSince = -1;
   }
 
   crash(f: PlayerFrame, withWhat: string, relSpeedKmh: number) {

@@ -13,6 +13,10 @@ import { ICON, WORDMARK } from "./icons";
 import { COLLECTING } from "../log/recorder";
 import type { PedalMode } from "../sim/input";
 import { digestForLegs, playDistance } from "../sim/pacing";
+import { searchCityPlaces, type CityGraph, type CityPlace } from "../city/graph";
+import type { CityNet } from "../city/net";
+import { findCityRoute, type CityRoutePlan } from "../city/route";
+import { loadCity } from "../city/load";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
 export type CameraMode = "cockpit" | "chase" | "hood";
@@ -55,6 +59,8 @@ export interface DriveSettings {
   lka?: boolean;
   /** 키보드 가속 페달 (없으면 누른 만큼 유지) */
   pedal?: PedalMode;
+  /** 시내 주행: 지역(public/city/{region}.json)과 출발지·도착지 이름 (없으면 고속도로) */
+  city?: { region: string; from: string; to: string } | null;
   seed: number;
 }
 
@@ -68,6 +74,17 @@ const POPULAR: [string, string][] = [
   ["광주", "대구"],
   ["수원", "속초"],
 ];
+
+/** 시내 주행 자주 달리는 길 (서울) */
+const CITY_POPULAR: [string, string][] = [
+  ["강동역", "삼원타워"],
+  ["강남역", "잠실역"],
+  ["서울역", "경복궁"],
+  ["여의도역", "홍대입구역"],
+  ["건대입구역", "왕십리역"],
+  ["시청역", "이태원역"],
+];
+const CITY_KIND: Record<string, string> = { 역: "지하철역", 건물: "건물", 명소: "명소" };
 
 function load(): Partial<DriveSettings> & { fromName?: string; toName?: string } {
   try {
@@ -160,6 +177,15 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let pedal: PedalMode = saved.pedal ?? "hold";
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
+    // 시내 주행 (서울): 도로망은 시내를 고를 때 불러온다
+    let mode: "highway" | "city" = saved.city ? "city" : "highway";
+    let city: { graph: CityGraph; net: CityNet } | null = null;
+    let cityState: "" | "loading" | "error" = "";
+    let cityError = "";
+    let cFrom: CityPlace | null = null;
+    let cTo: CityPlace | null = null;
+    let cPlan: CityRoutePlan | null = null;
+    const cityByName = (n: string) => (city ? (searchCityPlaces(city.graph.places, n, 5).find((p) => p.name === n) ?? null) : null);
 
     const root = el("div", "menu2");
     const mapWrap = el("div", "map-wrap");
@@ -188,8 +214,8 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     panel.innerHTML = `
       <header class="mast">
         ${WORDMARK}
-        <p class="mast-sub">실제 한국 고속도로를 달리는 운전 시뮬레이터</p>
-        <p class="mast-meta"><span>주행선 ${net.roads.length}개</span><span>실측 도로 선형</span><span>배속 없는 실시간</span></p>
+        <p class="mast-sub">실제 한국 도로를 달리는 운전 시뮬레이터</p>
+        <p class="mast-meta"><span>고속도로 주행선 ${net.roads.length}개</span><span>서울 시내</span><span>배속 없는 실시간</span></p>
       </header>
       <nav class="steps" role="tablist" aria-label="설정 단계">
         <button data-tab="route" role="tab"><b>1</b>경로</button>
@@ -213,7 +239,50 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
 
     let preview: VehiclePreview | null = null;
 
+    function ensureCity() {
+      if (city || cityState === "loading") return;
+      cityState = "loading";
+      loadCity("seoul")
+        .then((c) => {
+          city = c;
+          cityState = "";
+          cFrom ??= cityByName(saved.city?.from ?? "강동역");
+          cTo ??= cityByName(saved.city?.to ?? "삼원타워");
+          map.setCityGraph(c.graph);
+          if (mode === "city") {
+            computeCity();
+            render();
+          }
+        })
+        .catch((e: unknown) => {
+          cityState = "error";
+          cityError = String((e as Error)?.message ?? e);
+          renderSummary();
+        });
+    }
+
+    function computeCity() {
+      cPlan = city && cFrom && cTo && cFrom !== cTo ? findCityRoute(city.net, cFrom, cTo) : null;
+      map.setCityRoute(city?.net ?? null, cPlan?.links ?? null, cFrom, cTo);
+      renderSummary();
+      renderStart();
+    }
+
+    function setMode(m: typeof mode) {
+      mode = m;
+      map.showCity = m === "city";
+      if (m === "city") {
+        ensureCity();
+        if (city) computeCity();
+        else {
+          map.setCityRoute(null, null);
+          renderSummary();
+        }
+      } else computeRoute();
+    }
+
     function computeRoute() {
+      if (mode === "city") return computeCity();
       plan = from && to && from !== to ? findRoute(net, from, to) : null;
       startKm = 0;
       map.setRoute(plan?.legs ?? null, from, to);
@@ -231,6 +300,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     pads();
     addEventListener("resize", pads);
     map.onPick = (p) => {
+      if (mode === "city") return;
       // 출발지가 비었거나 둘 다 차 있으면 출발지부터 다시
       if (!from || (from && to)) {
         from = p;
@@ -245,7 +315,46 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       return net.roads.find((r) => r.id === id)!;
     }
 
+    function renderCitySummary() {
+      const empty = (msg: string) => {
+        summary.innerHTML = `${ICON.info}<p>${msg}</p>`;
+        summary.classList.toggle("empty", true);
+      };
+      if (!city) return empty(cityState === "error" ? `서울 시내 도로망을 불러오지 못했습니다. ${esc(cityError)}` : "서울 시내 도로망을 불러오는 중…");
+      if (!cPlan || !cFrom || !cTo) return empty(cFrom && cTo && cFrom === cTo ? "출발지와 도착지가 같습니다." : cFrom && cTo ? "두 곳을 잇는 길을 찾지 못했습니다." : "왼쪽에 역·건물·명소 이름을 넣어 출발지와 도착지를 고르세요.");
+      summary.classList.toggle("empty", false);
+      const n = city.net;
+      // 지나는 길: 이름이 같은 링크를 묶고, 그 길로 들어갈 때 도는 쪽
+      const streets: { name: string; m: number; turn: string }[] = [];
+      cPlan.links.forEach((id, k) => {
+        const l = n.links[id];
+        const name = l.name || "이름 없는 길";
+        const last = streets[streets.length - 1];
+        const mv = k > 0 ? n.movements[cPlan!.movements[k - 1]] : null;
+        if (last && last.name === name) last.m += l.length;
+        else streets.push({ name, m: l.length, turn: !mv ? "출발" : mv.turn === "L" ? "좌회전" : mv.turn === "R" ? "우회전" : "직진" });
+      });
+      const items = streets
+        .filter((x) => x.m > 60 || x.turn === "출발")
+        .map((x) => `<li><span class="turn">${x.turn}</span><div><b>${esc(x.name)}</b></div><span class="len">${(x.m / 1000).toFixed(1)}<small> km</small></span></li>`)
+        .join("");
+      summary.innerHTML = `
+        <div class="rs-head">
+          <div class="rs-od"><small>출발</small><b>${esc(cFrom.name)}</b></div>
+          ${ICON.arrowRight}
+          <div class="rs-od to"><small>도착</small><b>${esc(cTo.name)}</b></div>
+        </div>
+        <dl class="rs-stats">
+          <div><dt>거리</dt><dd>${(cPlan.lengthM / 1000).toFixed(1)}<small>km</small></dd></div>
+          <div><dt>예상 시간</dt><dd>${durationHtml(cPlan.timeS)}</dd></div>
+          <div><dt>신호 교차로</dt><dd>${cPlan.signals}<small>곳</small></dd></div>
+        </dl>
+        <ol class="rs-legs">${items}</ol>
+        <p class="rs-foot">실제 서울 도로(OpenStreetMap)를 신호 교차로에서 서고 가며 처음부터 끝까지 달립니다. 좌회전·우회전 ${cPlan.turns}번. 도로 데이터 © OpenStreetMap contributors (ODbL).</p>`;
+    }
+
     function renderSummary() {
+      if (mode === "city") return renderCitySummary();
       if (!plan || !from || !to) {
         const msg = from && to && from === to ? "출발지와 도착지가 같습니다." : from && to ? "두 곳을 잇는 고속도로 경로를 찾지 못했습니다." : "지도에서 도시·나들목을 눌러 출발지와 도착지를 고르거나, 왼쪽에 이름을 넣으세요.";
         summary.innerHTML = `${ICON.info}<p>${msg}</p>`;
@@ -292,6 +401,11 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     }
 
     function renderStart() {
+      if (mode === "city") {
+        startBtn.disabled = !cPlan;
+        startBtn.innerHTML = cPlan && cFrom && cTo ? `<span>주행 시작<span class="go-sub">${esc(cFrom.name)} → ${esc(cTo.name)} · ${(cPlan.lengthM / 1000).toFixed(1)}km</span></span>${ICON.arrowRight}` : "경로를 먼저 고르세요";
+        return;
+      }
       startBtn.disabled = !plan;
       startBtn.innerHTML = plan && from && to ? `<span>주행 시작<span class="go-sub">${esc(from.name)} → ${esc(to.name)} · ${(plan.lengthM / 1000).toFixed(0)}km</span></span>${ICON.arrowRight}` : "경로를 먼저 고르세요";
     }
@@ -349,6 +463,101 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       };
       list.style.display = "none";
       return wrap;
+    }
+
+    /** 시내 장소 (역·건물·명소) 찾기 */
+    function cityPlaceInput(label: string, get: () => CityPlace | null, set: (p: CityPlace) => void, cls: string) {
+      const wrap = el("div", `place ${cls}`);
+      const id = `cplace-${cls}`;
+      wrap.appendChild(el("label", "", label)).setAttribute("for", id);
+      const input = el("input");
+      input.id = id;
+      input.type = "search";
+      input.placeholder = city ? "역·건물·명소 (예: 강남역, 롯데월드타워)" : "도로망을 불러오는 중…";
+      input.disabled = !city;
+      input.value = get()?.name ?? "";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      const list = el("ul", "suggest");
+      list.setAttribute("role", "listbox");
+      wrap.append(input, list);
+      let items: CityPlace[] = [];
+      let active = 0;
+      const show = () => {
+        items = city ? searchCityPlaces(city.graph.places, input.value, 8) : [];
+        active = 0;
+        list.innerHTML = items.map((p, i) => `<li role="option" data-i="${i}" class="${i === active ? "on" : ""}"><b>${esc(p.name)}</b><small>${CITY_KIND[p.kind] ?? p.kind}</small></li>`).join("");
+        list.style.display = items.length ? "" : "none";
+      };
+      const pick = (p: CityPlace) => {
+        set(p);
+        input.value = p.name;
+        list.style.display = "none";
+        computeCity();
+        render();
+      };
+      input.oninput = show;
+      input.onfocus = () => {
+        input.select();
+        if (input.value) show();
+      };
+      input.onblur = () => setTimeout(() => (list.style.display = "none"), 150);
+      input.onkeydown = (e) => {
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          active = (active + (e.key === "ArrowDown" ? 1 : items.length - 1)) % Math.max(1, items.length);
+          list.querySelectorAll("li").forEach((li, i) => li.classList.toggle("on", i === active));
+        } else if (e.key === "Enter" && items[active]) {
+          e.preventDefault();
+          pick(items[active]);
+        } else if (e.key === "Escape") list.style.display = "none";
+      };
+      list.onmousedown = (e) => {
+        const li = (e.target as HTMLElement).closest("li");
+        if (li) pick(items[Number(li.dataset.i)]);
+      };
+      list.style.display = "none";
+      return wrap;
+    }
+
+    function renderCityRoute() {
+      const box = el("div", "od");
+      box.appendChild(cityPlaceInput("출발", () => cFrom, (p) => (cFrom = p), "from"));
+      const swap = el("button", "swap", ICON.swap);
+      swap.title = "출발·도착 바꾸기";
+      swap.setAttribute("aria-label", "출발지와 도착지 바꾸기");
+      swap.onclick = () => {
+        [cFrom, cTo] = [cTo, cFrom];
+        computeCity();
+        render();
+      };
+      box.appendChild(swap);
+      box.appendChild(cityPlaceInput("도착", () => cTo, (p) => (cTo = p), "to"));
+      body.appendChild(box);
+      if (city) {
+        const chips = el("div", "chips");
+        for (const [a, b] of CITY_POPULAR) {
+          const pa = cityByName(a);
+          const pb = cityByName(b);
+          if (!pa || !pb) continue;
+          const c = el("button", pa === cFrom && pb === cTo ? "on" : "", `${a} → ${b}`);
+          c.onclick = () => {
+            cFrom = pa;
+            cTo = pb;
+            computeCity();
+            render();
+          };
+          chips.appendChild(c);
+        }
+        body.appendChild(field("자주 달리는 길", chips));
+      }
+      body.appendChild(
+        el(
+          "p",
+          "note",
+          "서울 시내 큰길(간선·보조간선도로)로 길을 찾습니다. 교차로마다 실제처럼 신호가 바뀌고(직진 → 좌회전 순서), 도는 곳은 내비가 300m 앞에서 알려 줍니다. 버스전용차로·보행자는 아직 없습니다.",
+        ),
+      );
     }
 
     /** 붙은 버튼 묶음 (선택지가 적을 때) */
@@ -439,6 +648,21 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
 
     function renderRoute() {
       body.appendChild(el("h3", "", "어디로 달릴까요?"));
+      body.appendChild(
+        field(
+          "도로",
+          seg<typeof mode>(
+            [
+              ["highway", "고속도로 (전국)"],
+              ["city", "시내 (서울)"],
+            ],
+            mode,
+            (v) => setMode(v),
+            "도로 종류",
+          ),
+        ),
+      );
+      if (mode === "city") return renderCityRoute();
       const box = el("div", "od");
       box.appendChild(placeInput("출발", () => from, (p) => (from = p), "from"));
       const swap = el("button", "swap", ICON.swap);
@@ -682,10 +906,14 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     }
 
     startBtn.onclick = () => {
-      if (!plan || !from || !to) return;
+      const cityPick = mode === "city" && cPlan && cFrom && cTo ? { region: "seoul", from: cFrom.name, to: cTo.name } : null;
+      if (!cityPick && (mode === "city" || !plan || !from || !to)) return;
+      const route: RouteChoice = cityPick
+        ? { from: cityPick.from, to: cityPick.to, legs: [], lengthM: cPlan!.lengthM, timeS: cPlan!.timeS }
+        : { from: from!.name, to: to!.name, legs: plan!.legs, lengthM: plan!.lengthM, timeS: plan!.timeS };
       const s: DriveSettings = {
-        route: { from: from.name, to: to.name, legs: plan.legs, lengthM: plan.lengthM, timeS: plan.timeS },
-        startKm,
+        route,
+        startKm: cityPick ? 0 : startKm,
         vehicle: vehicle.id,
         color,
         preset,
@@ -701,6 +929,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         pace,
         lka,
         pedal,
+        city: cityPick,
         seed: Math.floor(Math.random() * 2 ** 31),
       };
       save(s);
@@ -710,7 +939,9 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       resolve(s);
     };
 
-    computeRoute();
+    map.showCity = mode === "city";
+    if (mode === "city") setMode("city");
+    else computeRoute();
     render();
   });
 }

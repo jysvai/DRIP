@@ -2,7 +2,6 @@
 // 위치는 도로 좌표(s, d)로 적분해서 수백 km를 달려도 오차가 쌓이지 않게 한다.
 
 import type { Road } from "../road/road";
-import { LEFT_SHOULDER, RIGHT_SHOULDER } from "../road/road";
 
 export interface CarSpec {
   mass: number; // kg
@@ -305,13 +304,13 @@ export class PlayerCar {
     this.revs += (target - this.revs) * Math.min(1, dt * k);
   }
 
-  /** 오른쪽 가드레일·왼쪽 중앙분리대 */
+  /** 오른쪽 가드레일·왼쪽 중앙분리대 (시내는 연석) */
   private collideWalls(road: Road) {
     this.hits.length = 0;
-    const w = road.widthAt(this.s);
     const half = this.spec.width / 2;
-    const rightWall = w / 2 + RIGHT_SHOULDER + 0.35 - half;
-    const leftWall = -w / 2 - LEFT_SHOULDER - 0.1 + half;
+    const [left, right] = road.walls(this.s);
+    const rightWall = right - half;
+    const leftWall = left + half;
     // 차가 비스듬하면 모서리가 먼저 닿는다
     const corner = Math.abs(Math.sin(this.theta)) * (this.spec.length / 2);
     const lateral = -(this.vx * Math.sin(this.theta) + this.vy * Math.cos(this.theta)); // d 방향 속도

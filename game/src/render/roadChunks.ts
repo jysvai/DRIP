@@ -102,7 +102,7 @@ class Geo {
 const tmpColor = new THREE.Color();
 
 /** 이음매 없이 반복되는 부드러운 값 잡음 (cells × cells 격자를 보간) */
-function tiledNoise(size: number, cells: number, rand: () => number): Float32Array {
+export function tiledNoise(size: number, cells: number, rand: () => number): Float32Array {
   const grid = new Float32Array(cells * cells);
   for (let i = 0; i < grid.length; i++) grid[i] = rand();
   const out = new Float32Array(size * size);
@@ -126,7 +126,7 @@ function tiledNoise(size: number, cells: number, rand: () => number): Float32Arr
   return out;
 }
 
-function xorshift(seed: number): () => number {
+export function xorshift(seed: number): () => number {
   let x = seed * 1234567;
   return () => {
     x ^= x << 13;
@@ -136,7 +136,7 @@ function xorshift(seed: number): () => number {
   };
 }
 
-function grayTexture(size: number, value: (i: number) => number): THREE.CanvasTexture {
+export function grayTexture(size: number, value: (i: number) => number): THREE.CanvasTexture {
   const c = document.createElement("canvas");
   c.width = c.height = size;
   const g = c.getContext("2d")!;
@@ -155,7 +155,7 @@ function grayTexture(size: number, value: (i: number) => number): THREE.CanvasTe
 }
 
 /** 아스팔트: 골재 알갱이, 얼룩, 패인 곳 (4m마다 반복) */
-function asphaltTexture(): THREE.CanvasTexture {
+export function asphaltTexture(): THREE.CanvasTexture {
   const size = 512;
   const rand = xorshift(3);
   const blotch = tiledNoise(size, 5, rand);
@@ -1343,7 +1343,7 @@ export class RoadChunks {
   }
 }
 
-function disposeGroup(g: THREE.Object3D) {
+export function disposeGroup(g: THREE.Object3D) {
   g.traverse((o) => {
     const m = o as THREE.Mesh;
     if (m.geometry && !(m as unknown as { isInstancedMesh?: boolean }).isInstancedMesh) m.geometry.dispose();
@@ -1400,7 +1400,7 @@ function makePineGeometry(far = false): THREE.BufferGeometry {
   return merged;
 }
 
-function makeBroadleafGeometry(far = false): THREE.BufferGeometry {
+export function makeBroadleafGeometry(far = false): THREE.BufferGeometry {
   // 참나무 같은 활엽수: 줄기 + 둥근 잎 뭉치 네 개. far: 먼 나무용 (잎 뭉치를 거친 20면체로)
   const trunk = new THREE.CylinderGeometry(0.2, 0.34, 4.2, far ? 3 : 5, 1, far);
   trunk.translate(0, 2.1, 0);

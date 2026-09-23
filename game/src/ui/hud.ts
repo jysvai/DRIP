@@ -5,6 +5,7 @@
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
 import type { Network } from "../road/route";
+import type { CityGraph } from "../city/graph";
 import type { LkaState } from "../sim/assist";
 import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
@@ -73,6 +74,8 @@ export interface HudOptions {
   iceWarn?: boolean;
   /** 악천후 감속: 날씨 이름과 법정 감속 배율 (weather.legalFactor) */
   weather?: { label: string; factorAt: (s: number) => number };
+  /** 시내 주행: 미니맵에 그릴 도로망 */
+  cityGraph?: CityGraph | null;
 }
 
 type Turn = "left" | "right" | "straight";
@@ -84,10 +87,12 @@ interface Maneuver {
   lanes: "left" | "right" | "all";
   /** 음성 안내용: 분기점 이름, 갈아탈 노선 이름, 방향 */
   voice?: { via: string; road: string; to: string };
+  /** 시내 교차로 회전: 돌 수 있는 차로 (1 = 가장 왼쪽) */
+  cityLanes?: [number, number];
 }
 
-/** 음성 안내 거리 (m): 분기점, 목적지 */
-const VOICE_AT = { turn: [2000, 1000, 300], dest: [2000, 500] };
+/** 음성 안내 거리 (m): 분기점, 시내 교차로, 목적지 */
+const VOICE_AT = { turn: [2000, 1000, 300], city: [1000, 300, 100], dest: [2000, 500] };
 
 /** 소리 내어 읽을 이름 (신갈JC → 신갈분기점) */
 function spoken(name: string): string {
@@ -105,6 +110,13 @@ export function turnPhrase(dist: number, kind: Turn, voice: { via: string; road:
   const side = kind === "left" ? "왼쪽 방향" : kind === "right" ? "오른쪽 방향" : "직진";
   if (dist <= 300) return kind === "straight" ? `잠시 후 ${v.to} 방향으로 직진입니다.` : `잠시 후 ${v.via}에서 ${side}입니다.`;
   return `${spokenDist(dist)} 앞, ${v.via}에서 ${v.road} ${v.to} 방향, ${side}입니다.`;
+}
+
+/** 시내 교차로 회전 안내 (한국 내비 말투) */
+export function cityTurnPhrase(dist: number, kind: "left" | "right", voice: { via: string; road: string }): string {
+  const word = kind === "left" ? "좌회전" : "우회전";
+  if (dist <= 150) return `잠시 후 ${word}입니다.`;
+  return `${spokenDist(dist)} 앞, ${voice.via}에서 ${voice.road} 방향으로 ${word}입니다.`;
 }
 
 export function destPhrase(dist: number): string {
@@ -265,7 +277,7 @@ export class Hud {
   private iceSaidS = -1e9;
   /** 남은 경로를 제한속도로 달리는 데 걸리는 시간 (1km 간격, 끝에서부터 누적) */
   private etaTable: Float32Array;
-  private netLines: { pts: Float32Array; box: [number, number, number, number] }[] = [];
+  private netLines: { pts: Float32Array; box: [number, number, number, number]; minor?: boolean }[] = [];
   private compact = false;
 
   constructor(
@@ -386,13 +398,14 @@ export class Hud {
     );
     el("hint", this.root, "<kbd>F1</kbd> 조작법 <kbd>Tab</kbd> 화면 크기 <kbd>Esc</kbd> 일시정지");
 
-    // 남은 시간 표: 제한속도 기준
+    // 남은 시간 표: 제한속도 기준 (시내는 신호 대기로 제한속도의 절반쯤)
     const n = Math.ceil(road.length / 1000) + 1;
     this.etaTable = new Float32Array(n + 1);
+    const pace = road.city ? 0.5 : 0.97;
     for (let k = n - 1; k >= 0; k--) {
       const s = Math.min(road.length, k * 1000 + 500);
-      const v = Math.max(40, road.speedAt(s, opts.heavy)) / 3.6;
-      this.etaTable[k] = this.etaTable[k + 1] + 1000 / (v * 0.97);
+      const v = Math.max(road.city ? 30 : 40, road.speedAt(s, opts.heavy)) / 3.6;
+      this.etaTable[k] = this.etaTable[k + 1] + 1000 / (v * pace);
     }
     if (opts.net) {
       const [ox, oy] = opts.net.origin;
@@ -413,6 +426,7 @@ export class Hud {
         this.netLines.push({ pts, box: [x0, y0, x1, y1] });
       }
     }
+    if (opts.cityGraph) this.addCityLines(opts.cityGraph);
     new ResizeObserver(() => {
       const r = this.mini.getBoundingClientRect();
       const dpr = Math.min(2, devicePixelRatio || 1);
@@ -428,6 +442,42 @@ export class Hud {
     });
   }
 
+  /** 시내: 경로 둘레 2km 안의 도로 (큰길은 굵게) */
+  private addCityLines(graph: CityGraph) {
+    const road = this.road;
+    const [ox, oy] = graph.origin;
+    let bx0 = Infinity;
+    let by0 = Infinity;
+    let bx1 = -Infinity;
+    let by1 = -Infinity;
+    for (let i = 0; i < road.n; i += 10) {
+      bx0 = Math.min(bx0, road.e[i]);
+      bx1 = Math.max(bx1, road.e[i]);
+      by0 = Math.min(by0, road.nn[i]);
+      by1 = Math.max(by1, road.nn[i]);
+    }
+    const pad = 2000;
+    for (const e of graph.edges) {
+      const p = e.pts;
+      const pts = new Float32Array(p.length);
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (let i = 0; i < p.length; i += 2) {
+        pts[i] = p[i] + ox - road.e[0];
+        pts[i + 1] = p[i + 1] + oy - road.nn[0];
+        x0 = Math.min(x0, p[i] + ox);
+        x1 = Math.max(x1, p[i] + ox);
+        y0 = Math.min(y0, p[i + 1] + oy);
+        y1 = Math.max(y1, p[i + 1] + oy);
+      }
+      if (x1 < bx0 - pad || x0 > bx1 + pad || y1 < by0 - pad || y0 > by1 + pad) continue;
+      const minor = !/^(t|p|s)/.test(e.cls);
+      this.netLines.push({ pts, box: [x0 - road.e[0], y0 - road.nn[0], x1 - road.e[0], y1 - road.nn[0]], minor });
+    }
+  }
+
   toast(text: string, sec = 2.2) {
     this.toastEl.textContent = text;
     this.toastEl.classList.add("show");
@@ -437,6 +487,24 @@ export class Hud {
   /** 다음 안내: 경로의 다음 조각으로 넘어가는 곳, 또는 목적지 */
   private maneuver(s: number): Maneuver | null {
     const road = this.road;
+    if (road.city) {
+      // 시내: 다음에 도는 교차로 (직진은 안내하지 않는다)
+      for (const st of road.city.stops) {
+        if (st.sExit < s || st.turn === "S") continue;
+        if (st.s > this.opts.finishS) break;
+        const kind = st.turn === "L" ? "left" : "right";
+        const via = st.name || "교차로";
+        return {
+          s: st.s,
+          kind,
+          text: `<b>${via}</b>에서 ${kind === "left" ? "좌회전" : "우회전"} · ${st.toName}`,
+          lanes: kind,
+          voice: { via, road: st.toName, to: "" },
+          cityLanes: st.lanes,
+        };
+      }
+      return { s: this.opts.finishS, kind: "dest", text: `목적지 <b>${this.opts.destName}</b>`, lanes: "all" };
+    }
     if (road.isRoute) {
       for (let k = 0; k + 1 < road.legs.length; k++) {
         const a = road.legs[k];
@@ -550,13 +618,14 @@ export class Hud {
     const say = this.opts.say;
     if (!say || dist < 0) return;
     if (m.kind !== "dest" && !m.voice) return;
-    const at = m.kind === "dest" ? VOICE_AT.dest : VOICE_AT.turn;
+    const at = m.kind === "dest" ? VOICE_AT.dest : m.cityLanes ? VOICE_AT.city : VOICE_AT.turn;
     const hit = at.filter((d) => dist <= d);
     if (!hit.length) return;
     const nearest = hit[hit.length - 1];
     const key = (d: number) => `${Math.round(m.s)}|${d}`;
     if (this.spoken.has(key(nearest))) return;
-    if (!say(m.kind === "dest" ? destPhrase(dist) : turnPhrase(dist, m.kind, m.voice!))) return;
+    const text = m.kind === "dest" ? destPhrase(dist) : m.cityLanes && m.kind !== "straight" ? cityTurnPhrase(dist, m.kind, m.voice!) : turnPhrase(dist, m.kind, m.voice!);
+    if (!say(text)) return;
     for (const d of hit) this.spoken.add(key(d));
   }
 
@@ -653,12 +722,19 @@ export class Hud {
     if (!road.onConnector(s)) this.lastLimit = posted;
     this.updateEnforcement(f, s, kmh);
     this.limit.classList.toggle("over", kmh > limit + 10);
-    this.title.innerHTML = `<span class="shield">${road.refAt(s)}</span>${road.sectionNameAt(s)}`;
+    const ref = road.refAt(s);
+    this.title.innerHTML = `${ref ? `<span class="shield">${ref}</span>` : ""}${road.sectionNameAt(s)}`;
     const st = road.structures.find((x) => s >= x.s0 && s < x.s1);
     const where = st ? ` · ${st.kind === Structure.Tunnel ? "터널" : "교량"}${st.name ? ` ${st.name}` : ""}` : "";
     const leg = road.legAt(s);
     const src = road.sourceAt(s);
-    this.meta.textContent = road.onConnector(s) ? `연결로${where}` : `${leg.to} 방향 · ${(src.s / 1000).toFixed(1)}km${where}`;
+    this.meta.textContent = road.city
+      ? road.inBox(s)
+        ? "교차로"
+        : `편도 ${road.lanesAt(s)}차로${where}`
+      : road.onConnector(s)
+        ? `연결로${where}`
+        : `${leg.to} 방향 · ${(src.s / 1000).toFixed(1)}km${where}`;
     const notes: string[] = [];
     if (this.opts.heavy) notes.push("화물차 제한속도");
     if (wf < 1) notes.push(`${this.opts.weather!.label} · ${Math.round((1 - wf) * 100)}% 감속 ${limit}km/h`);
@@ -691,18 +767,19 @@ export class Hud {
       // 차로 안내: 분기점 2km 앞부터 꺾는 쪽 두 차로 (왼쪽은 1차로(앞지르기 차로)를 빼고)
       const lanes = road.lanesAt(s);
       const bus = this.busZones.filter((z) => s >= z.s0 && s <= z.s1).map((z) => z.lane);
-      const guide = near && dist < 2000 && m.lanes !== "all" ? m.lanes : "";
+      const guide = near && dist < (m.cityLanes ? 500 : 2000) && m.lanes !== "all" ? m.lanes : "";
+      const cl = m.cityLanes;
       // 공사로 막힌 차로 (1.5km 앞부터)
       const work = (this.opts.workZones ?? []).find((z) => s > z.s0 - 1500 && s < z.s1);
       // 선 차가 막은 차로 (1km 앞부터)
       const inc = (this.opts.incidents ?? []).find((i) => i.lane > 0 && s > incidentBlockS(i) - 1000 && s < i.s + 10);
       const shut = [work?.lane ?? 0, inc?.lane ?? 0];
-      const key = `${lanes}|${f.lane}|${guide}|${bus.join(",")}|${shut.join(",")}`;
+      const key = `${lanes}|${f.lane}|${guide}|${cl ?? ""}|${bus.join(",")}|${shut.join(",")}`;
       if (key !== this.lastLanesKey) {
         this.lastLanesKey = key;
         let html = "";
         for (let l = 1; l <= lanes; l++) {
-          const rec = guide === "right" ? l > lanes - 2 : guide === "left" ? l >= Math.min(2, lanes) && l <= Math.min(3, lanes) : false;
+          const rec = !guide ? false : cl ? l >= cl[0] && l <= cl[1] : guide === "right" ? l > lanes - 2 : l >= Math.min(2, lanes) && l <= Math.min(3, lanes);
           const closed = shut.includes(l);
           const icon = closed ? LANE_ARROW.closed : rec ? LANE_ARROW[guide as "left" | "right"] : LANE_ARROW.up;
           html += `<i class="${l === f.lane ? "me" : ""}${rec && !closed ? " rec" : ""}${bus.includes(l) ? " bus" : ""}${closed ? " closed" : ""}">${icon}</i>`;
@@ -713,12 +790,19 @@ export class Hud {
 
     if (m) this.announce(m, m.s - s);
 
-    // 다음 나들목 셋
-    const next = road.junctions.filter((j) => j.s > s && j.s < this.opts.finishS && j.kind !== "기타").slice(0, 3);
+    // 다음 나들목 셋 (시내는 다음 신호 교차로 셋)
     const row = (kind: string, badge: string, name: string, d: number) => `<div class="${kind}"><i>${badge}</i><span>${name}</span><b>${distHtml(d)}</b></div>`;
-    this.upcoming.innerHTML =
-      next.map((j) => row(j.kind, KIND_BADGE[j.kind] ?? j.kind, j.kind === "IC" || j.kind === "JC" || j.kind === "TG" ? j.name.replace(new RegExp(`${j.kind}$`), "") : j.name, j.s - s)).join("") ||
-      row("dest", "도착", this.opts.destName, this.opts.finishS - s);
+    if (road.city) {
+      const next = road.city.stops.filter((x) => x.s > s && x.s < this.opts.finishS && (x.signal || x.turn !== "S")).slice(0, 3);
+      const badge = { S: "신호", L: "좌회전", R: "우회전" } as const;
+      this.upcoming.innerHTML =
+        next.map((x) => row(x.turn === "S" ? "IC" : "JC", badge[x.turn], x.name || "교차로", x.s - s)).join("") || row("dest", "도착", this.opts.destName, this.opts.finishS - s);
+    } else {
+      const next = road.junctions.filter((j) => j.s > s && j.s < this.opts.finishS && j.kind !== "기타").slice(0, 3);
+      this.upcoming.innerHTML =
+        next.map((j) => row(j.kind, KIND_BADGE[j.kind] ?? j.kind, j.kind === "IC" || j.kind === "JC" || j.kind === "TG" ? j.name.replace(new RegExp(`${j.kind}$`), "") : j.name, j.s - s)).join("") ||
+        row("dest", "도착", this.opts.destName, this.opts.finishS - s);
+    }
 
     // 남은 거리·도착 예정
     const remain = Math.max(0, this.opts.finishS - s);
@@ -779,22 +863,25 @@ export class Hud {
     g.lineCap = "round";
     g.lineJoin = "round";
     const R = range * 1.3;
-    // 주변 고속도로
-    g.strokeStyle = PAL.road;
-    g.lineWidth = Math.max(2, 5 * scale * 2);
-    g.beginPath();
-    for (const l of this.netLines) {
-      const [x0, y0, x1, y1] = l.box;
-      if (x1 < e0 - R || x0 > e0 + R || y1 < n0 - R || y0 > n0 + R) continue;
-      let first = true;
-      for (let i = 0; i < l.pts.length; i += 2) {
-        const [sx, sy] = tx(l.pts[i], l.pts[i + 1]);
-        if (first) g.moveTo(sx, sy);
-        else g.lineTo(sx, sy);
-        first = false;
+    // 주변 고속도로 (시내는 골목을 가늘게 먼저, 큰길을 굵게)
+    for (const minor of [true, false]) {
+      g.strokeStyle = PAL.road;
+      g.lineWidth = minor ? Math.max(1, 5 * scale) : Math.max(2, 5 * scale * 2);
+      g.beginPath();
+      for (const l of this.netLines) {
+        if (!!l.minor !== minor) continue;
+        const [x0, y0, x1, y1] = l.box;
+        if (x1 < e0 - R || x0 > e0 + R || y1 < n0 - R || y0 > n0 + R) continue;
+        let first = true;
+        for (let i = 0; i < l.pts.length; i += 2) {
+          const [sx, sy] = tx(l.pts[i], l.pts[i + 1]);
+          if (first) g.moveTo(sx, sy);
+          else g.lineTo(sx, sy);
+          first = false;
+        }
       }
+      g.stroke();
     }
-    g.stroke();
     // 경로: 지나온 길은 흐리게, 갈 길은 밝게
     const step = road.step;
     const i0 = Math.max(0, Math.floor((f.s - R) / step));

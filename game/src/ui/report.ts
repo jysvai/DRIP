@@ -1,7 +1,7 @@
 // 주행이 끝난 뒤 결과 화면: 요약 수치, 법규 판정, 이벤트 목록, 업로드 상태, 기록 파일 받기.
 
 import type { DriveEvent, EventType, Summary } from "../rules/engine";
-import { EVENT_LABELS, VIOLATIONS } from "../rules/engine";
+import { CITY_ONLY, EVENT_LABELS, HIGHWAY_ONLY, VIOLATIONS } from "../rules/engine";
 import type { UploadStatus } from "../log/recorder";
 import { REJECT_LABELS, type QualityResult } from "../log/quality";
 import { ICON } from "./icons";
@@ -16,6 +16,8 @@ export interface ReportInput {
   quality: QualityResult;
   exportJson: () => string;
   fileName: string;
+  /** 시내 주행이면 시내 판정만, 아니면 고속도로 판정만 보여 준다 */
+  urban?: boolean;
 }
 
 const REASONS: Record<string, string> = {
@@ -64,14 +66,15 @@ export function showReport(input: ReportInput, onRetry: () => void, onMenu: () =
   ];
   const dl = (cls: string, rows: [string, string][]) => `<dl class="${cls}">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
 
-  const vRows = VIOLATIONS.map((t) => [t, s.counts[t] ?? 0] as [EventType, number]);
+  const skip = input.urban ? HIGHWAY_ONLY : CITY_ONLY;
+  const vRows = VIOLATIONS.filter((t) => !skip.includes(t)).map((t) => [t, s.counts[t] ?? 0] as [EventType, number]);
   const other: EventType[] = ["hard_accel", "hard_brake", "near_miss", "crash"];
   const oRows = other.map((t) => [t, s.counts[t] ?? 0] as [EventType, number]);
   const total = (rows: [EventType, number][]) => rows.reduce((a, [, n]) => a + n, 0);
   const table = (rows: [EventType, number][]) =>
     `<table><tbody>${rows.map(([t, n]) => `<tr class="${n ? "" : "zero"}"><td>${EVENT_LABELS[t]}</td><td class="n${n ? " bad" : ""}">${n}</td></tr>`).join("")}</tbody></table>`;
 
-  const all = events.filter((e) => e.type !== "lane_change");
+  const all = events.filter((e) => e.type !== "lane_change" && e.type !== "junction_pass");
   const shown = all.slice(0, 60);
   const evRows = shown
     .map((e) => {

@@ -2,10 +2,14 @@
 
 import * as THREE from "three";
 import type { Road, RoadFile } from "./road/road";
-import { LANE_WIDTH, Structure } from "./road/road";
+import { Structure } from "./road/road";
 import { roughnessAt } from "./road/surface";
 import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
+import { CityScene } from "./render/city";
+import type { CityNet } from "./city/net";
+import type { CityStop } from "./city/route";
+import type { Signals } from "./city/signals";
 import { PlayerView, CAMERA_LABELS, SHAKE_SCALE, blinkOn, type CameraMode } from "./render/playerView";
 import { Sparks } from "./render/sparks";
 import { expansionJoints, rumbleContact } from "./road/surface";
@@ -55,6 +59,8 @@ export interface DriveSetup {
   destName: string;
   originName: string;
   vehicle: VehicleType;
+  /** 시내 주행: 도로망과 신호 (고속도로면 없음) */
+  city?: { net: CityNet; signals: Signals } | null;
 }
 
 /** 마지막 한글 글자에 받침이 있으면 b, 없으면 a (예: 와/과) */
@@ -77,7 +83,13 @@ export class Game {
   /** 비 오는 날 차들이 튀기는 물보라 */
   readonly spray: SprayView;
   private spraySources: SpraySource[] = [];
-  readonly chunks: RoadChunks;
+  readonly chunks: RoadChunks | CityScene;
+  /** 시내 주행이면 도로망과 신호 */
+  readonly city: { net: CityNet; signals: Signals } | null;
+  /** 시내: 경로의 교차로 (정지선 순) */
+  private stops: CityStop[] = [];
+  /** 자동 운전이 적색 우회전을 위해 정지선에 선 시각 */
+  private autoHoldAt = -1;
   readonly rules: RuleEngine;
   readonly recorder: Recorder;
   readonly input: Input;
@@ -193,10 +205,20 @@ export class Game {
     this.baseDaylight = sun.daylight * (1 - 0.35 * weather.overcast);
     this.world.daylight = this.baseDaylight;
 
-    this.busZones = routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
-    this.chunks = new RoadChunks(road, this.world);
-    this.chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
-    this.enforcement = enforcementFor(road, cfg.cameras);
+    const city = setup.city ?? null;
+    this.city = city;
+    this.stops = road.city?.stops ?? [];
+    this.busZones = city ? [] : routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
+    if (city) {
+      // 시내는 건물이 가려 멀리 볼 일이 적어서 900m까지만 만든다
+      this.chunks = new CityScene(city.net, city.signals, this.world, () => this.signalClock);
+      this.world.setViewCap(900);
+    } else {
+      const chunks = new RoadChunks(road, this.world);
+      chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
+      this.chunks = chunks;
+    }
+    this.enforcement = city ? { fixed: [], sections: [] } : enforcementFor(road, cfg.cameras);
     this.chunks.setEnforcement(this.enforcement);
     if (weather.wet) this.chunks.setWet(0.75 + 0.25 * Math.max(weather.rain, weather.snow * 0.5), this.weatherView.roadEnvironment());
     // 눈: 땅·나무·방호벽 윗면에 쌓인다
@@ -207,8 +229,9 @@ export class Game {
     this.player = new PlayerCar(this.spec);
     // 젖은 노면은 미끄럽다 (터널 안은 마른 노면). 새벽 결빙이면 언 곳만 아주 미끄럽다
     const heavyGrip = this.spec.vehicleClass !== "car";
-    const s0 = Math.max(60, Math.min(setup.finishS - 400, setup.startS));
-    this.ice = weather.ice ? planIce(road, { seed: settings.seed, startS: s0, finishS: setup.finishS }) : [];
+    // 시내는 출발지 길가에 서 있다가 출발한다
+    const s0 = city ? Math.max(2, Math.min(setup.finishS - 50, setup.startS)) : Math.max(60, Math.min(setup.finishS - 400, setup.startS));
+    this.ice = weather.ice && !city ? planIce(road, { seed: settings.seed, startS: s0, finishS: setup.finishS }) : [];
     this.player.grip = (kmh) => {
       const s = this.player.s;
       if (this.ice.length && iceAt(this.ice, s)) return heavyGrip ? ICE_GRIP.heavy : ICE_GRIP.car;
@@ -216,19 +239,23 @@ export class Game {
     };
     const lanes = road.lanesAt(s0);
     // 화물·대형승합은 지정차로(오른쪽)에서 출발
-    const startLane = this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
+    const startLane = city || this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
-    const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
+    const startKmh = city ? 0 : Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
     this.lastGear = this.player.gear;
     const night = sun.night > 0.5;
     // '실제' 교통을 고르고 실제 돌발상황(ITS)이 있으면 그 공사·선 차를 쓴다
-    const real = settings.preset === "실제" ? realEventsFor(road, cfg.events) : null;
+    const real = settings.preset === "실제" && !city ? realEventsFor(road, cfg.events) : null;
     this.realEvents = real ? realEventsStamp(cfg.events!) : "";
     if (real) {
       const ahead = (s: number) => s > s0 + 300 && s < setup.finishS - 300;
       this.workZones = real.workZones.filter((z) => ahead(z.s0));
       this.incidents = real.incidents.filter((i) => ahead(i.s));
+    } else if (city) {
+      // 시내 공사·돌발상황은 아직 없다
+      this.workZones = [];
+      this.incidents = [];
     } else {
       // 공사 구간 (시드로 도로 전체에 놓고 출발 1.2km 뒤부터, 시간대·요일 빈도)
       this.workZones = planWorkZones(road, { seed: settings.seed, hour: settings.hour, weekend: settings.weekend, startS: s0, finishS: setup.finishS });
@@ -241,12 +268,12 @@ export class Game {
     if (this.ice.length) this.chunks.setIce(this.ice, this.weatherView.roadEnvironment());
 
     // 실제 교통은 출발 위치의 원래 주행선·위치로 찾는다
-    const tr = this.trafficAt(s0);
+    const tr = city ? { density: 0, composition: cfg.traffic.composition, source: "city", flowKmh: undefined } : this.trafficAt(s0);
     this.legIndex = road.legs.indexOf(road.legAt(s0));
     this.traffic = new Traffic(road, cfg, settings.seed);
     this.eventRng = new Rng(settings.seed * 7 + 13);
     this.cutInTimer = CUT_IN.first[0] + this.eventRng.next() * (CUT_IN.first[1] - CUT_IN.first[0]);
-    this.traffic.density = Math.max(1, tr.density);
+    this.traffic.density = city ? 0 : Math.max(1, tr.density);
     this.traffic.flowSpeed = tr.flowKmh ? tr.flowKmh / 3.6 : null;
     // 날씨 반응: 비에는 속도를 거의 줄이지 않고(실측), 폭우·안개에는 줄인다 (driver_profiles.json weather)
     const resp = trafficResponse(weather, cfg.profiles.weather);
@@ -279,6 +306,7 @@ export class Game {
       idleRpm: this.spec.idleRpm,
       heavy: heavySpeed,
       net: setup.net,
+      cityGraph: city?.net.graph ?? null,
       say: (text) => {
         if (this.state !== "run") return false;
         this.sound.say(text);
@@ -305,13 +333,14 @@ export class Game {
     this.rules.incidents = this.incidents;
     this.rules.ice = this.ice;
     this.rules.weatherFactor = legalFactor(weather, cfg.rules);
+    if (city) this.rules.city = { stops: this.stops, light: (st) => city.signals.go(st.junction, st.link, st.turn, this.signalClock) };
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.lka = settings.lka ?? true;
     this.input.pedal = settings.pedal ?? "hold";
     this.startS = s0;
     // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다
-    if ((settings.pace ?? "digest") === "digest") {
+    if (!city && (settings.pace ?? "digest") === "digest") {
       const wins = planDigest({
         startS: s0,
         finishS: setup.finishS,
@@ -381,6 +410,17 @@ export class Game {
     this.hud.toast(`${leg.name} · ${leg.to} 방향`, 2.5);
   }
 
+  /** 시내 신호 시각 (자정부터 s): 출발 시각 + 달린 시간 + 건너뛴 시간 */
+  get signalClock(): number {
+    return this.settings.hour * 3600 + this.t + this.clockOffset;
+  }
+
+  /** 시내: s 앞(또는 지나는 중인) 첫 교차로 */
+  private stopAhead(s: number): CityStop | null {
+    for (const st of this.stops) if (st.sExit > s) return st;
+    return null;
+  }
+
   playerState(): PlayerState {
     const p = this.player;
     return { s: p.s, d: p.d, v: p.vx * Math.cos(p.theta), len: p.spec.length, width: p.spec.width };
@@ -411,11 +451,18 @@ export class Game {
     const cut = Math.round((1 - this.rules.weatherFactor) * 100);
     const weatherNote = this.weatherNote(cut);
     if (weatherNote) notes.push(weatherNote);
+    const signals = this.stops.filter((x) => x.signal && x.s > s).length;
+    const turns = this.stops.filter((x) => x.turn !== "S" && x.s > s).length;
+    const body = this.city
+      ? `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로 길가에 서 있습니다. 목적지까지 <b>${remain.toFixed(1)}km</b>, 신호 교차로 ${signals}곳을 지나고 ${turns}번 돕니다.` +
+        (notes.length ? `<br>${notes.join(" ")}` : "") +
+        "<br><span class='muted'>시내 주행입니다. 신호를 지키고, 좌회전·우회전은 미리 그쪽 차로로 옮겨 방향지시등을 켜세요. 우회전은 적색 신호여도 정지선에서 멈췄다가 천천히 돌 수 있습니다. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>"
+      : `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
+        (notes.length ? `<br>${notes.join(" ")}` : "") +
+        "<br><span class='muted'>위쪽 안내를 따라 분기점에서 갈아타세요. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>";
     showDialog(
       `${this.setup.originName} → ${this.setup.destName}`,
-      `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
-        (notes.length ? `<br>${notes.join(" ")}` : "") +
-        "<br><span class='muted'>위쪽 안내를 따라 분기점에서 갈아타세요. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>",
+      body,
       [
         { label: "조작법 (F1)", key: "F1", keep: true, onClick: () => showControls() },
         {
@@ -426,7 +473,7 @@ export class Game {
             this.state = "run";
             this.sound.resume();
             this.sound.say(
-              `경로 안내를 시작합니다. ${this.setup.destName}까지 ${Math.round(remain)}킬로미터입니다.` +
+              `경로 안내를 시작합니다. ${this.setup.destName}까지 ${remain < 10 ? `${remain.toFixed(1)}` : Math.round(remain)}킬로미터입니다.` +
                 (cut
                   ? ` ${this.weather.visibilityM <= 100 ? "앞이 잘 보이지 않습니다" : this.weather.snow > 0 ? "눈길입니다" : "노면이 젖어 있습니다"}. 제한속도의 ${cut}퍼센트를 줄여 달리세요.`
                   : ""),
@@ -572,7 +619,7 @@ export class Game {
     this.feel(dt, scraping);
 
     // 교통
-    if (this.road.isRoute) this.updateLegTraffic();
+    if (this.road.isRoute && !this.city) this.updateLegTraffic();
     const ps = this.playerState();
     this.traffic.update(dt, ps, this.t);
     this.cutIns(dt, ps);
@@ -580,9 +627,13 @@ export class Game {
     this.collide();
     if (this.state !== "run") return;
 
-    // 방향지시등: 차로를 옮기고 핸들을 풀면 꺼진다
+    // 방향지시등: 차로를 옮기고 핸들을 풀면 꺼진다. 시내에서는 곧 같은 쪽으로 돌 거면 켜 두고, 돌고 나서 핸들을 풀면 꺼진다
     const lane = road.laneOf(p.d, p.s);
-    if (this.signal !== 0 && lane !== this.laneForSignal && Math.sign(lane - this.laneForSignal) === this.signal) this.signalCancelAt = this.t + 1.2;
+    const st = this.city ? this.stopAhead(p.s) : null;
+    const turnDir = st ? (st.turn === "L" ? -1 : st.turn === "R" ? 1 : 0) : 0;
+    const turnSoon = !!st && turnDir === this.signal && st.s - p.s < 200;
+    if (this.signal !== 0 && !turnSoon && lane !== this.laneForSignal && Math.sign(lane - this.laneForSignal) === this.signal) this.signalCancelAt = this.t + 1.2;
+    if (st && turnDir === this.signal && this.signal !== 0 && p.s > st.sExit - 3) this.signalCancelAt = this.t + 0.2;
     this.laneForSignal = lane;
     if (this.signalCancelAt > 0 && this.t >= this.signalCancelAt && Math.abs(c.steer) < 0.12) {
       this.signal = 0;
@@ -740,7 +791,7 @@ export class Game {
    */
   private cutIns(dt: number, ps: PlayerState) {
     const p = this.player;
-    if (this.autopilot || p.speed < CUT_IN.minKmh / 3.6 || this.road.onConnector(p.s)) return;
+    if (this.city || this.autopilot || p.speed < CUT_IN.minKmh / 3.6 || this.road.onConnector(p.s)) return;
     this.cutInTimer -= dt;
     if (this.cutInTimer > 0) return;
     const r = this.traffic.cutIn(ps);
@@ -796,7 +847,7 @@ export class Game {
           d: p.d,
           ddot: -(p.vx * Math.sin(p.theta) + p.vy * Math.cos(p.theta)),
           center: road.laneCenter(lane, p.s),
-          laneWidth: LANE_WIDTH,
+          laneWidth: road.laneWidth,
           carWidth: p.spec.width,
           steer: c.steer,
         });
@@ -1049,15 +1100,19 @@ export class Game {
   private guardrail(lateral: number, side: "left" | "right") {
     const kmh = lateral * 3.6;
     if (kmh < 4) return;
+    // 시내는 보도 연석, 넓은 중앙분리대 (한 줄 왕복 도로는 반대편 차도 너머 연석)
+    const s = this.player.s;
+    const curb = !!this.city && (side === "right" || !this.road.hardMedianAt(s) || this.road.medianAt(s) < 1);
+    const what = curb ? "연석" : side === "left" ? "중앙분리대" : "가드레일";
     if (this.contactCooldown <= 0) {
-      this.rules.crash(this.frameInfo(0), side === "left" ? "median_barrier" : "guardrail", kmh);
+      this.rules.crash(this.frameInfo(0), curb ? "curb" : side === "left" ? "median_barrier" : "guardrail", kmh);
       this.contactCooldown = 1;
       this.sound.crash(Math.min(1, kmh / 40), side === "left" ? -1 : 1);
       this.view.shake.add(Math.min(0.6, kmh / 50));
       this.input.pulse(Math.min(1, kmh / 30), 0.5, 150);
     }
-    if (kmh >= SERIOUS_KMH + 5) this.crashed(side === "left" ? "중앙분리대 충돌" : "가드레일 충돌", kmh);
-    else this.hud.toast(side === "left" ? "중앙분리대에 닿았습니다" : "가드레일에 닿았습니다", 1.2);
+    if (kmh >= SERIOUS_KMH + 5) this.crashed(`${what} 충돌`, kmh);
+    else this.hud.toast(`${what}에 닿았습니다`, 1.2);
   }
 
   private crashed(what: string, kmh: number) {
@@ -1090,7 +1145,7 @@ export class Game {
     const zone = this.workZones.find((z) => z.lane === lane && s > z.s0 - 50 && s < z.s1 + END_TAPER_M);
     if (zone) lane = zone.side === "right" ? lane - 1 : lane + 1;
     this.traffic.clearAround(s, 300);
-    p.place(road, s, lane, 50 / 3.6);
+    p.place(road, s, lane, this.city ? 0 : 50 / 3.6);
     this.axleS = [NaN, NaN];
     this.lastGear = p.gear;
     this.hazard = false;
@@ -1123,6 +1178,7 @@ export class Game {
         quality,
         exportJson: () => this.recorder.exportJson(summary, quality),
         fileName: `drip_${this.road.id.replace(/[^\w가-힣-]+/g, "_")}_${stamp}.json`,
+        urban: !!this.city,
       },
       () => {
         sessionStorage.setItem("drip_retry", JSON.stringify(this.settings));
@@ -1206,8 +1262,31 @@ export class Game {
     const lanes = road.lanesAt(p.s);
     if (!this.autoLane) this.autoLane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
     if (this.autoLane > lanes) this.autoLane = lanes;
+    // 시내: 250m 앞 교차로에서 도는 쪽 차로로, 신호가 빨간불이면(노란불에 설 수 있으면) 정지선 앞에 선다
+    let stopGap = Infinity;
+    const st = this.city ? this.stopAhead(p.s) : null;
+    if (st && this.city) {
+      const mv = this.city.net.movements[st.movement];
+      if (st.s > p.s && st.s - p.s < 250) this.autoLane = Math.max(mv.fromLanes[0], Math.min(mv.fromLanes[1], this.autoLane));
+      const gap = st.s - 1 - (p.s + p.spec.length / 2);
+      if (st.signal && gap > -1) {
+        const go = this.city.signals.go(st.junction, st.link, st.turn, this.signalClock);
+        const canStop = (p.speed * p.speed) / (2 * 3) < gap;
+        if (go === "stop" || (go === "yellow" && canStop)) stopGap = Math.max(0.1, gap);
+        // 적색 우회전: 정지선에 멈춘 뒤 2초 기다렸다가 돈다
+        if (go === "stop" && st.turn === "R") {
+          if (p.speed < 0.3 && gap < 4 && this.autoHoldAt < 0) this.autoHoldAt = this.t;
+          if (this.autoHoldAt >= 0 && this.t - this.autoHoldAt > 2) stopGap = Infinity;
+        }
+      }
+      if (gap < -1) this.autoHoldAt = -1;
+      // 방향지시등: 차로를 옮길 때, 돌기 60m 앞부터
+      const cur = road.laneOf(p.d, p.s);
+      const want = this.autoLane !== cur && cur >= 1 && cur <= lanes ? Math.sign(this.autoLane - cur) : st.turn !== "S" && st.s - p.s < 60 ? (st.turn === "L" ? -1 : 1) : 0;
+      if (want && this.signal !== want) this.setSignal(want as -1 | 1);
+    }
     const v = Math.max(p.vx, 1);
-    const Ld = Math.max(12, v * 1.1);
+    const Ld = this.city ? Math.max(6, v * 1.1) : Math.max(12, v * 1.1);
     const dT = road.laneCenter(this.autoLane, Math.min(road.length - 1, p.s + Ld));
     const k = road.sample(p.s).kappa;
     const y = -(dT - p.d) + (k * Ld * Ld) / 2;
@@ -1226,10 +1305,28 @@ export class Game {
     }
     // 제한속도(공사 구간·악천후 감속 포함)보다 조금 낮게, 미끄러우면 굽은 길에서 더 천천히
     const v0 = (this.rules.limitAt(p.s) - 5) / 3.6;
-    const kk = Math.abs(road.sample(Math.min(road.length - 1, p.s + 120)).kappa);
-    const vc = kk > 1e-4 ? Math.min(v0, Math.sqrt((2.5 * p.grip(p.speed * 3.6)) / kk)) : v0;
-    const sStar = 3 + Math.max(0, v * 1.6 + (lead ? (v * (v - lead.v)) / (2 * Math.sqrt(2 * 3)) : 0));
-    const accel = 2 * (1 - (v / vc) ** 4 - (lead ? (sStar / Math.max(0.5, gap)) ** 2 : 0));
+    const grip = p.grip(p.speed * 3.6);
+    let vc = v0;
+    if (this.city) {
+      // 교차로 회전: 80m 안의 가장 굽은 곳에 맞춰 (2m/s²로 줄여 가며) 속도를 정한다
+      for (let x = 0; x <= 80; x += 4) {
+        const k = Math.abs(road.sample(Math.min(road.length - 1, p.s + x)).kappa);
+        if (k > 1e-4) vc = Math.min(vc, Math.sqrt((2.5 * grip) / k + 2 * 2 * x));
+      }
+    } else {
+      const kk = Math.abs(road.sample(Math.min(road.length - 1, p.s + 120)).kappa);
+      if (kk > 1e-4) vc = Math.min(v0, Math.sqrt((2.5 * grip) / kk));
+    }
+    // 정지선은 서 있는 앞차로 본다
+    let leadV = lead ? lead.v : 0;
+    let leadGap = gap;
+    if (stopGap < leadGap) {
+      leadGap = stopGap;
+      leadV = 0;
+    }
+    const has = Number.isFinite(leadGap);
+    const sStar = (this.city ? 1.5 : 3) + Math.max(0, v * (this.city ? 1.2 : 1.6) + (has ? (v * (v - leadV)) / (2 * Math.sqrt(2 * 3)) : 0));
+    const accel = 2 * (1 - (v / Math.max(0.5, vc)) ** 4 - (has ? (sStar / Math.max(0.5, leadGap)) ** 2 : 0));
     return {
       throttle: accel > 0 ? Math.min(1, accel / 2 + 0.15) : 0,
       brake: accel < -0.3 ? Math.min(1, -accel / 8) : 0,

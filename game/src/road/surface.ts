@@ -66,7 +66,8 @@ function overlap(a0: number, a1: number, b0: number, b1: number): number {
  * d: 차 중심 가로 위치, halfTrack: 좌우 바퀴 중심 간격의 반, w: 차로 폭 합.
  */
 export function rumbleContact(road: Road, s: number, d: number, halfTrack: number): { amount: number; side: number } {
-  if (road.structureAt(s) === Structure.Tunnel) return { amount: 0, side: 0 };
+  // 터널 안과 시내 도로에는 노면요철이 없다
+  if (road.city || road.structureAt(s) === Structure.Tunnel) return { amount: 0, side: 0 };
   const w = road.widthAt(s);
   const rw = d + halfTrack;
   const lw = d - halfTrack;

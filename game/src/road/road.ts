@@ -6,6 +6,8 @@
 //   d     : 주행선 중심에서 진행 방향 오른쪽으로 잰 거리(m). 차로 번호는 왼쪽(중앙분리대 쪽)부터 1차로.
 //   heading: 동쪽 기준 반시계 방향 각도(rad)
 
+import type { CityInfo } from "../city/route";
+
 export const LANE_WIDTH = 3.6;
 export const RIGHT_SHOULDER = 3.0;
 export const LEFT_SHOULDER = 1.0;
@@ -47,6 +49,8 @@ export interface RoadFile {
   length: number;
   step: number;
   origin: [number, number];
+  /** dx·dy 한 칸의 길이 (m). 없으면 0.1 (고속도로). 시내는 점 간격이 2m라 0.01 */
+  unit?: number;
   dx: number[];
   dy: number[];
   z: number[];
@@ -63,6 +67,8 @@ export interface RoadFile {
   refs?: Run<string>[];
   /** 경로일 때만: 이어 붙인 조각들 */
   legs?: LegInfo[];
+  /** 시내 도로일 때만: 반대편 차로·중앙선·교차로 구간·정지선 (city/route.ts) */
+  city?: CityInfo;
 }
 
 /** 경로 조각: 이어 붙인 도로의 s0~s1이 원래 주행선 road의 src0~src1 */
@@ -170,6 +176,16 @@ export class Road {
   /** 경로일 때 조각들 (한 주행선이면 그 주행선 전체 한 조각) */
   readonly legs: LegInfo[];
   readonly isRoute: boolean;
+  /** 차로 폭 (고속도로 3.6m, 시내 3.25m) */
+  readonly laneWidth: number;
+  /** 시내 도로 정보 (고속도로는 null) */
+  readonly city: CityInfo | null;
+  /** 시내: 반대 방향 차로 수, 우리 차도 왼쪽 끝에서 반대편 차도까지 거리, 분리대가 연석인지 */
+  private readonly oppLanes: Uint8Array | null = null;
+  private readonly medianW: Float32Array | null = null;
+  private readonly medianHard: Uint8Array | null = null;
+  /** 시내: 교차로 안인지 (0 밖, 1 안) */
+  private readonly box: Uint8Array | null = null;
   private readonly refs: Run<string>[];
 
   constructor(f: RoadFile) {
@@ -186,15 +202,16 @@ export class Road {
     this.e = new Float64Array(n);
     this.nn = new Float64Array(n);
     this.z = new Float64Array(n);
-    let qx = Math.round(f.origin[0] * 10);
-    let qy = Math.round(f.origin[1] * 10);
-    this.e[0] = qx / 10;
-    this.nn[0] = qy / 10;
+    const per = Math.round(1 / (f.unit ?? 0.1));
+    let qx = Math.round(f.origin[0] * per);
+    let qy = Math.round(f.origin[1] * per);
+    this.e[0] = qx / per;
+    this.nn[0] = qy / per;
     for (let i = 1; i < n; i++) {
       qx += f.dx[i - 1];
       qy += f.dy[i - 1];
-      this.e[i] = qx / 10;
-      this.nn[i] = qy / 10;
+      this.e[i] = qx / per;
+      this.nn[i] = qy / per;
     }
     for (let i = 0; i < n; i++) this.z[i] = (f.z[i] ?? f.z[f.z.length - 1] ?? 0) / 10;
 
@@ -238,17 +255,19 @@ export class Road {
       this.kappa[i] = sum / cnt;
     }
 
+    this.city = f.city ?? null;
+    this.laneWidth = f.city?.laneWidth ?? LANE_WIDTH;
     this.lanes = Uint8Array.from(expandRuns(f.lanes, n, f.step, 2));
     this.speed = Uint8Array.from(expandRuns(f.speed, n, f.step, 100));
     this.speedHgv = Uint8Array.from(expandRuns(f.speedHgv, n, f.step, 80));
     this.minSpeed = Uint8Array.from(expandRuns(f.minSpeed, n, f.step, 50));
     this.structure = Uint8Array.from(expandRuns(f.structure, n, f.step, 0));
 
-    // 폭: 차로 수 변화는 약 200m에 걸쳐 서서히
+    // 폭: 차로 수 변화는 약 200m에 걸쳐 서서히 (시내는 교차로 앞뒤에서 바뀌므로 약 20m)
     this.width = new Float32Array(n);
     const target = new Float32Array(n);
-    for (let i = 0; i < n; i++) target[i] = this.lanes[i] * LANE_WIDTH;
-    const half = Math.round(100 / f.step);
+    for (let i = 0; i < n; i++) target[i] = this.lanes[i] * this.laneWidth;
+    const half = Math.round((f.city ? 10 : 100) / f.step);
     let acc = 0;
     const prefix = new Float64Array(n + 1);
     for (let i = 0; i < n; i++) {
@@ -280,6 +299,15 @@ export class Road {
         return { s, name: shortJunctionName(name, kind), exitNo: ref, kind };
       });
     this.terrain = f.terrain;
+    if (f.city) {
+      const c = f.city;
+      this.oppLanes = Uint8Array.from(expandRuns(c.oppLanes, n, f.step, 0));
+      this.medianW = Float32Array.from(expandRuns(c.median, n, f.step, 0));
+      this.medianHard = Uint8Array.from(expandRuns(c.medianKind, n, f.step, 0));
+      this.box = new Uint8Array(n);
+      // 1 = 교차로, 2 = 갈라지기·합치기만 하는 곳
+      for (const [s0, s1, , minor] of c.boxes) for (let i = Math.max(0, Math.floor(s0 / f.step)); i <= Math.min(n - 1, Math.ceil(s1 / f.step)); i++) this.box[i] = minor ? 2 : 1;
+    }
     this.isRoute = !!f.legs?.length;
     this.legs = f.legs?.length
       ? f.legs
@@ -339,7 +367,7 @@ export class Road {
 
   /** lane: 1이 가장 왼쪽 차로 */
   laneCenter(lane: number, s: number): number {
-    return -this.widthAt(s) / 2 + (lane - 0.5) * LANE_WIDTH;
+    return -this.widthAt(s) / 2 + (lane - 0.5) * this.laneWidth;
   }
 
   /** d가 속한 차로 번호 (차도 밖이면 0 또는 lanes+1) */
@@ -348,8 +376,62 @@ export class Road {
     const x = d + w / 2;
     if (x < 0) return 0;
     const lanes = this.lanesAt(s);
-    const lane = Math.floor(x / LANE_WIDTH) + 1;
+    const lane = Math.floor(x / this.laneWidth) + 1;
     return Math.min(lane, lanes + 1);
+  }
+
+  /** 시내: 반대 방향 차로 수 (고속도로는 우리와 같은 수) */
+  oppLanesAt(s: number): number {
+    return this.oppLanes ? this.oppLanes[this.index(s)] : this.lanesAt(s);
+  }
+
+  /** 시내: 우리 차도 왼쪽 끝에서 반대편 차도까지 (m). 고속도로는 분리대 3m */
+  medianAt(s: number): number {
+    return this.medianW ? this.medianW[this.index(s)] : 3;
+  }
+
+  /** 가운데가 넘을 수 없는 분리대(방호벽·연석)인지 */
+  hardMedianAt(s: number): boolean {
+    return this.medianHard ? this.medianHard[this.index(s)] === 1 : true;
+  }
+
+  /** 시내: 교차로 안인지 (정지선에서 건너편 도로 시작까지) */
+  inBox(s: number): boolean {
+    return this.box ? this.box[this.index(s)] === 1 : false;
+  }
+
+  /** 시내: 교차로나 갈라지기·합치기 곡선 위인지 (여기서 차로 번호가 들어온 도로에서 나갈 도로로 바뀐다) */
+  inJunction(s: number): boolean {
+    return this.box ? this.box[this.index(s)] > 0 : false;
+  }
+
+  /**
+   * 차가 닿는 벽의 d (왼쪽, 오른쪽): 고속도로는 중앙분리대·가드레일, 시내는 연석(보도)과 반대편 차도 바깥 연석.
+   * 시내 교차로 안은 넓게 열고, 교차로 끝 6m에 걸쳐 모서리 연석으로 좁힌다.
+   */
+  walls(s: number): [number, number] {
+    const w = this.widthAt(s);
+    if (!this.city) return [-w / 2 - LEFT_SHOULDER - 0.1, w / 2 + RIGHT_SHOULDER + 0.35];
+    const curb = (at: number): [number, number] => {
+      const ww = this.widthAt(at);
+      const right = ww / 2 + 0.45;
+      const opp = this.oppLanesAt(at);
+      const left = opp > 0 && !this.hardMedianAt(at) ? -ww / 2 - this.medianAt(at) - opp * this.laneWidth - 0.45 : -ww / 2 - 0.35;
+      return [left, right];
+    };
+    if (!this.inBox(s)) {
+      // 교차로 바로 앞뒤: 모서리를 돌아 나가는 곳이라 조금씩 넓힌다
+      let near = Infinity;
+      for (let k = 1; k <= 3; k++) {
+        if (this.inBox(s + k * 2)) near = Math.min(near, k * 2);
+        if (this.inBox(s - k * 2)) near = Math.min(near, k * 2);
+      }
+      const [l, r] = curb(s);
+      if (near === Infinity) return [l, r];
+      const open = (1 - near / 8) * 6;
+      return [l - open, r + open];
+    }
+    return [-w / 2 - 30, w / 2 + 30];
   }
 
   speedAt(s: number, heavy = false): number {

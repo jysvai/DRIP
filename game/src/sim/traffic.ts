@@ -633,6 +633,7 @@ export class Traffic {
     const sMax = player.s + REGION_AHEAD;
     this.agents = this.agents.filter((a) => a.s > sMin - 100 && a.s < sMax + 100 && a.s < road.length - 5);
     this.opposite = this.opposite.filter((a) => -a.s > sMin - 100 && -a.s < sMax + 100 && -a.s > 5);
+    if (!(this.density > 0)) return;
     const spacing = 1000 / this.density;
 
     const spawnLane = (list: Agent[], opposite: boolean, lane: number, at: number, ahead: boolean) => {

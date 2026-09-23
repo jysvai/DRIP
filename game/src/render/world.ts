@@ -170,6 +170,8 @@ export class World {
   /** 끊길 때 낮추는 해상도 배율 (1 = 품질의 pixelRatio 그대로) */
   resolutionScale = 1;
   private fogLimit = { far: Infinity, near: Infinity };
+  /** 그리는 거리 상한 (시내는 건물에 가려 멀리 볼 일이 없어 가깝게 둔다) */
+  private viewCap = Infinity;
   /** 후처리 (high에서만) */
   readonly post: PostFx;
   private qualityListeners: ((q: Quality, s: QualitySettings) => void)[] = [];
@@ -308,6 +310,12 @@ export class World {
     this.resize();
   }
 
+  /** 그리는 거리 상한 (m) */
+  setViewCap(m: number) {
+    this.viewCap = m;
+    this.refreshFog();
+  }
+
   /** 날씨 가시거리: 안개가 이 거리(far)에서 다 흐려지고 near부터 흐려지기 시작한다 */
   setVisibility(far: number, near: number) {
     this.fogLimit = { far, near };
@@ -322,7 +330,7 @@ export class World {
     const fog = this.scene.fog as THREE.Fog;
     const n = this.night;
     const day = Math.max(DAY_FOG_FAR, this.settings.viewDistance);
-    fog.far = Math.min(day - (day - 900) * n, this.fogLimit.far, this.settings.viewDistance);
+    fog.far = Math.min(day - (day - 900) * n, this.fogLimit.far, this.settings.viewDistance, this.viewCap);
     fog.near = Math.min(250 - 200 * n, this.fogLimit.near, fog.far * 0.3);
   }
 

@@ -6,10 +6,15 @@
 //   cam=cockpit|hood|chase, auto=1(자동 운전), sound=0, voice=0(음성 안내 끄기),
 //   car=차종 id, color=#rrggbb, quality=auto|low|medium|high|ultra, shake=on|low|off(화면 흔들림), go=1(출발 안내 없이),
 //   pace=full(요약 없이 처음부터 끝까지, 기본은 요약 주행), lka=0(차로 유지 보조 끄기), pedal=momentary(키보드 가속 페달을 누르는 동안만)
+//   ?city=seoul&from=강동역&to=삼원타워   시내 주행 (서울 시내 도로망, 신호 교차로)
 
 import "./ui/style.css";
 import { Sound } from "./audio/sound";
 import { Game, type DriveSetup } from "./game";
+import { searchCityPlaces } from "./city/graph";
+import { loadCity } from "./city/load";
+import { cityRoadFile, findCityRoute } from "./city/route";
+import { Signals } from "./city/signals";
 import { loadSignFonts } from "./render/signs";
 import { paletteFor } from "./render/vehicleModels";
 import { Road } from "./road/road";
@@ -25,7 +30,7 @@ function loading(text: string) {
   const d = document.createElement("div");
   d.className = "loading";
   d.setAttribute("role", "status");
-  d.innerHTML = `<div class="loading-box">${WORDMARK}<p class="loading-text" aria-live="polite"></p><div class="loading-road" aria-hidden="true"><i></i></div><small class="loading-note">실제 고속도로 선형 · 배속 없는 실시간 주행</small></div>`;
+  d.innerHTML = `<div class="loading-box">${WORDMARK}<p class="loading-text" aria-live="polite"></p><div class="loading-road" aria-hidden="true"><i></i></div><small class="loading-note">실제 도로 선형 · 배속 없는 실시간 주행</small></div>`;
   const p = d.querySelector("p")!;
   p.textContent = text;
   document.body.appendChild(d);
@@ -47,8 +52,14 @@ function fail(err: unknown) {
 
 function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSettings | null {
   let route: DriveSettings["route"] | null = null;
+  let city: DriveSettings["city"] = null;
   const id = p.get("road");
-  if (id) {
+  if (p.get("city")) {
+    const from = p.get("from") ?? "강동역";
+    const to = p.get("to") ?? "삼원타워";
+    city = { region: p.get("city")!, from, to };
+    route = { from, to, legs: [], lengthM: 0, timeS: 0 };
+  } else if (id) {
     const r = net.roads.find((x) => x.id === id);
     if (!r) return null;
     route = { from: r.from, to: r.to, legs: [{ road: r.id, s0: 0, s1: r.length, via: "" }], lengthM: r.length, timeS: 0 };
@@ -64,7 +75,7 @@ function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSet
   const vehicle = cfg.catalog.types.find((t) => t.id === p.get("car")) ?? cfg.catalog.types.find((t) => t.id === "sedan_mid")!;
   return {
     route,
-    startKm: Number(p.get("km") ?? (id ? 10 : 0)),
+    startKm: city ? 0 : Number(p.get("km") ?? (id ? 10 : 0)),
     vehicle: vehicle.id,
     color: p.get("color") ?? paletteFor(vehicle, cfg.catalog)[0],
     preset: (p.get("preset") as Preset) ?? "보통",
@@ -80,12 +91,29 @@ function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSet
     pace: p.get("pace") === "full" ? "full" : "digest",
     lka: p.get("lka") !== "0",
     pedal: p.get("pedal") === "momentary" ? "momentary" : "hold",
+    city,
     seed: Number(p.get("seed") ?? 12345),
   };
 }
 
+/** 시내 경로: 도로망 위에서 길을 찾아 한 줄 도로로 만든다 */
+async function buildCityDrive(settings: DriveSettings, cfg: GameConfig): Promise<DriveSetup> {
+  const c = settings.city!;
+  const vehicle = cfg.catalog.types.find((t) => t.id === settings.vehicle) ?? cfg.catalog.types[0];
+  const { graph, net } = await loadCity(c.region);
+  const a = searchCityPlaces(graph.places, c.from)[0];
+  const b = searchCityPlaces(graph.places, c.to)[0];
+  if (!a || !b) throw new Error(`장소를 찾지 못했습니다: ${!a ? c.from : c.to}`);
+  const plan = findCityRoute(net, a, b);
+  if (!plan) throw new Error(`${a.name}에서 ${b.name}까지 차로 갈 수 있는 길을 찾지 못했습니다`);
+  const { file, finishS } = cityRoadFile(net, plan);
+  const road = new Road(file);
+  return { road, sources: null, net: null, startS: 0, finishS, destName: b.name, originName: a.name, vehicle, city: { net, signals: new Signals(net) } };
+}
+
 /** 고른 경로의 도로를 만든다. 한 주행선이면 원래 주행선을 그대로 쓴다 (s가 원래 위치라 기록 분석이 쉽다) */
 async function buildDrive(settings: DriveSettings, net: Network, cfg: GameConfig): Promise<DriveSetup> {
+  if (settings.city) return buildCityDrive(settings, cfg);
   const legs = settings.route.legs;
   const vehicle = cfg.catalog.types.find((t) => t.id === settings.vehicle) ?? cfg.catalog.types[0];
   if (legs.length === 1) {
@@ -124,7 +152,7 @@ async function main() {
     sessionStorage.removeItem("drip_retry");
     try {
       const s = JSON.parse(retry) as DriveSettings;
-      settings = s.route?.legs?.length ? { ...s, shake: s.shake ?? "on" } : null;
+      settings = s.route?.legs?.length || s.city ? { ...s, shake: s.shake ?? "on" } : null;
     } catch {
       settings = null;
     }
@@ -136,7 +164,7 @@ async function main() {
   sound.enabled = settings.sound;
   sound.start();
 
-  const ld2 = loading(`${settings.route.from} → ${settings.route.to} 경로의 도로 데이터를 불러오는 중…`);
+  const ld2 = loading(settings.city ? `${settings.route.from} → ${settings.route.to} 시내 길을 찾는 중…` : `${settings.route.from} → ${settings.route.to} 경로의 도로 데이터를 불러오는 중…`);
   const [setup] = await Promise.all([buildDrive(settings, net, cfg), loadSignFonts()]);
   ld2.set("도로와 주변 지형을 만드는 중…");
   await new Promise((r) => setTimeout(r, 30));
