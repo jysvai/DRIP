@@ -4,7 +4,7 @@
 //   ?from=서울&to=강릉&km=0        출발지·도착지 경로
 //   preset=한산|보통|혼잡|정체|자동|실제, hour=0~23, weekend=1, weather=clear|cloudy|rain|heavy_rain|fog|real(어제 실제),
 //   cam=cockpit|hood|chase, auto=1(자동 운전), sound=0, voice=0(음성 안내 끄기),
-//   car=차종 id, color=#rrggbb, quality=low|medium|high, go=1(출발 안내 없이)
+//   car=차종 id, color=#rrggbb, quality=auto|low|medium|high|ultra, shake=on|low|off(화면 흔들림), go=1(출발 안내 없이)
 
 import "./ui/style.css";
 import { Sound } from "./audio/sound";
@@ -15,14 +15,16 @@ import { Road } from "./road/road";
 import { buildPlaces, findRoute, loadRoute, searchPlaces, type Network } from "./road/route";
 import { loadConfig, type GameConfig } from "./sim/config";
 import { weatherOf } from "./sim/weather";
-import { showMenu, type CameraMode, type DriveSettings, type Preset, type Quality } from "./ui/menu";
+import { ICON, WORDMARK } from "./ui/icons";
+import { showMenu, type CameraMode, type DriveSettings, type Preset, type Quality, type ShakeLevel } from "./ui/menu";
 
 const app = document.getElementById("app")!;
 
 function loading(text: string) {
   const d = document.createElement("div");
   d.className = "loading";
-  d.innerHTML = `<div class="loading-box"><div class="logo">DRIP</div><div class="spinner"></div><p></p></div>`;
+  d.setAttribute("role", "status");
+  d.innerHTML = `<div class="loading-box">${WORDMARK}<p class="loading-text" aria-live="polite"></p><div class="loading-road" aria-hidden="true"><i></i></div><small class="loading-note">실제 고속도로 선형 · 배속 없는 실시간 주행</small></div>`;
   const p = d.querySelector("p")!;
   p.textContent = text;
   document.body.appendChild(d);
@@ -36,7 +38,9 @@ function fail(err: unknown) {
   console.error(err);
   const d = document.createElement("div");
   d.className = "loading";
-  d.innerHTML = `<div style="max-width:520px;text-align:center">불러오지 못했습니다.<br><small>${String((err as Error)?.message ?? err)}</small><br><br><button class="btn" onclick="location.reload()">다시 시도</button></div>`;
+  d.innerHTML = `<div class="loading-box loading-error">${WORDMARK}<h1>불러오지 못했습니다</h1><p>도로 데이터를 받는 중에 문제가 생겼습니다. 인터넷 연결을 확인하고 다시 시도하세요.</p><code></code><button class="btn primary">${ICON.retry}다시 시도</button></div>`;
+  d.querySelector("code")!.textContent = String((err as Error)?.message ?? err);
+  d.querySelector("button")!.addEventListener("click", () => location.reload());
   document.body.appendChild(d);
 }
 
@@ -70,7 +74,8 @@ function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSet
     consent: false,
     sound: p.get("sound") !== "0",
     voice: p.get("voice") !== "0",
-    quality: (p.get("quality") as Quality) ?? "high",
+    quality: (p.get("quality") as Quality) ?? "auto",
+    shake: (["on", "low", "off"].includes(p.get("shake") ?? "") ? p.get("shake") : "on") as ShakeLevel,
     seed: Number(p.get("seed") ?? 12345),
   };
 }
@@ -115,7 +120,7 @@ async function main() {
     sessionStorage.removeItem("drip_retry");
     try {
       const s = JSON.parse(retry) as DriveSettings;
-      settings = s.route?.legs?.length ? s : null;
+      settings = s.route?.legs?.length ? { ...s, shake: s.shake ?? "on" } : null;
     } catch {
       settings = null;
     }
