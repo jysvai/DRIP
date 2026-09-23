@@ -3,6 +3,7 @@
 import * as THREE from "three";
 import type { Road, RoadFile } from "./road/road";
 import { LANE_WIDTH, Structure } from "./road/road";
+import { roughnessAt } from "./road/surface";
 import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
 import { PlayerView, CAMERA_LABELS, SHAKE_SCALE, blinkOn, type CameraMode } from "./render/playerView";
@@ -118,6 +119,8 @@ export class Game {
   private lkaWarn = 0;
   private warnSide = 0;
   private signalOffAt = -99;
+  /** 노면 거칠기 (0 매끈 ~ 1 공사 구간) */
+  private rough = 0;
   private gpu = "";
   private frameNo = 0;
   private pixel = new Uint8Array(4);
@@ -593,6 +596,9 @@ export class Game {
     const inTunnel = road.structureAt(p.s) === Structure.Tunnel;
     const rc = rumbleContact(road, p.s, p.d, p.spec.width / 2 - 0.12);
     const surface = this.ice.length && iceAt(this.ice, p.s) ? "ice" : this.weather.wet && !inTunnel ? "wet" : "dry";
+    // 노면 거칠기: 공사 구간·눈길만 (서서히 바뀐다)
+    const rough = roughnessAt(p.s, this.workZones, inTunnel ? 0 : this.weather.snow);
+    this.rough += (rough - this.rough) * Math.min(1, dt * 2);
     this.sound.update({
       dt,
       revs: p.revs,
@@ -609,14 +615,16 @@ export class Game {
       rumbleSide: rc.side,
       scrape: this.scrape,
       scrapeSide: this.scrapeSide,
+      rough: this.rough,
     });
     this.sound.traffic(this.nearbyCars(), this.view.mode === "cockpit");
     this.sound.signal(this.signal !== 0 || this.hazard, this.t);
-    // 노면요철은 차체가 떨고, 게임패드는 요철·ABS·고속 잔떨림·긁힘으로 운다
+    // 노면요철은 차체가 떨고, 게임패드는 요철·ABS·거친 노면·긁힘으로 운다. 보통 길은 매끈해서 떨지 않는다
     this.view.shake.hum = rc.amount * Math.min(1, p.speed / 10);
-    const road2 = Math.min(1, (p.speed / 45) ** 2);
+    this.view.shake.rough = this.rough;
+    const road2 = Math.min(1, p.speed / 25) * this.rough;
     const squeal = Math.max(0, Math.min(1, (p.slip - 0.85) / 0.3));
-    this.input.rumble(rc.amount * 0.75 + this.scrape * 0.6 + (p.abs ? 0.25 : 0), road2 * 0.06 + rc.amount * 0.5 + (p.abs ? 0.55 : 0) + squeal * 0.3);
+    this.input.rumble(rc.amount * 0.75 + this.scrape * 0.6 + (p.abs ? 0.25 : 0), road2 * 0.18 + rc.amount * 0.5 + (p.abs ? 0.55 : 0) + squeal * 0.3);
 
     if (p.s >= this.setup.finishS - 30) this.finish("arrived");
     else if (p.s >= road.length - 40) this.finish("road_end");

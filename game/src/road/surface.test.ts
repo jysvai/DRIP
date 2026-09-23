@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { makeRoad } from "../testing/fixtures";
-import { expansionJoints, rumbleContact } from "./surface";
+import { ROUGH_RAMP, expansionJoints, roughnessAt, rumbleContact } from "./surface";
+
+describe("노면 거칠기", () => {
+  const zones = [{ s0: 5000, s1: 6000 }];
+  it("보통 고속도로는 매끈하다", () => {
+    expect(roughnessAt(1000, zones, 0)).toBe(0);
+    expect(roughnessAt(4900, zones, 0)).toBe(0);
+  });
+  it("공사 구간은 거칠고, 앞뒤로 서서히 바뀐다", () => {
+    expect(roughnessAt(5500, zones, 0)).toBe(1);
+    expect(roughnessAt(5000 - ROUGH_RAMP / 2, zones, 0)).toBeCloseTo(0.5);
+    expect(roughnessAt(6000 + ROUGH_RAMP / 2, zones, 0)).toBeCloseTo(0.5);
+    expect(roughnessAt(6000 + ROUGH_RAMP, zones, 0)).toBe(0);
+  });
+  it("눈길은 눈 양에 따라 조금 거칠다", () => {
+    expect(roughnessAt(1000, zones, 0.5)).toBeCloseTo(0.45);
+    expect(roughnessAt(1000, zones, 1)).toBeCloseTo(0.6);
+    expect(roughnessAt(5500, zones, 1)).toBe(1);
+  });
+});
 
 describe("신축이음", () => {
   it("짧은 다리는 양 끝에만, 긴 다리는 중간에도 있다", () => {

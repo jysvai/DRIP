@@ -1,5 +1,5 @@
-// 노면에서 바퀴로 느끼는 것들: 교량 신축이음(철판 이음매)과 갓길 노면요철(럼블 스트립).
-// 소리(덜컥·부르릉), 화면 흔들림, 게임패드 진동, 도로 그림이 모두 여기 위치를 쓴다.
+// 노면에서 바퀴로 느끼는 것들: 교량 신축이음(철판 이음매), 갓길 노면요철(럼블 스트립), 거친 노면(공사 구간·눈길).
+// 소리(덜컥·부르릉·드르르), 화면 흔들림, 게임패드 진동, 도로 그림이 모두 여기 위치를 쓴다.
 
 import { LEFT_SHOULDER, RIGHT_SHOULDER, Structure, type Road } from "./road";
 
@@ -25,6 +25,25 @@ export function expansionJoints(road: Road): { s: number; strength: number }[] {
     }
   }
   return out.sort((a, b) => a.s - b.s);
+}
+
+/** 거친 노면이 앞뒤로 서서히 시작하고 끝나는 거리 (m) */
+export const ROUGH_RAMP = 60;
+
+/**
+ * 노면 거칠기 (0 매끈 ~ 1 거칢). 보통 고속도로는 0이라 차가 떨지 않는다.
+ * 공사 구간(임시 포장·덧씌우기 경계)은 라바콘이 시작하는 곳부터 끝나는 곳까지 1, 앞뒤 60m에 걸쳐 서서히.
+ * 눈 쌓인 길은 바퀴 자국이 얼어 울퉁불퉁하다: 눈 양(0~1)에 따라 0.3~0.6. 터널 안에는 눈이 없으니 snow를 0으로 넘긴다.
+ */
+export function roughnessAt(s: number, zones: readonly { s0: number; s1: number }[], snow: number): number {
+  let r = snow > 0 ? 0.3 + 0.3 * Math.min(1, snow) : 0;
+  for (const z of zones) {
+    const a = z.s0 - ROUGH_RAMP;
+    const b = z.s1 + ROUGH_RAMP;
+    if (s <= a || s >= b) continue;
+    r = Math.max(r, Math.min(1, (s - a) / ROUGH_RAMP, (b - s) / ROUGH_RAMP));
+  }
+  return r;
 }
 
 /** 노면요철 띠: 바깥 차선에서 조금 떨어진 갓길 쪽 (d, 오른쪽 +). 터널 안에는 없다 */

@@ -30,6 +30,8 @@ export interface DriveAudio {
   rumbleSide: number;
   scrape: number;
   scrapeSide: number;
+  /** 노면 거칠기 (0~1, 공사 구간·눈길) */
+  rough: number;
 }
 
 export class Sound {
@@ -189,7 +191,7 @@ export class Sound {
     const on = this.enabled ? 1 : 0;
     const { speed, inTunnel, brake } = a;
     this.engine.update({ revs: a.revs, redline: a.redline, throttle: a.throttle, speed, cockpit: a.cockpit }, on, a.dt);
-    this.roadVoice.update({ speed, slip: a.slip, abs: a.abs, surface: a.surface, rumble: a.rumble, rumbleSide: a.rumbleSide, scrape: a.scrape, scrapeSide: a.scrapeSide }, on);
+    this.roadVoice.update({ speed, slip: a.slip, abs: a.abs, surface: a.surface, rumble: a.rumble, rumbleSide: a.rumbleSide, scrape: a.scrape, scrapeSide: a.scrapeSide, rough: a.rough }, on);
     const kmh = speed * 3.6;
     // 바람: 빠를수록 크고, 돌풍처럼 천천히 일렁인다 (터널 안은 잔잔)
     this.gustT += a.dt;

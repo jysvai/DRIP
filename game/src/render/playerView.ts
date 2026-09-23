@@ -84,12 +84,14 @@ export const SHAKE_SCALE = { on: 1, low: 0.45, off: 0 } as const;
 
 /**
  * 화면 흔들림. 충격은 trauma(0~1)로 쌓고 크기는 trauma²에 비례해 줄어든다 (작은 충격은 살짝, 큰 충격은 확).
- * hum: 노면요철처럼 이어지는 빠른 상하 떨림, road: 고속 주행의 잔떨림, buffet: 옆 대형차 풍압(부호 = 밀리는 쪽).
+ * hum: 노면요철처럼 이어지는 빠른 상하 떨림, road: 거친 노면의 잔떨림, buffet: 옆 대형차 풍압(부호 = 밀리는 쪽).
+ * rough: 노면 거칠기 (road/surface.ts roughnessAt). 보통 길은 0이라 떨지 않고, 공사 구간·눈길에서만 떤다.
  */
 export class Shake {
   trauma = 0;
   hum = 0;
   road = 0;
+  rough = 0;
   buffet = 0;
   scale = 1;
   private t = 0;
@@ -111,9 +113,9 @@ export class Shake {
     const T = this.t * 22;
     const H = this.t * 70;
     o.x = k * tr * wobble(T, 1) * 0.04;
-    o.y = k * (tr * wobble(T, 2) * 0.05 + this.hum * Math.sin(H) * 0.006 + this.road * wobble(this.t * 40, 7) * 0.0025);
+    o.y = k * (tr * wobble(T, 2) * 0.05 + this.hum * Math.sin(H) * 0.006 + this.road * wobble(this.t * 18, 7) * 0.0035);
     o.z = k * (tr * wobble(T, 3) * 0.05 + this.sway * 0.06);
-    o.pitch = k * (tr * wobble(T, 4) * 0.035 + this.hum * Math.sin(H * 1.3) * 0.004 + this.road * wobble(this.t * 33, 8) * 0.0012);
+    o.pitch = k * (tr * wobble(T, 4) * 0.035 + this.hum * Math.sin(H * 1.3) * 0.004 + this.road * wobble(this.t * 15, 8) * 0.0016);
     o.yaw = k * (tr * wobble(T, 5) * 0.025 + this.sway * 0.004);
     o.roll = k * (tr * wobble(T, 6) * 0.05 + this.sway * 0.012);
   }
@@ -406,7 +408,8 @@ export class PlayerView {
     // ---- 서스펜션 ----
     const h = Math.max(0, Math.min(0.1, dt));
     const vib = Math.min(1, speed / 30);
-    const bump = roadNoise(car.s) * vib;
+    // 노면 요철은 거친 곳(공사 구간·눈길)에서만. 보통 길에서는 가감속·곡선에 따른 차체 움직임만 남는다
+    const bump = roadNoise(car.s) * vib * this.shake.rough;
     const pitchT = Math.max(-0.035, Math.min(0.028, car.ax * (heavy ? 0.0012 : 0.0021))) + bump * 0.0007;
     const rollT = Math.max(-0.05, Math.min(0.05, car.ay * (heavy ? 0.0075 : 0.0055))) + this.shake.buffet * 0.006;
     const pitch = this.pitch.step(pitchT, h);
@@ -461,7 +464,7 @@ export class PlayerView {
     const cam = this.world.camera;
     this.car.updateMatrixWorld(true);
     const sh = this.shake;
-    sh.road = Math.min(1, (speed / 40) ** 2);
+    sh.road = sh.rough * Math.min(1, speed / 25);
     sh.step(h);
     // 속도감: 시속 60km부터 빨라질수록 시야를 넓힌다 (최대 +6도, 흔들림을 끄면 그대로)
     const boost = sh.scale > 0 && this.mode !== "chase" ? Math.max(0, Math.min(1, (speed * 3.6 - 60) / 120)) * 6 * Math.min(1, sh.scale + 0.3) : 0;

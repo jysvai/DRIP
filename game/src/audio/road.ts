@@ -1,5 +1,6 @@
 // 타이어·노면 소리: 한계에서 우는 타이어(마른 노면만), ABS가 브레이크를 잡았다 놓는 드르륵, 갓길 노면요철(럼블 스트립)을 밟는 부르릉,
-// 교량 신축이음을 넘는 덜컥(앞바퀴·뒷바퀴 두 번), 가드레일·중앙분리대에 긁히는 쇳소리. 옆에서 나는 소리는 좌우로 나눠 들린다.
+// 교량 신축이음을 넘는 덜컥(앞바퀴·뒷바퀴 두 번), 가드레일·중앙분리대에 긁히는 쇳소리, 거친 노면(공사 구간·눈길)의 낮은 드르르.
+// 옆에서 나는 소리는 좌우로 나눠 들린다.
 
 export interface RoadInput {
   /** m/s */
@@ -14,6 +15,8 @@ export interface RoadInput {
   /** 벽에 긁히는 정도 (0~1)와 쪽 */
   scrape: number;
   scrapeSide: number;
+  /** 노면 거칠기 (0~1) */
+  rough: number;
 }
 
 export class RoadVoice {
@@ -28,6 +31,8 @@ export class RoadVoice {
   private scrapeGain: GainNode;
   private scrapeFilter: BiquadFilterNode;
   private scrapePan: StereoPannerNode;
+  private roughGain: GainNode;
+  private roughFilter: BiquadFilterNode;
 
   constructor(
     private ctx: AudioContext,
@@ -97,6 +102,11 @@ export class RoadVoice {
     this.rumbleGain.connect(this.rumblePan).connect(out);
     this.rumbleOsc.start();
 
+    // 거친 노면: 낮은 잡음 (빠를수록 조금 높고 크게)
+    this.roughFilter = filter("lowpass", 180, 0.8);
+    this.roughGain = gain();
+    loop(noise).connect(this.roughFilter).connect(this.roughGain).connect(out);
+
     // 긁힘: 쇠가 끌리는 높은 잡음
     this.scrapeFilter = filter("bandpass", 2600, 1.2);
     this.scrapeGain = gain();
@@ -123,6 +133,9 @@ export class RoadVoice {
     this.rumbleOsc.frequency.setTargetAtTime(Math.max(20, r.speed / 0.3), t, 0.03);
     this.rumbleGain.gain.setTargetAtTime(on * r.rumble * Math.min(1, r.speed / 8) * 0.22, t, 0.02);
     this.rumblePan.pan.setTargetAtTime(r.rumbleSide * 0.6, t, 0.05);
+
+    this.roughFilter.frequency.setTargetAtTime(140 + Math.min(1, r.speed / 30) * 160, t, 0.1);
+    this.roughGain.gain.setTargetAtTime(on * r.rough * moving * 0.16, t, 0.15);
 
     this.scrapeFilter.frequency.setTargetAtTime(1800 + Math.min(1, r.speed / 30) * 1600 + Math.random() * 400, t, 0.02);
     this.scrapeGain.gain.setTargetAtTime(on * r.scrape * 0.75, t, 0.03);
