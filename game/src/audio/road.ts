@@ -98,7 +98,7 @@ export class RoadVoice {
     this.rumbleOsc.start();
 
     // 긁힘: 쇠가 끌리는 높은 잡음
-    this.scrapeFilter = filter("bandpass", 2600, 2.5);
+    this.scrapeFilter = filter("bandpass", 2600, 1.2);
     this.scrapeGain = gain();
     this.scrapePan = ctx.createStereoPanner();
     loop(white).connect(this.scrapeFilter).connect(this.scrapeGain).connect(this.scrapePan).connect(out);
@@ -125,7 +125,7 @@ export class RoadVoice {
     this.rumblePan.pan.setTargetAtTime(r.rumbleSide * 0.6, t, 0.05);
 
     this.scrapeFilter.frequency.setTargetAtTime(1800 + Math.min(1, r.speed / 30) * 1600 + Math.random() * 400, t, 0.02);
-    this.scrapeGain.gain.setTargetAtTime(on * r.scrape * 0.18, t, 0.03);
+    this.scrapeGain.gain.setTargetAtTime(on * r.scrape * 0.75, t, 0.03);
     this.scrapePan.pan.setTargetAtTime(r.scrapeSide * 0.8, t, 0.05);
   }
 
