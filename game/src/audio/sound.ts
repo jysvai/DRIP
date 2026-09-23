@@ -278,6 +278,28 @@ export class Sound {
     });
   }
 
+  /** 차로 유지 보조 경고: 넘으려는 쪽에서 짧게 세 번 (띠띠띠) */
+  laneWarn(side: number) {
+    const ctx = this.ctx;
+    if (!ctx || !this.enabled || this.paused) return;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = Math.max(-1, Math.min(1, side * 0.7));
+    pan.connect(this.master);
+    for (let i = 0; i < 3; i++) {
+      const t0 = ctx.currentTime + i * 0.11;
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "square";
+      o.frequency.value = 1480;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.075);
+      o.connect(g).connect(pan);
+      o.start(t0);
+      o.stop(t0 + 0.09);
+    }
+  }
+
   /** 방향지시등이 켜져 있는 동안 매 프레임 호출 */
   signal(on: boolean, time: number) {
     if (!this.ctx || !this.enabled) return;

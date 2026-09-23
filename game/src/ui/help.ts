@@ -12,8 +12,9 @@ const DRIVE: [string, string, string][] = [
 ];
 
 const MORE: [string, string][] = [
-  [`${key("Q")}${key("E")}`, "왼쪽 · 오른쪽 방향지시등 <small>차로를 옮기면 저절로 꺼짐</small>"],
+  [`${key("Q")}${key("E")}`, "왼쪽 · 오른쪽 방향지시등 <small>계기판에 그쪽 뒤 카메라가 뜨고, 차로를 옮기면 저절로 꺼짐</small>"],
   [key("X"), "비상등"],
+  [key("L"), "차로 유지 보조 켜기·끄기 <small>시속 60km부터, 방향지시등 없이 차선을 넘으면 경고하고 되돌림</small>"],
   [key("H"), "경적"],
   [key("R"), "후진 기어 켜기·끄기"],
   [key("C"), "시점 바꾸기 <small>운전석 · 보닛 · 차 뒤</small>"],

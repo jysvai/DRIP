@@ -1,9 +1,11 @@
-// 주행 중 화면: 계기판(속도·rpm·기어·방향지시등), 페달·핸들 표시, 내비(다음 분기점 안내·차로 안내·미니맵·남은 거리),
+// 주행 중 화면: 계기판(속도·rpm·기어·방향지시등·차로 유지 보조, 방향지시등을 켜면 그쪽 원에 후측방 화면),
+// 페달·핸들 표시, 내비(다음 분기점 안내·차로 안내·미니맵·남은 거리),
 // 제한속도 표지, 노선·위치. 법규 판정 결과는 주행 중에 보여주지 않는다 (알려 주면 평소 운전 습관이 기록되지 않는다).
 
 import type { Road } from "../road/road";
 import { Structure } from "../road/road";
 import type { Network } from "../road/route";
+import type { LkaState } from "../sim/assist";
 import type { Enforcement } from "../sim/cameras";
 import type { BusLaneZone } from "../sim/traffic";
 import { zoneLimit, type WorkZone } from "../sim/workzones";
@@ -18,12 +20,20 @@ export interface HudFrame {
   rpm: number;
   signal: -1 | 0 | 1;
   hazard: boolean;
+  /** 방향지시등이 지금 켜진 반쪽인지 (깜빡임) */
+  blink: boolean;
+  /** 차로 유지 보조 상태와 막고 있는 쪽 */
+  lka: LkaState;
+  lkaSide: number;
   s: number;
   d: number;
   /** 차 방향 - 도로 방향 (rad) */
   theta: number;
   lane: number;
+  /** 실제로 달린 시간 (s) */
   time: number;
+  /** 게임 속 시계: 출발 뒤 흐른 시간 (s). 요약 주행으로 건너뛴 시간까지 더한다 */
+  clock: number;
   throttle: number;
   brake: number;
   steer: number;
@@ -209,7 +219,12 @@ export class Hud {
   private prnd: { letters: Record<string, SVGTextElement>; gearN: SVGTextElement; mark: SVGRectElement };
   private sigL: SVGElement;
   private sigR: SVGElement;
-  private icons: { hazard: SVGElement; beam: SVGElement };
+  private icons: { hazard: SVGElement; beam: SVGElement; lka: SVGElement };
+  private lastLka = "";
+  private cluster: HTMLDivElement;
+  private clusterSvg: SVGSVGElement;
+  /** 후측방 화면 자리: 켜진 쪽, 다시 잴 때까지 남은 시간, 화면 위 원, 테두리 */
+  private bvm: { side: number; timer: number; spot: { x: number; y: number; r: number } | null; ring: HTMLDivElement; label: HTMLElement };
   private tripText: SVGTextElement;
   private pedalT: HTMLElement;
   private pedalB: HTMLElement;
@@ -301,10 +316,12 @@ export class Hud {
     this.steerBar = steerRow.querySelector("i") as HTMLElement;
 
     // 가운데 아래: 계기판 (왼쪽 속도계, 가운데 숫자 속도·기어·표시등, 오른쪽 회전계)
-    const cluster = el("cluster", this.root);
-    const svg = document.createElementNS(NS, "svg");
+    const cluster = (this.cluster = el("cluster", this.root));
+    const svg = (this.clusterSvg = document.createElementNS(NS, "svg"));
     svg.setAttribute("viewBox", "0 0 480 196");
     cluster.appendChild(svg);
+    const ring = el("bvm-ring", this.root, `<b></b>`);
+    this.bvm = { side: 0, timer: 0, spot: null, ring, label: ring.querySelector("b") as HTMLElement };
     const maxKmh = opts.maxKmh;
     const major = maxKmh > 200 ? 40 : 20;
     this.speedDial = dial(svg, 116, 106, 86, maxKmh, major, major / 4, (v) => String(v), "km/h");
@@ -312,9 +329,9 @@ export class Hud {
     const ev = opts.idleRpm === 0;
     this.rpmDial = ev ? { set: () => {}, mark: () => {} } : dial(svg, 364, 106, 72, rpmMax / 1000, 1, 0.5, (v) => String(v), "×1000 r/min", opts.redline / 1000);
     const center = document.createElementNS(NS, "g");
-    // 방향지시등: 두꺼운 화살표 (ISO 2575 녹색)
+    // 방향지시등: 두꺼운 화살표 (ISO 2575 녹색). 켜지면 빛이 번진다
     const sig = (x: number, dir: -1 | 1) => {
-      const p = (dx: number, dy: number) => `${x + dir * dx} ${34 + dy}`;
+      const p = (dx: number, dy: number) => `${(x + dir * dx * 1.25).toFixed(2)} ${(34 + dy * 1.2).toFixed(2)}`;
       return `M${p(-11, 0)}L${p(-1, -9)}L${p(-1, -4)}L${p(10, -4)}L${p(10, 4)}L${p(-1, 4)}L${p(-1, 9)}Z`;
     };
     const px = { P: 216, R: 232, N: 248, D: 264 };
@@ -331,7 +348,8 @@ export class Hud {
           .join("")}
         <text x="${px.D + 9}" y="146" class="gear-n"></text>
       </g>
-      <g class="tt tt-beam beam"><path d="M242 162h2.5a7 7 0 0 1 0 14H242Z"/><path d="M237.5 164.5l-8 1.8M237.5 169l-8 1.8M237.5 173.5l-8 1.8"/></g>
+      <g class="tt tt-beam beam" transform="translate(-14 0)"><path d="M242 162h2.5a7 7 0 0 1 0 14H242Z"/><path d="M237.5 164.5l-8 1.8M237.5 169l-8 1.8M237.5 173.5l-8 1.8"/></g>
+      <g class="lka" transform="translate(243 160)"><path class="ln-l" d="M3 18 7.5 1"/><path class="ln-r" d="M19 18 14.5 1"/><circle cx="11" cy="10.5" r="4.3"/><path d="M6.7 10.5h8.6"/></g>
       <text x="116" y="${(106 + 86 * 0.62 + 17).toFixed(0)}" class="trip">TRIP 0.0 km</text>
       ${ev ? `<text x="364" y="104" class="ev-text">EV</text><text x="364" y="124" class="unit">READY</text>` : ""}`;
     svg.appendChild(center);
@@ -342,7 +360,7 @@ export class Hud {
     this.prnd = { letters, gearN: center.querySelector(".gear-n") as SVGTextElement, mark: center.querySelector(".prnd-mark") as SVGRectElement };
     this.sigL = center.querySelector(".sig-l") as SVGElement;
     this.sigR = center.querySelector(".sig-r") as SVGElement;
-    this.icons = { hazard: center.querySelector(".hazard") as SVGElement, beam: center.querySelector(".beam") as SVGElement };
+    this.icons = { hazard: center.querySelector(".hazard") as SVGElement, beam: center.querySelector(".beam") as SVGElement, lka: center.querySelector(".lka") as SVGElement };
 
     // 오른쪽 아래: 센터페시아 화면 (미니맵 + 다음 나들목 + 남은 거리)
     const screen = el("fascia", this.root);
@@ -542,6 +560,38 @@ export class Hud {
     for (const d of hit) this.spoken.add(key(d));
   }
 
+  /**
+   * 후측방 화면 자리: side 쪽 원(왼쪽은 속도계, 오른쪽은 회전계)을 비우고 테두리를 두른 뒤 그 원의 화면 위치를 돌려준다.
+   * 비운 자리 뒤(3D 화면)에 PlayerView가 카메라 화면을 그린다. 창 크기·Tab 화면 크기가 바뀌어도 따라가게 0.5초마다 다시 잰다.
+   */
+  bvmSpot(side: number, dt: number): { x: number; y: number; r: number } | null {
+    const b = this.bvm;
+    if (side !== b.side) {
+      b.side = side;
+      b.timer = 0;
+      b.spot = null;
+      this.cluster.classList.toggle("bvm", side !== 0);
+      b.ring.classList.toggle("show", side !== 0);
+      if (side) b.label.textContent = side < 0 ? "◀ 왼쪽 뒤" : "오른쪽 뒤 ▶";
+    }
+    if (!side) return null;
+    b.timer -= dt;
+    if (b.timer > 0) return b.spot;
+    b.timer = 0.5;
+    const r = this.clusterSvg.getBoundingClientRect();
+    if (r.width < 1) return (b.spot = null);
+    const k = r.width / 480;
+    const [cx, cy, rad] = side < 0 ? [116, 106, 89] : [364, 106, 76];
+    const spot = { x: r.left + cx * k, y: r.top + cy * k, r: rad * k };
+    const c = this.cluster.getBoundingClientRect();
+    const st = this.cluster.style;
+    st.setProperty("--bx", `${(spot.x - c.left).toFixed(1)}px`);
+    st.setProperty("--by", `${(spot.y - c.top).toFixed(1)}px`);
+    st.setProperty("--br", `${spot.r.toFixed(1)}px`);
+    b.ring.style.cssText = `left:${(spot.x - spot.r).toFixed(1)}px;top:${(spot.y - spot.r).toFixed(1)}px;width:${(2 * spot.r).toFixed(1)}px;height:${(2 * spot.r).toFixed(1)}px`;
+    return (b.spot = spot);
+  }
+
   update(f: HudFrame, dt: number) {
     const road = this.road;
     const s = f.s;
@@ -555,11 +605,15 @@ export class Hud {
       this.speedText.textContent = String(shown);
     }
     if (f.gear !== this.lastGear) this.setGear(f.gear);
-    const blink = Math.floor(f.time * 1.6) % 2 === 0;
-    this.sigL.classList.toggle("on", (f.signal === -1 || f.hazard) && blink);
-    this.sigR.classList.toggle("on", (f.signal === 1 || f.hazard) && blink);
+    this.sigL.classList.toggle("on", (f.signal === -1 || f.hazard) && f.blink);
+    this.sigR.classList.toggle("on", (f.signal === 1 || f.hazard) && f.blink);
     this.icons.hazard.classList.toggle("on", f.hazard);
     this.icons.beam.classList.toggle("on", f.night);
+    const lka = `${f.lka} ${f.lkaSide < 0 ? "l" : f.lkaSide > 0 ? "r" : ""}`;
+    if (lka !== this.lastLka) {
+      this.lastLka = lka;
+      this.icons.lka.setAttribute("class", `lka ${lka}`);
+    }
     this.pedalT.style.transform = `scaleY(${f.throttle.toFixed(3)})`;
     this.pedalB.style.transform = `scaleY(${f.brake.toFixed(3)})`;
     this.wheel.style.transform = `rotate(${(f.steer * 200).toFixed(1)}deg)`;
@@ -671,10 +725,10 @@ export class Hud {
     const k = Math.min(this.etaTable.length - 2, Math.floor(s / 1000));
     const kEnd = Math.min(this.etaTable.length - 2, Math.floor(this.opts.finishS / 1000));
     const etaSec = Math.max(0, this.etaTable[k] - this.etaTable[kEnd]);
-    this.progressText.innerHTML = `<span>${this.opts.destName}까지<b>${distHtml(remain)}</b></span><span>도착 예정<b>${clock(this.opts.hour, f.time + etaSec)}</b></span>`;
+    this.progressText.innerHTML = `<span>${this.opts.destName}까지<b>${distHtml(remain)}</b></span><span>도착 예정<b>${clock(this.opts.hour, f.clock + etaSec)}</b></span>`;
     const total = Math.max(1, this.opts.finishS - this.opts.startS);
     this.progressBar.style.transform = `scaleX(${Math.min(1, Math.max(0, (s - this.opts.startS) / total)).toFixed(4)})`;
-    this.clockEl.textContent = clock(this.opts.hour, f.time);
+    this.clockEl.textContent = clock(this.opts.hour, f.clock);
 
     const mm = Math.floor(f.time / 60);
     const ss = Math.floor(f.time % 60);

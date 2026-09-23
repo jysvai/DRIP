@@ -463,6 +463,19 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 .hud2 .tt { opacity: 0.16; transition: opacity var(--dur-micro) linear; }
 .hud2 .tt.on { opacity: 1; }
 .hud2 .tt-sig { fill: var(--c-go); }
+.hud2 .tt-sig.on { filter: drop-shadow(0 0 5px oklch(82% 0.2 142 / 0.85)); }
+/* 차로 유지 보조: 꺼지면 안 보이고, 대기 회색, 준비 녹색, 경고 주황 + 넘으려는 쪽 차선이 굵어진다 */
+.hud2 .lka { display: none; fill: none; stroke-width: 1.7; stroke-linecap: round; }
+.hud2 .lka.standby, .hud2 .lka.ready, .hud2 .lka.warn { display: inline; }
+.hud2 .lka.standby { stroke: var(--c-dim); }
+.hud2 .lka.ready { stroke: var(--c-go); }
+.hud2 .lka.warn { stroke: var(--c-warn); filter: drop-shadow(0 0 4px oklch(84% 0.155 85 / 0.8)); }
+.hud2 .lka.warn.l .ln-l, .hud2 .lka.warn.r .ln-r { stroke-width: 3.4; }
+/* 후측방 화면: 계기판 원 하나를 비우고(마스크) 그 뒤 3D 화면에 카메라 화면을 그린다. 테두리와 이름표만 DOM */
+.hud2 .cluster.bvm { -webkit-mask: radial-gradient(circle at var(--bx) var(--by), transparent var(--br), #000 calc(var(--br) + 1px)); mask: radial-gradient(circle at var(--bx) var(--by), transparent var(--br), #000 calc(var(--br) + 1px)); }
+.hud2 .bvm-ring { position: absolute; display: none; border-radius: 50%; box-shadow: 0 0 0 2px oklch(34% 0.014 250), 0 0 0 5px oklch(11% 0.011 250 / 0.84), inset 0 0 18px oklch(5% 0.01 250 / 0.55); }
+.hud2 .bvm-ring.show { display: block; }
+.hud2 .bvm-ring b { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); padding: 1px 8px; border-radius: 999px; background: oklch(11% 0.011 250 / 0.78); color: var(--c-ink-2); font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
 .hud2 .tt-hazard { fill: none; stroke: var(--c-danger); stroke-width: 2.2; stroke-linejoin: round; }
 .hud2 .tt-beam { fill: none; stroke: var(--c-go); stroke-width: 1.8; stroke-linecap: round; }
 .hud2 .tt:not(.on) { fill: var(--c-dim); stroke: var(--c-dim); }

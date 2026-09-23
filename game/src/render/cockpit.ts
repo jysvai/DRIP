@@ -4,6 +4,7 @@
 // 좌표: 모델 좌표 (x 앞, y 위, z 오른쪽)
 
 import * as THREE from "three";
+import type { LkaState } from "../sim/assist";
 import { createVehicleMaterial } from "./carMaterials";
 import { Mesher, box, cbox, cyl, profile, TAG, type Surf } from "./vehicleGeom";
 import type { CabinSpec, VehicleModel } from "./vehicleModels";
@@ -32,13 +33,30 @@ export interface Cockpit {
   screen: THREE.MeshBasicMaterial;
   /** 계기판 화면 (속도를 그린다) */
   display: ClusterScreen;
+  /** 후측방 화면 자리: 왼쪽 원(속도계 자리), 오른쪽 원(출력계 자리). 재질은 PlayerView가 붙인다 */
+  bvm: [THREE.Mesh, THREE.Mesh];
 }
+
+/** 계기판 표시등: 방향지시 화살표(지금 켜진 순간인지), 비상등, 차로 유지 보조, 후측방 화면이 뜬 쪽 */
+export interface ClusterTells {
+  left: boolean;
+  right: boolean;
+  hazard: boolean;
+  lka: LkaState;
+  /** 차로 유지 보조가 막고 있는 쪽 (-1 왼쪽, 1 오른쪽, 0 없음) */
+  lkaSide: number;
+  /** 후측방 화면이 원 안을 덮는 쪽 (그쪽 원은 그리지 않는다) */
+  bvm: number;
+}
+
+const NO_TELLS: ClusterTells = { left: false, right: false, hazard: false, lka: "off", lkaSide: 0, bvm: 0 };
 
 /** 계기판·내비 화면 (캔버스). 속도가 바뀌면 다시 그린다 */
 export class ClusterScreen {
   readonly texture: THREE.CanvasTexture;
   private g: CanvasRenderingContext2D;
   private key = "";
+  private tellKey = "";
   private last = -1;
 
   constructor(
@@ -52,30 +70,41 @@ export class ClusterScreen {
     this.texture = new THREE.CanvasTexture(c);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 4;
-    this.draw(0, "P");
+    this.draw(0, "P", NO_TELLS);
   }
 
-  /** 속도(km/h)와 기어. 너무 자주 그리지 않는다 (0.1초) */
-  update(kmh: number, gear: string, time: number) {
+  /** 원 두 개의 가운데와 반지름 (캔버스 폭·높이에 대한 비율). side: -1 왼쪽(속도), 1 오른쪽(출력) */
+  gauge(side: number): { u: number; v: number; r: number } {
+    const { W, H, cw, cy, R } = this.layout();
+    return { u: (cw * (side < 0 ? 0.2 : 0.8)) / W, v: cy / H, r: R / W };
+  }
+
+  private layout() {
+    const W = this.g.canvas.width;
+    const H = this.g.canvas.height;
+    const cw = this.wide ? W * 0.44 : W;
+    return { W, H, cw, cy: H * 0.56, R: Math.min(H * 0.42, cw * 0.16) };
+  }
+
+  /** 속도(km/h)와 기어는 너무 자주 그리지 않는다 (0.1초). 표시등이 바뀌면 바로 그린다 */
+  update(kmh: number, gear: string, time: number, tells: ClusterTells = NO_TELLS) {
     const key = `${Math.round(kmh)}|${gear}`;
-    if (key === this.key || time - this.last < 0.1) return;
+    const tk = tellKey(tells);
+    if (tk === this.tellKey && (key === this.key || time - this.last < 0.1)) return;
     this.last = time;
-    this.draw(kmh, gear);
+    this.draw(kmh, gear, tells);
   }
 
-  private draw(kmh: number, gear: string) {
+  private draw(kmh: number, gear: string, tells: ClusterTells) {
     this.key = `${Math.round(kmh)}|${gear}`;
+    this.tellKey = tellKey(tells);
     const g = this.g;
-    const W = g.canvas.width;
-    const H = g.canvas.height;
+    const { W, H, cw, cy, R } = this.layout();
     const bg = g.createLinearGradient(0, 0, 0, H);
     bg.addColorStop(0, "#0d141d");
     bg.addColorStop(1, "#070a0f");
     g.fillStyle = bg;
     g.fillRect(0, 0, W, H);
-    const cw = this.wide ? W * 0.44 : W;
-    const cy = H * 0.56;
-    const R = Math.min(H * 0.42, cw * 0.16);
     // 속도 원호 (왼쪽), 출력 원호 (오른쪽)
     const arc = (x: number, frac: number, col: string) => {
       g.lineCap = "round";
@@ -98,22 +127,28 @@ export class ClusterScreen {
         g.stroke();
       }
     };
-    arc(cw * 0.2, kmh / 200, "#4fb3ff");
-    arc(cw * 0.8, 0.15 + Math.min(0.6, kmh / 260), "#7fe3c0");
+    // 후측방 화면이 뜬 원은 비워 둔다 (그 위에 카메라 화면을 얹는다)
     g.textAlign = "center";
     g.textBaseline = "middle";
+    if (tells.bvm !== -1) {
+      arc(cw * 0.2, kmh / 200, "#4fb3ff");
+      g.font = `600 ${Math.round(R * 0.42)}px sans-serif`;
+      g.fillStyle = gear === "R" ? "#ffb14a" : "#dfe8f2";
+      g.fillText(gear, cw * 0.2, cy);
+    }
+    if (tells.bvm !== 1) {
+      arc(cw * 0.8, 0.15 + Math.min(0.6, kmh / 260), "#7fe3c0");
+      g.font = `${Math.round(R * 0.26)}px sans-serif`;
+      g.fillStyle = "#7fe3c0";
+      g.fillText("ECO", cw * 0.8, cy);
+    }
     g.fillStyle = "#eef4fa";
     g.font = `600 ${Math.round(R * 0.95)}px sans-serif`;
     g.fillText(String(Math.round(kmh)), cw * 0.5, cy - R * 0.1);
     g.font = `${Math.round(R * 0.28)}px sans-serif`;
     g.fillStyle = "#8aa0b4";
     g.fillText("km/h", cw * 0.5, cy + R * 0.55);
-    g.font = `600 ${Math.round(R * 0.42)}px sans-serif`;
-    g.fillStyle = gear === "R" ? "#ffb14a" : "#dfe8f2";
-    g.fillText(gear, cw * 0.2, cy);
-    g.font = `${Math.round(R * 0.26)}px sans-serif`;
-    g.fillStyle = "#7fe3c0";
-    g.fillText("ECO", cw * 0.8, cy);
+    drawTells(g, cw * 0.5, cy, R, tells);
     if (this.wide) {
       // 내비게이션: 어두운 지도, 도로, 파란 경로
       const x0 = W * 0.5;
@@ -155,6 +190,80 @@ export class ClusterScreen {
     }
     this.texture.needsUpdate = true;
   }
+}
+
+function tellKey(t: ClusterTells): string {
+  return `${+t.left}${+t.right}${+t.hazard}|${t.lka}${t.lkaSide}|${t.bvm}`;
+}
+
+/**
+ * 계기판 가운데 위 표시등: 방향지시 화살표 (ISO 2575 녹색, 켜진 순간에 빛 번짐), 그 사이 비상등,
+ * 속도 숫자 아래 차로 유지 보조 (대기 회색, 준비 녹색, 경고 주황 + 넘으려는 쪽 차선이 굵어진다)
+ */
+function drawTells(g: CanvasRenderingContext2D, x: number, cy: number, R: number, t: ClusterTells) {
+  const y = cy - R * 0.84;
+  const a = R * 0.2;
+  const arrow = (cx: number, dir: number, on: boolean) => {
+    g.save();
+    g.translate(cx, y);
+    g.scale(dir, 1);
+    g.beginPath();
+    g.moveTo(-a * 1.3, 0);
+    g.lineTo(-a * 0.1, -a);
+    g.lineTo(-a * 0.1, -a * 0.45);
+    g.lineTo(a * 1.2, -a * 0.45);
+    g.lineTo(a * 1.2, a * 0.45);
+    g.lineTo(-a * 0.1, a * 0.45);
+    g.lineTo(-a * 0.1, a);
+    g.closePath();
+    if (on) {
+      g.shadowColor = "#3dff7e";
+      g.shadowBlur = R * 0.35;
+      g.fillStyle = "#3dff7e";
+      g.fill();
+    } else {
+      g.fillStyle = "rgba(90,120,100,0.22)";
+      g.fill();
+    }
+    g.restore();
+  };
+  arrow(x - R * 1.05, 1, t.left);
+  arrow(x + R * 1.05, -1, t.right);
+  if (t.hazard) {
+    g.save();
+    g.strokeStyle = "#ff4a3d";
+    g.lineWidth = R * 0.05;
+    g.lineJoin = "round";
+    g.beginPath();
+    g.moveTo(x, y - a);
+    g.lineTo(x + a * 1.1, y + a * 0.9);
+    g.lineTo(x - a * 1.1, y + a * 0.9);
+    g.closePath();
+    g.stroke();
+    g.restore();
+  }
+  if (t.lka === "off") return;
+  const col = t.lka === "warn" ? "#ffb84a" : t.lka === "ready" ? "#3dff7e" : "#8a9aac";
+  const ly = cy + R * 0.86;
+  const s = R * 0.14;
+  g.save();
+  g.strokeStyle = col;
+  g.lineCap = "round";
+  // 차선 두 줄 (멀어질수록 좁아진다), 가운데 운전대
+  for (const side of [-1, 1]) {
+    g.lineWidth = t.lka === "warn" && t.lkaSide === side ? s * 0.5 : s * 0.22;
+    g.beginPath();
+    g.moveTo(x + side * s * 1.9, ly + s);
+    g.lineTo(x + side * s * 1.1, ly - s);
+    g.stroke();
+  }
+  g.lineWidth = s * 0.22;
+  g.beginPath();
+  g.arc(x, ly + s * 0.1, s * 0.62, 0, Math.PI * 2);
+  g.moveTo(x - s * 0.62, ly + s * 0.1);
+  g.lineTo(x + s * 0.62, ly + s * 0.1);
+  g.stroke();
+  g.restore();
 }
 
 export function buildCockpit(model: VehicleModel): Cockpit {
@@ -223,6 +332,19 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   scr.rotation.set(0, -Math.PI / 2, 0);
   scr.rotateX(-tiltS);
   group.add(scr);
+  // 후측방 화면: 원 자리에 얹는 둥근 판 (거울처럼 좌우를 뒤집는다). 방향지시등을 켰을 때만 보인다
+  const disc = (side: number): THREE.Mesh => {
+    const gp = display.gauge(side);
+    const geo = new THREE.CircleGeometry(gp.r * sw * 1.08, 40);
+    const uv = geo.getAttribute("uv");
+    for (let k = 0; k < uv.count; k++) uv.setX(k, 1 - uv.getX(k));
+    const m = new THREE.Mesh(geo, screen);
+    m.position.set((gp.u - 0.5) * sw, (0.5 - gp.v) * sh, 0.002);
+    m.visible = false;
+    scr.add(m);
+    return m;
+  };
+  const bvm: [THREE.Mesh, THREE.Mesh] = [disc(-1), disc(1)];
   if (big) {
     // 큰 차: 가운데 작은 화면
     const s2 = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.13), screen);
@@ -297,7 +419,7 @@ export function buildCockpit(model: VehicleModel): Cockpit {
   mesh.receiveShadow = true;
   mesh.castShadow = false;
   group.add(mesh);
-  return { group, wheel: spin, material, screen, display };
+  return { group, wheel: spin, material, screen, display, bvm };
 }
 
 /** 상자형 운전실 벽: 천장, 앞유리 옆 기둥, 문 안쪽, 뒷벽 */

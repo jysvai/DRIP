@@ -30,7 +30,10 @@ export type EventType =
   | "incident_pass"
   | "ice_pass"
   | "near_miss"
-  | "crash";
+  | "crash"
+  | "skip"
+  | "lka_assist"
+  | "lka_toggle";
 
 export interface DriveEvent {
   t: number;
@@ -63,6 +66,9 @@ export const EVENT_LABELS: Record<EventType, string> = {
   ice_pass: "결빙 구간(블랙아이스) 통과",
   near_miss: "아차사고",
   crash: "충돌",
+  skip: "구간 건너뜀 (요약 주행)",
+  lka_assist: "차로 유지 보조 작동",
+  lka_toggle: "차로 유지 보조 켜기·끄기",
 };
 
 export const VIOLATIONS: EventType[] = [
@@ -498,6 +504,42 @@ export class RuleEngine {
 
   crash(f: PlayerFrame, withWhat: string, relSpeedKmh: number) {
     this.emit(f, "crash", { with: withWhat, relSpeedKmh: Math.round(relSpeedKmh) });
+  }
+
+  /**
+   * 요약 주행으로 toS까지 건너뛴다: 이어지던 과속·저속·근접·갓길 같은 판정은 건너뛰기 전에서 끊는다
+   * (건너뛴 길은 달리지 않았으니 판정에 넣지 않는다). skippedSec: 건너뛴 길을 실제로 달렸다면 걸렸을 시간
+   */
+  skip(f: PlayerFrame, toS: number, skippedSec: number) {
+    this.finish(f);
+    if (this.slow) {
+      const dur = f.t - this.slow.start;
+      if (dur >= this.rules.rules.minSpeed.minDurationSec) this.emit(f, "min_speed", { durationSec: Math.round(dur), minKmh: this.slow.limit });
+      this.slow = null;
+    }
+    this.emit(f, "skip", { toS: Math.round(toS), skippedM: Math.round(toS - f.s), skippedSec: Math.round(skippedSec) });
+    this.shoulderSince = -1;
+    this.criticalSince = -1;
+    this.lane1Start = -1;
+    this.designatedSince = -1;
+    this.busLaneOn = false;
+    this.onIce = null;
+    this.inSection = null;
+    this.lastS = NaN;
+    this.lastIncS = NaN;
+    this.lastLane = 0;
+    this.accelWindow = [];
+    this.signalDist = 0;
+  }
+
+  /** 주행 중 차로 유지 보조를 켜거나 껐다 (기록용) */
+  lkaToggle(f: PlayerFrame, on: boolean) {
+    this.emit(f, "lka_toggle", { on });
+  }
+
+  /** 차로 유지 보조가 작동했다 (판정이 아니라 기록용) */
+  lkaAssist(f: PlayerFrame, side: "left" | "right", steered: boolean) {
+    this.emit(f, "lka_assist", { side, steered });
   }
 
   /** 주행이 끝날 때 진행 중이던 구간을 마저 기록 */

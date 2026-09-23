@@ -7,7 +7,7 @@ import type { DriveEvent, Summary } from "../rules/engine";
 import type { LegInfo } from "../road/road";
 import type { QualityResult } from "./quality";
 
-export const APP_VERSION = "0.3.0";
+export const APP_VERSION = "0.4.0";
 
 /** 서버에 올리는지. 저장소 변수 VITE_DRIP_COLLECT가 on인 빌드만 올린다 (연구 공개 전에는 끈다) */
 export const COLLECTING = import.meta.env.VITE_DRIP_COLLECT === "on";
@@ -32,6 +32,11 @@ export interface SessionInfo {
   weather: string;
   /** 여러 주행선을 이어 붙인 경로면 조각들 (s를 원래 주행선 위치로 되돌릴 때 쓴다) */
   route: LegInfo[] | null;
+  /**
+   * 주행 방식: digest(요약 주행)면 windows 구간만 실제로 달리고 사이는 건너뛴다 (건너뛴 길에는 1초 기록이 없다).
+   * lka: 차로 유지 보조를 켜고 출발했는지 (주행 중 L로 바꾸면 이벤트로 남는다)
+   */
+  drive: { pace: "digest" | "full"; windows: [number, number][] | null; lka: boolean };
 }
 
 function participantId(): string {
@@ -113,6 +118,7 @@ export class Recorder {
       vehicle: info.vehicle,
       weather: info.weather,
       route: info.route ? info.route.map((l) => [l.road, Math.round(l.s0), Math.round(l.s1), Math.round(l.src0), Math.round(l.src1), l.via]) : null,
+      drive: info.drive,
       device: {
         ua: navigator.userAgent.slice(0, 300),
         screen: [screen.width, screen.height, devicePixelRatio],

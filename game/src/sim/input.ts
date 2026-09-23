@@ -13,6 +13,8 @@ export interface InputActions {
   horn: boolean;
   mirrors: boolean;
   help: boolean;
+  /** 차로 유지 보조 켜고 끄기 (L) */
+  lka: boolean;
 }
 
 const KEYMAP: Record<string, keyof typeof keysDown> = {
@@ -102,6 +104,9 @@ export class Input {
           break;
         case "KeyV":
           this.pendingActions.mirrors = true;
+          break;
+        case "KeyL":
+          this.pendingActions.lka = true;
           break;
         case "KeyM":
           this.mode = this.mode === "mouse" ? "keyboard" : "mouse";
@@ -227,5 +232,5 @@ function approach(x: number, target: number, maxDelta: number): number {
 }
 
 function blank(): InputActions {
-  return { signalLeft: false, signalRight: false, hazard: false, camera: false, pause: false, horn: false, mirrors: false, help: false };
+  return { signalLeft: false, signalRight: false, hazard: false, camera: false, pause: false, horn: false, mirrors: false, help: false, lka: false };
 }

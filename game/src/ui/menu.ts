@@ -11,12 +11,15 @@ import { VehiclePreview } from "./vehiclePreview";
 import { controlsHtml, showControls } from "./help";
 import { ICON, WORDMARK } from "./icons";
 import { COLLECTING } from "../log/recorder";
+import { digestForLegs, playDistance } from "../sim/pacing";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
 export type CameraMode = "cockpit" | "chase" | "hood";
 export type Quality = "auto" | "low" | "medium" | "high" | "ultra";
 /** 화면 흔들림 (노면 요철·신축이음·충돌) */
 export type ShakeLevel = "on" | "low" | "off";
+/** 주행 방식: digest는 1시간 경로를 5분쯤으로 (몇 구간만 실시간으로 달리고 사이는 건너뛴다), full은 처음부터 끝까지 */
+export type Pace = "digest" | "full";
 
 export interface RouteChoice {
   from: string;
@@ -45,6 +48,10 @@ export interface DriveSettings {
   quality: Quality;
   /** 화면 흔들림 정도. 멀미가 나면 줄인다 */
   shake: ShakeLevel;
+  /** 주행 방식 (없으면 요약) */
+  pace?: Pace;
+  /** 차로 유지 보조 (없으면 켬) */
+  lka?: boolean;
   seed: number;
 }
 
@@ -145,6 +152,8 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let voice = saved.voice ?? true;
     let quality: Quality = saved.quality ?? "auto";
     let shake: ShakeLevel = saved.shake ?? "on";
+    let pace: Pace = saved.pace ?? "digest";
+    let lka = saved.lka ?? true;
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
 
@@ -241,6 +250,17 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       }
       summary.classList.toggle("empty", false);
       const km = plan.lengthM / 1000;
+      // 요약 주행 어림: 달리는 거리 ÷ 경로 평균 속도(제한속도로 쉬지 않고)
+      const digest = (() => {
+        if (pace !== "digest") return null;
+        const wins = digestForLegs(
+          plan.legs.map((l) => l.s1 - l.s0),
+          startKm * 1000,
+        );
+        if (wins.length < 2) return null;
+        const m = playDistance(wins);
+        return { sec: (m / plan.lengthM) * plan.timeS, km: m / 1000, windows: wins.length, samples: wins.filter((w) => w.why === "sample").length };
+      })();
       const legs = plan.legs
         .map((l) => {
           const r = roadOf(l.road);
@@ -257,10 +277,14 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         <dl class="rs-stats">
           <div><dt>거리</dt><dd>${km.toFixed(0)}<small>km</small></dd></div>
           <div><dt>제한속도로 쉬지 않고</dt><dd>${durationHtml(plan.timeS)}</dd></div>
-          <div><dt>갈아타는 노선</dt><dd>${plan.legs.length}<small>개</small></dd></div>
+          ${digest ? `<div><dt>요약 주행</dt><dd>${durationHtml(digest.sec)}</dd></div>` : `<div><dt>갈아타는 노선</dt><dd>${plan.legs.length}<small>개</small></dd></div>`}
         </dl>
         <ol class="rs-legs">${legs}</ol>
-        <p class="rs-foot">배속 없이 실제 시간으로 달립니다. Esc로 언제든 끝낼 수 있고, 달린 만큼 결과가 남습니다.</p>`;
+        <p class="rs-foot">${
+          digest
+            ? `요약 주행: 출발·분기점·도착과 사이 ${digest.samples}구간, 모두 ${digest.windows}구간 ${digest.km.toFixed(0)}km만 달리고 나머지는 건너뜁니다. 달리는 동안은 배속 없이 실제 시간 그대로입니다.`
+            : "배속 없이 실제 시간으로 처음부터 끝까지 달립니다."
+        } Esc로 언제든 끝낼 수 있고, 달린 만큼 결과가 남습니다.</p>`;
     }
 
     function renderStart() {
@@ -455,10 +479,29 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
           slider(0, max, startKm, (v) => {
             startKm = v;
             label();
+            renderSummary();
           }),
           el("div", "range-scale", `<span>0</span><span>${Math.round(max / 2)}</span><span>${max} km</span>`),
         );
         body.appendChild(field("출발 위치", km, "긴 경로는 중간부터 시작할 수 있습니다. 도착지는 그대로입니다."));
+        body.appendChild(
+          field(
+            "주행 방식",
+            seg<Pace>(
+              [
+                ["digest", "요약 (1시간 → 5분)"],
+                ["full", "처음부터 끝까지"],
+              ],
+              pace,
+              (v) => {
+                pace = v;
+                renderSummary();
+              },
+              "주행 방식",
+            ),
+            "요약: 출발, 노선을 갈아타는 분기점, 도착과 사이 몇 구간만 달리고 나머지는 건너뜁니다. 달리는 동안은 배속이 없고, 게임 속 시계는 건너뛴 만큼 흐릅니다.",
+          ),
+        );
       }
       body.appendChild(el("p", "note", "지도는 끌어서 옮기고 휠로 확대합니다. 도시·나들목을 누르면 출발지, 한 번 더 누르면 도착지가 됩니다."));
     }
@@ -519,6 +562,21 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       const f = field(`차종`, cats, "", `${catalog.types.length}종`);
       f.appendChild(list);
       body.appendChild(f);
+      body.appendChild(
+        field(
+          "차로 유지 보조",
+          seg<string>(
+            [
+              ["on", "켜기"],
+              ["off", "끄기"],
+            ],
+            lka ? "on" : "off",
+            (v) => (lka = v === "on"),
+            "차로 유지 보조",
+          ),
+          "시속 60km 넘게 달릴 때 방향지시등 없이 차선을 넘으려 하면 경고하고 운전대를 살짝 돌려 줍니다. 주행 중 L 키로 켜고 끕니다.",
+        ),
+      );
       preview.show(vehicle, color);
     }
 
@@ -621,6 +679,8 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         voice,
         quality,
         shake,
+        pace,
+        lka,
         seed: Math.floor(Math.random() * 2 ** 31),
       };
       save(s);

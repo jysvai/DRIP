@@ -2,10 +2,10 @@
 
 import * as THREE from "three";
 import type { Road, RoadFile } from "./road/road";
-import { Structure } from "./road/road";
+import { LANE_WIDTH, Structure } from "./road/road";
 import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
-import { PlayerView, CAMERA_LABELS, SHAKE_SCALE, type CameraMode } from "./render/playerView";
+import { PlayerView, CAMERA_LABELS, SHAKE_SCALE, blinkOn, type CameraMode } from "./render/playerView";
 import { Sparks } from "./render/sparks";
 import { expansionJoints, rumbleContact } from "./road/surface";
 import { DriveFx } from "./ui/fx";
@@ -27,6 +27,8 @@ import { realEventsFor, realEventsStamp } from "./sim/realEvents";
 import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input } from "./sim/input";
+import { LKA, laneKeep, type LkaState } from "./sim/assist";
+import { planDigest, type DriveWindow } from "./sim/pacing";
 import { PlayerCar, type Controls } from "./sim/player";
 import { specFor, type PlayerSpec } from "./sim/vehicleSpec";
 import type { VehicleType } from "./render/vehicleModels";
@@ -102,6 +104,20 @@ export class Game {
   private last = performance.now();
   /** 그래픽 품질 자동 맞춤과 GPU를 기다려 잴 때 쓰는 1화소 */
   private gov: GfxGovernor;
+  /** 요약 주행: 달릴 구간들 (null이면 처음부터 끝까지). winIdx는 지금 달리는 구간 */
+  private digest: DriveWindow[] | null = null;
+  private winIdx = 0;
+  private startS = 0;
+  /** 건너뛰는 중: 바깥이 다 어두워지면(at) to로 옮긴다. sec는 건너뛴 길을 달렸다면 걸렸을 시간 */
+  private pendingJump: { to: number; at: number; sec: number } | null = null;
+  /** 게임 속 시계가 주행 시간보다 앞선 만큼 (건너뛴 시간, 초) */
+  private clockOffset = 0;
+  /** 차로 유지 보조: 켜짐 여부, 지금 막고 있는 쪽(-1 왼쪽, 1 오른쪽), 경고 표시가 남은 시간과 그쪽 */
+  lka = true;
+  private lkaSide = 0;
+  private lkaWarn = 0;
+  private warnSide = 0;
+  private signalOffAt = -99;
   private gpu = "";
   private frameNo = 0;
   private pixel = new Uint8Array(4);
@@ -282,6 +298,19 @@ export class Game {
     this.rules.weatherFactor = legalFactor(weather, cfg.rules);
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
+    this.lka = settings.lka ?? true;
+    this.startS = s0;
+    // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다
+    if ((settings.pace ?? "digest") === "digest") {
+      const wins = planDigest({
+        startS: s0,
+        finishS: setup.finishS,
+        transfers: road.isRoute ? road.legs.slice(1).map((l, i) => ({ diverge: road.legs[i].s1, merge: l.s0 })) : [],
+        poi: [...road.junctions.map((j) => j.s), ...this.workZones.map((z) => z.s0), ...this.incidents.map((i) => i.s), ...this.enforcement.sections.map((x) => x.s0)],
+        seed: settings.seed,
+      });
+      this.digest = wins.length > 1 ? wins : null;
+    }
     this.recorder.start({
       roadId: road.id,
       roadRef: road.ref,
@@ -296,6 +325,7 @@ export class Game {
       seed: settings.seed,
       inputMode: this.input.mode,
       camera: settings.camera,
+      drive: { pace: this.digest ? "digest" : "full", windows: this.digest ? this.digest.map((w) => [Math.round(w.s0), Math.round(w.s1)]) : null, lka: this.lka },
     });
 
     this.sound.enabled = settings.sound;
@@ -498,6 +528,8 @@ export class Game {
       this.hud.toast(this.view.mirrorsOn ? "거울 크게 보기" : "거울 창 닫기", 1.2);
     }
     if (actions.horn) this.sound.horn();
+    if (actions.lka) this.toggleLka();
+    if (this.pendingJump && this.t >= this.pendingJump.at) this.doJump();
     if (actions.help) {
       this.state = "pause";
       this.sound.suspend();
@@ -508,6 +540,7 @@ export class Game {
     if (this.autopilot) this.autopilotUsed = true;
     const c = this.autopilot ? this.autoControls() : this.input.update(dt, p.speed);
     if (!this.autopilot) this.keyboardAssist(c, dt);
+    this.laneKeep(c, dt);
     this.controls = c;
     this.t += dt;
 
@@ -543,6 +576,7 @@ export class Game {
     if (this.signalCancelAt > 0 && this.t >= this.signalCancelAt && Math.abs(c.steer) < 0.12) {
       this.signal = 0;
       this.signalCancelAt = -1;
+      this.signalOffAt = this.t;
     }
 
     // 법규 판정
@@ -586,6 +620,158 @@ export class Game {
 
     if (p.s >= this.setup.finishS - 30) this.finish("arrived");
     else if (p.s >= road.length - 40) this.finish("road_end");
+    else this.checkDigest();
+  }
+
+  /** 요약 주행: 지금 구간 끝을 지나면 다음 구간 앞으로 건너뛴다 (바깥이 어두워지는 동안은 그대로 달린다) */
+  private checkDigest() {
+    const wins = this.digest;
+    if (!wins || this.pendingJump || this.winIdx + 1 >= wins.length) return;
+    const p = this.player;
+    // 사고 뒤 다시 출발하거나 해서 다음 구간에 이미 들어갔으면 맞춘다
+    while (this.winIdx + 1 < wins.length && p.s >= wins[this.winIdx + 1].s0) this.winIdx++;
+    const w = wins[this.winIdx];
+    if (p.s < w.s1 || this.winIdx + 1 >= wins.length) return;
+    this.winIdx++;
+    const next = wins[this.winIdx];
+    const sec = this.driveTime(p.s, next.s0);
+    const span = Math.max(1, this.setup.finishS - this.startS);
+    this.fx.cut({
+      km: (next.s0 - p.s) / 1000,
+      minutes: sec / 60,
+      next: this.windowLabel(next),
+      clock: clockText(this.settings.hour, this.t + this.clockOffset + sec),
+      windows: wins.map((x) => [(x.s0 - this.startS) / span, (x.s1 - this.startS) / span]),
+      current: this.winIdx,
+    });
+    this.pendingJump = { to: next.s0, at: this.t + 0.38, sec };
+  }
+
+  /** 건너뛴 길을 제한속도(악천후 감속 포함)로 달렸다면 걸렸을 시간 (초) */
+  private driveTime(a: number, b: number): number {
+    let sec = 0;
+    for (let s = a; s < b; s += 200) sec += Math.min(200, b - s) / (Math.max(30, this.rules.limitAt(s)) / 3.6);
+    return sec;
+  }
+
+  /** 건너뛴 뒤 달릴 곳 설명 */
+  private windowLabel(w: DriveWindow): string {
+    const road = this.road;
+    const km = (m: number) => `${(m / 1000).toFixed(1)}km`;
+    if (w.why === "finish") return `${this.setup.destName} 도착 ${km(this.setup.finishS - w.s0)} 앞`;
+    if (w.why === "transfer") {
+      const k = road.legs.findIndex((_, i) => i > 0 && road.legs[i - 1].s1 > w.s0 && road.legs[i - 1].s1 <= w.s1);
+      if (k > 0) {
+        const l = road.legs[k];
+        return `${l.via || "분기점"} ${km(road.legs[k - 1].s1 - w.s0)} 앞 · ${l.name} ${l.to} 방향으로 갈아타기`;
+      }
+    }
+    const j = road.junctions.find((x) => x.s > w.s0 + 300);
+    const leg = road.legAt(w.s0);
+    return j ? `${leg.name} · ${j.name} ${km(j.s - w.s0)} 앞` : `${leg.name} ${leg.to} 방향`;
+  }
+
+  /** 바깥이 다 어두워졌을 때: 다음 구간 시작으로 옮기고 주변 교통·도로를 새로 만든다 */
+  private doJump() {
+    const j = this.pendingJump!;
+    this.pendingJump = null;
+    const road = this.road;
+    const p = this.player;
+    this.rules.skip(this.frameInfo(0), j.to, j.sec);
+    this.clockOffset += j.sec;
+    const s = j.to;
+    const lanes = road.lanesAt(s);
+    let lane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
+    const zone = this.workZones.find((z) => z.lane === lane && s > z.s0 - 50 && s < z.s1 + END_TAPER_M);
+    if (zone) lane = Math.max(1, Math.min(lanes, zone.side === "right" ? lane - 1 : lane + 1));
+    const kmh = Math.max(30, Math.min(p.speed * 3.6, this.rules.limitAt(s) + 5, this.spec.governor * 3.6 - 5));
+    p.place(road, s, lane, kmh / 3.6);
+    // 노선이 바뀌었으면 그 노선 교통량으로 맞춘 다음 주변 차를 새로 채운다. 속도는 주변 흐름에 맞춘다
+    if (road.isRoute) this.updateLegTraffic();
+    this.traffic.fill(this.playerState());
+    const near = this.traffic.agents.filter((a) => Math.abs(a.s - s) < 400);
+    if (near.length >= 3) {
+      const flow = (near.reduce((sum, a) => sum + a.v, 0) / near.length) * 3.6;
+      p.place(road, s, lane, Math.max(20, Math.min(kmh, flow * 1.05)) / 3.6);
+    }
+    this.updateOrigin();
+    this.chunks.prime(p.s);
+    this.axleS = [NaN, NaN];
+    this.lastGear = p.gear;
+    this.acc = 0;
+    this.scrape = 0;
+    this.signal = 0;
+    this.signalCancelAt = -1;
+    this.laneForSignal = lane;
+    this.autoLane = 0;
+    this.lkaSide = 0;
+    this.honked.clear();
+    this.fx.reveal();
+  }
+
+  private toggleLka() {
+    this.lka = !this.lka;
+    this.lkaSide = 0;
+    this.hud.toast(this.lka ? "차로 유지 보조 켜짐" : "차로 유지 보조 꺼짐", 1.4);
+    this.rules.lkaToggle(this.frameInfo(0), this.lka);
+  }
+
+  /** 차로 유지 보조 상태 (계기판 표시) */
+  get lkaState(): LkaState {
+    if (!this.lka) return "off";
+    if (this.lkaWarn > 0) return "warn";
+    return this.player.speed >= LKA.minKmh / 3.6 ? "ready" : "standby";
+  }
+
+  /** 경고 중이면 넘으려던 쪽 (-1 왼쪽, 1 오른쪽) */
+  get lkaWarnSide(): number {
+    return this.lkaWarn > 0 ? this.warnSide : 0;
+  }
+
+  /**
+   * 차로 유지 보조 (sim/assist.ts): 넘으려 하면 경고음·계기판 경고·진동을 주고 운전대를 살짝 돌려 되돌린다.
+   * 자동 운전·후진·연결로·갓길에서는 쉬고, 방향지시등을 켜 두었거나 끈 지 2초 안에도 쉰다.
+   */
+  private laneKeep(c: Controls, dt: number) {
+    this.lkaWarn = Math.max(0, this.lkaWarn - dt);
+    const p = this.player;
+    const road = this.road;
+    const lane = road.laneOf(p.d, p.s);
+    const idle =
+      !this.lka ||
+      this.autopilot ||
+      p.speed < LKA.minKmh / 3.6 ||
+      c.reverse ||
+      this.signal !== 0 ||
+      this.t - this.signalOffAt < LKA.signalHold ||
+      road.onConnector(p.s) ||
+      lane < 1 ||
+      lane > road.lanesAt(p.s);
+    const out = idle
+      ? null
+      : laneKeep({
+          d: p.d,
+          ddot: -(p.vx * Math.sin(p.theta) + p.vy * Math.cos(p.theta)),
+          center: road.laneCenter(lane, p.s),
+          laneWidth: LANE_WIDTH,
+          carWidth: p.spec.width,
+          steer: c.steer,
+        });
+    if (!out || !out.side) {
+      // 경고가 끝날 때까지는 같은 쪽으로 다시 막아도 새로 울리지 않는다 (선 근처에서 띠띠띠가 연달아 나지 않게)
+      if (!out || this.lkaWarn <= 0) this.lkaSide = 0;
+      return;
+    }
+    const { side, intended } = out;
+    c.steer = out.steer;
+    this.lkaWarn = LKA.warnHold;
+    this.warnSide = side;
+    if (this.lkaSide !== side) {
+      this.lkaSide = side;
+      this.sound.laneWarn(side);
+      this.input.pulse(0.3, 0.55, 160);
+      this.rules.lkaAssist(this.frameInfo(0), side > 0 ? "right" : "left", !intended);
+    }
   }
 
   /**
@@ -693,6 +879,7 @@ export class Game {
   }
 
   private setSignal(dir: -1 | 0 | 1) {
+    if (dir === 0 && this.signal !== 0) this.signalOffAt = this.t;
     this.signal = dir;
     this.signalCancelAt = -1;
   }
@@ -1033,6 +1220,8 @@ export class Game {
     const target = inTunnel ? 0.3 : this.baseDaylight;
     this.world.daylight += (target - this.world.daylight) * Math.min(1, dt * 2);
     this.world.tunnel += ((inTunnel ? 1 : 0) - this.world.tunnel) * Math.min(1, dt * 2);
+    this.view.assist.lka = this.lkaState;
+    this.view.assist.lkaSide = this.lkaWarnSide;
     this.view.update(p, road, dt, this.signal, this.hazard, this.t);
     this.trafficView.viewGround = this.view.car.position.y;
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position, this.world.visibleDistance + 50);
@@ -1041,6 +1230,9 @@ export class Game {
     this.fx.speed(this.state === "run" ? p.speed * 3.6 : 0, this.view.shake.scale);
     this.world.update(this.view.car.position);
     this.weatherView.update(dt, this.view.car, road.sample(p.s).heading + p.theta, p.spec.length, p.spec.width, this.setup.vehicle.height, inTunnel);
+    // 후측방 화면: 방향지시등을 켠 쪽 (비상등은 아님). 계기판에서 그 원을 비우고 뒤에 카메라 화면을 그린다
+    const bvmSide = this.hazard ? 0 : this.signal;
+    this.view.setBvm(bvmSide, this.hud.bvmSpot(bvmSide, dt));
     this.view.render();
     const lane = road.laneOf(p.d, p.s);
     this.hud.update(
@@ -1050,11 +1242,15 @@ export class Game {
         rpm: p.revs,
         signal: this.signal,
         hazard: this.hazard,
+        blink: blinkOn(this.t),
+        lka: this.lkaState,
+        lkaSide: this.lkaWarnSide,
         s: p.s,
         d: p.d,
         theta: p.theta,
         lane,
         time: this.t,
+        clock: this.t + this.clockOffset,
         throttle: this.controls.throttle,
         brake: this.controls.brake,
         steer: this.controls.steer,
@@ -1067,4 +1263,10 @@ export class Game {
       dt,
     );
   }
+}
+
+/** 게임 속 시각 "HH:MM" (출발 시각 hour + 흐른 초) */
+function clockText(hour: number, sec: number): string {
+  const total = Math.floor(hour * 60 + sec / 60);
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }

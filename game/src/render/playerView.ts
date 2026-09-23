@@ -1,4 +1,4 @@
-// 플레이어 차: 겉모습, 운전석 실내, 시점 세 가지, 거울 세 개.
+// 플레이어 차: 겉모습, 운전석 실내, 시점 세 가지, 거울 세 개, 후측방 카메라.
 // 차체는 용수철-감쇠로 제동·가속에 앞뒤로, 곡선에서 좌우로 기울고 노면 따라 조금 떨린다. 바퀴는 굴러가고 앞바퀴는 꺾인다.
 // 화면 흔들림(Shake): 신축이음·충돌 같은 충격은 쌓였다 줄어들고, 노면요철·고속 떨림·옆 트럭 풍압은 이어진다. 빠를수록 시야가 조금 넓어진다.
 // 운전석 시점에서는 유리를 숨기고 차 안쪽 면·대시보드·운전대를 그린다. 눈 위치는 차종마다 다르다(모델의 cabin).
@@ -6,6 +6,7 @@
 
 import * as THREE from "three";
 import type { Road } from "../road/road";
+import type { LkaState } from "../sim/assist";
 import type { PlayerCar } from "../sim/player";
 import { createVehicleMaterial, setLampLevels, vehicleUniforms } from "./carMaterials";
 import { buildCockpit, type Cockpit } from "./cockpit";
@@ -19,6 +20,20 @@ export const CAMERA_LABELS: Record<CameraMode, string> = { cockpit: "운전석",
 
 const STEER_RATIO = 14;
 const MIRROR_ORDER = [0, 1, 0, 2];
+/** 후측방 카메라: 렌더 타깃 크기(화소), 세로 시야각, 아래·바깥으로 기우는 정도 (뒤 1m당) */
+const BVM = { size: 320, fov: 64, down: 0.24, out: 0.3 };
+
+/** 방향지시등 깜빡임: 1.6Hz (분당 96번, 딸깍 소리와 같은 박자). 켜진 반쪽이면 true */
+export function blinkOn(time: number): boolean {
+  return Math.floor(time * 3.2) % 2 === 0;
+}
+
+/** 화면 위 원 (CSS 화소): 가운데와 반지름 */
+export interface ScreenCircle {
+  x: number;
+  y: number;
+  r: number;
+}
 
 interface Mirror {
   cam: THREE.PerspectiveCamera;
@@ -141,6 +156,10 @@ export class PlayerView {
   private overlay = new THREE.Scene();
   private overlayCam = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
   private mirrorTurn = 0;
+  /** 후측방 화면 (BVM): 켜진 쪽(-1 왼쪽, 1 오른쪽, 0 꺼짐), 켠 뒤 한 번이라도 그렸는지 */
+  private bvm: { cam: THREE.PerspectiveCamera; rt: THREE.WebGLRenderTarget; quad: THREE.Mesh; side: number; fresh: boolean };
+  /** 계기판에 띄울 차로 유지 보조 상태 (Game이 매 프레임 넣는다) */
+  readonly assist: { lka: LkaState; lkaSide: number } = { lka: "off", lkaSide: 0 };
   private frameCount = 0;
   private tmpW = { e: 0, n: 0, z: 0, heading: 0 };
   private v = new THREE.Vector3();
@@ -248,8 +267,18 @@ export class PlayerView {
       this.mirrorGlass.add(glass);
     });
     this.inner.add(this.mirrorGlass);
+    // ---- 후측방 화면: 방향지시등을 켜면 그쪽 사이드미러 아래 카메라가 옆 차로 뒤쪽을 비춘다 (계기판 원 자리) ----
+    const bvmRt = mirrorTarget(BVM.size, BVM.size);
+    const bvmMat = mirrorMaterial(bvmRt, 0xffffff, THREE.DoubleSide, true);
+    const bvmQuad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bvmMat);
+    bvmQuad.visible = false;
+    this.overlay.add(bvmQuad);
+    for (const d of this.cockpit.bvm) d.material = bvmMat;
+    this.bvm = { cam: new THREE.PerspectiveCamera(BVM.fov, 1, 0.05, 250), rt: bvmRt, quad: bvmQuad, side: 0, fresh: false };
     world.onQuality((_, s) => {
       for (const m of this.mirrors) m.rt.setSize(Math.round(m.size[0] * s.mirrorScale), Math.round(m.size[1] * s.mirrorScale));
+      const n = Math.round(BVM.size * Math.min(1, s.mirrorScale));
+      bvmRt.setSize(n, n);
     });
     this.layoutMirrors();
     addEventListener("resize", () => this.layoutMirrors());
@@ -323,6 +352,26 @@ export class PlayerView {
     });
   }
 
+  /**
+   * 후측방 화면을 켜고 끈다 (side 0이면 끔). spot은 계기판(HUD)에서 비워 둔 원 자리.
+   * 운전석 시점이면 차 안 계기판 화면의 같은 쪽 원에도 띄운다.
+   */
+  setBvm(side: number, spot: ScreenCircle | null) {
+    const b = this.bvm;
+    if (side !== b.side) {
+      b.side = side;
+      b.fresh = false;
+    }
+    this.cockpit.bvm[0].visible = side === -1;
+    this.cockpit.bvm[1].visible = side === 1;
+    b.quad.visible = side !== 0 && spot !== null;
+    if (spot) {
+      // 거울처럼 좌우를 뒤집어 보여 준다 (사이드미러와 같은 방향)
+      b.quad.scale.set(-2 * spot.r, 2 * spot.r, 1);
+      b.quad.position.set(spot.x, this.overlayCam.top - spot.y, 0);
+    }
+  }
+
   /** 밤이면 전조등을 켜고 실내를 어둡게 한다. 첫 화면을 그리기 전에 부른다 (조명 수가 바뀌면 셰이더를 다시 만든다) */
   setNight(night: number) {
     this.night = night;
@@ -381,7 +430,7 @@ export class PlayerView {
 
     // ---- 등화 ----
     const braking = car.ax < -1.2 || (car.speed < 0.3 && car.vx === 0);
-    const blink = Math.floor(time * 1.6) % 2 === 0;
+    const blink = blinkOn(time);
     const left = (signal === -1 || hazard) && blink;
     const right = (signal === 1 || hazard) && blink;
     vehicleUniforms(this.bodyMat).uLampState.value.set(braking ? 1 : 0, left ? 1 : 0, right ? 1 : 0, car.vx < -0.1 ? 1 : 0);
@@ -390,7 +439,14 @@ export class PlayerView {
     // 실내 화면: 밤에는 눈부시지 않게 어둡게. 계기판에 지금 속도
     this.cockpit.screen.color.setScalar(1 - 0.55 * this.night);
     if (this.mode === "cockpit") {
-      this.cockpit.display.update(speed * 3.6, car.vx < -0.1 ? "R" : speed < 0.1 ? "P" : "D", time);
+      this.cockpit.display.update(speed * 3.6, car.vx < -0.1 ? "R" : speed < 0.1 ? "P" : "D", time, {
+        left,
+        right,
+        hazard,
+        lka: this.assist.lka,
+        lkaSide: this.assist.lkaSide,
+        bvm: this.bvm.side,
+      });
       // 창으로 들어와 실내에 퍼지는 빛 (천장·기둥이 너무 어둡지 않게)
       const day = Math.min(1, this.world.daylight) * (1 - this.night);
       const f = Math.max(day * 0.5 * (1 - this.world.tunnel * 0.7), 0.02);
@@ -516,12 +572,53 @@ export class PlayerView {
     this.hiddenForMirror.length = 0;
   }
 
+  /**
+   * 후측방 카메라: 사이드미러 바로 아래에서 뒤·아래·바깥을 넓게 본다. 실제 BVM처럼 내 차 옆면과 뒷바퀴가 안쪽 가장자리에 보인다.
+   * 실내·앞유리 빗방울·거울 유리는 빼고, 운전석 시점에서 숨겨 둔 차 유리는 이 화면에서만 다시 보이게 한다.
+   */
+  private renderBvm() {
+    const b = this.bvm;
+    const r = this.world.renderer;
+    const m = b.side < 0 ? this.model.cabin.mirrorL : this.model.cabin.mirrorR;
+    this.v.set(m.x - 0.03, m.y - 0.1, m.z);
+    b.cam.position.copy(this.inner.localToWorld(this.v));
+    this.v2.set(m.x - 20, m.y - 0.1 - 20 * BVM.down, m.z + b.side * 20 * BVM.out);
+    b.cam.up.set(0, 1, 0).applyQuaternion(this.body.getWorldQuaternion(this.q));
+    b.cam.lookAt(this.inner.localToWorld(this.v2));
+    b.cam.updateMatrixWorld(true);
+    const hidden = this.hiddenForMirror;
+    hidden.length = 0;
+    for (const o of [this.interior, this.windshield.group, this.mirrorGlass]) {
+      if (o.visible) {
+        o.visible = false;
+        hidden.push(o);
+      }
+    }
+    const glass = vehicleUniforms(this.bodyMat).uHideGlass;
+    const hideGlass = glass.value;
+    glass.value = 0;
+    const au = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+    this.world.mirrorPass(true);
+    r.setRenderTarget(b.rt);
+    r.clear();
+    r.render(this.world.scene, b.cam);
+    this.world.mirrorPass(false);
+    r.shadowMap.autoUpdate = au;
+    glass.value = hideGlass;
+    this.showSelf();
+    b.fresh = true;
+  }
+
   /** 본 화면과 거울을 그린다 */
   render() {
     const r = this.world.renderer;
     const scene = this.world.scene;
     this.frameCount++;
     const show = this.showMirrors;
+    // 후측방 화면: 켠 첫 프레임은 바로, 그 뒤로는 거울을 그리지 않는 프레임에 (거울 주기가 1이면 매 프레임)
+    const every = this.world.settings.mirrorEvery;
+    if (this.bvm.side && (!this.bvm.fresh || every === 1 || this.frameCount % every === 1)) this.renderBvm();
     // 운전석 시점이면 거울 창을 꺼도 차의 거울 유리에 비치므로 계속 그린다
     if (this.mode === "cockpit" && this.frameCount % this.world.settings.mirrorEvery === 0) {
       // 룸미러를 양옆 거울보다 두 배 자주 (가운데, 왼쪽, 가운데, 오른쪽)
@@ -549,7 +646,7 @@ export class PlayerView {
     const glow = Math.max(this.world.night, this.world.tunnel * 0.7);
     r.render(scene, this.world.camera);
     this.world.post.addGlow(scene, this.world.camera, glow);
-    if (show) {
+    if (show || this.bvm.quad.visible) {
       r.clearDepth();
       r.render(this.overlay, this.overlayCam);
     }
@@ -569,13 +666,17 @@ function mirrorTarget(w: number, h: number): THREE.WebGLRenderTarget {
   return rt;
 }
 
-/** 거울 화면을 붙이는 재질: 이미 화면 색이라 sRGB를 풀어 두고 톤매핑 없이 그린다 */
-function mirrorMaterial(rt: THREE.WebGLRenderTarget, color: number, side: THREE.Side = THREE.FrontSide): THREE.MeshBasicMaterial {
+/**
+ * 거울 화면을 붙이는 재질: 이미 화면 색이라 sRGB를 풀어 두고 톤매핑 없이 그린다.
+ * round: 둥근 화면 (후측방 화면). 원 밖은 버리고 가장자리를 조금 어둡게 한다
+ */
+function mirrorMaterial(rt: THREE.WebGLRenderTarget, color: number, side: THREE.Side = THREE.FrontSide, round = false): THREE.MeshBasicMaterial {
   const m = new THREE.MeshBasicMaterial({ map: rt.texture, color, side, toneMapped: false });
+  const clip = round ? "float rr = length( vMapUv - 0.5 ) * 2.0;\nif ( rr > 1.0 ) discard;\ndiffuseColor.rgb *= 1.0 - 0.45 * smoothstep( 0.72, 1.0, rr );\n" : "";
   m.onBeforeCompile = (sh) => {
-    sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", "diffuseColor *= sRGBTransferEOTF( texture2D( map, vMapUv ) );");
+    sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", "diffuseColor *= sRGBTransferEOTF( texture2D( map, vMapUv ) );\n" + clip);
   };
-  m.customProgramCacheKey = () => "drip-mirror";
+  m.customProgramCacheKey = () => (round ? "drip-mirror-round" : "drip-mirror");
   return m;
 }
 
