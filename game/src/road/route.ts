@@ -403,6 +403,65 @@ function sliceRuns<T>(runs: Run<T>[], s0: number, s1: number, shift: number, fal
 }
 
 
+/** 연결로 앞 조각 끝을 이만큼 앞당기거나(늦추거나), 뒤 조각 시작을 이만큼 늦출(당길) 수 있다 (m) */
+const JOINT_BACK = 1500;
+const JOINT_AHEAD = 300;
+/** 원래 자리의 연결로가 이 반지름(m) 이상으로 완만하면 그대로 둔다 */
+const JOINT_GOOD_R = 250;
+
+/** 연결로의 가장 급한 곳 반지름 (m) */
+function connectorRadius(a: Pt & { te: number; tn: number }, b: Pt & { te: number; tn: number }, step: number): number {
+  return 1 / Math.max(1e-6, maxCurvature([a, ...connector(a, b, step), b]));
+}
+
+/** 이 반지름(m)을 차례로 목표로: 넘는 짝이 있으면 그 가운데 원래 자리에서 가장 덜 옮긴 짝 */
+const JOINT_TIERS = [JOINT_GOOD_R, 150, 90, 60];
+
+/**
+ * 앞 조각 A에서 빠져나갈 점과 뒤 조각 B로 들어갈 점 [A의 s, B의 s].
+ * 분기점 위치 데이터로는 B로 들어갈 점이 A를 빠져나갈 점보다 뒤에 있는 곳이 있어(길이 되돌아가야 해서) 연결로가 반지름 몇 m로 꺾인다.
+ * 원래 자리 둘레에서 연결로가 완만해지는 짝 가운데 가장 덜 옮긴 것을 고른다 (많이 옮기면 연결로가 본선 사이를 가로질러 지름길이 된다)
+ */
+function bestJoint(A: RoadFile, legA: Leg, B: RoadFile, legB: Leg, step: number): [number, number] {
+  const snapA = (x: number) => Math.round(x / A.step) * A.step;
+  const snapB = (y: number) => Math.round(y / B.step) * B.step;
+  const x0 = snapA(legA.s1);
+  const y0 = snapB(legB.s0);
+  const r0 = connectorRadius(fileAt(A, x0), fileAt(B, y0), step);
+  if (r0 >= JOINT_GOOD_R) return [legA.s1, legB.s0];
+  const exitLo = Math.min(legA.s1, Math.max(legA.s0 + 200, legA.s1 - JOINT_BACK));
+  const exitHi = Math.max(exitLo, Math.min(A.length - 20, legA.s1 + JOINT_AHEAD));
+  const entryHi = Math.max(legB.s0, Math.min(legB.s1 - 200, legB.s0 + JOINT_BACK));
+  const entryLo = Math.min(entryHi, Math.max(0, legB.s0 - JOINT_AHEAD));
+  const cands: { x: number; y: number; r: number; move: number }[] = [{ x: legA.s1, y: legB.s0, r: r0, move: 0 }];
+  const seen = new Set<string>();
+  const grid = (xa: number, xb: number, ya: number, yb: number, d: number) => {
+    for (let x = xa; x <= xb + 1e-6; x += d) {
+      for (let y = ya; y <= yb + 1e-6; y += d) {
+        const sx = snapA(x);
+        const sy = snapB(y);
+        const key = `${sx},${sy}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cands.push({ x: sx, y: sy, r: connectorRadius(fileAt(A, sx), fileAt(B, sy), step), move: Math.abs(sx - x0) + Math.abs(sy - y0) });
+      }
+    }
+  };
+  const pick = () => {
+    for (const tier of JOINT_TIERS) {
+      let best: (typeof cands)[number] | null = null;
+      for (const c of cands) if (c.r >= tier && (!best || c.move < best.move)) best = c;
+      if (best) return best;
+    }
+    return cands.reduce((m, c) => (c.r > m.r ? c : m));
+  };
+  grid(exitLo, exitHi, entryLo, entryHi, 150);
+  const coarse = pick();
+  grid(Math.max(exitLo, coarse.x - 150), Math.min(exitHi, coarse.x + 150), Math.max(entryLo, coarse.y - 150), Math.min(entryHi, coarse.y + 150), 50);
+  const best = pick();
+  return [best.x, best.y];
+}
+
 /** 경로 조각들의 주행선 파일을 받아 하나로 이어 붙인 RoadFile을 만든다 */
 export function joinRoute(plan: RoutePlan, files: Map<string, RoadFile>): RoadFile {
   const step = 10;
@@ -421,6 +480,13 @@ export function joinRoute(plan: RoutePlan, files: Map<string, RoadFile>): RoadFi
   const terrainAt: ((s: number) => number[])[] = [];
   const terrainSpan: [number, number][] = [];
   const first = files.get(plan.legs[0].road)!;
+  // 갈아타는 곳마다 빠져나갈 점과 들어갈 점을 연결로가 가장 매끄럽게 이어지는 곳으로 다시 고른다
+  const legs = plan.legs.map((l) => ({ ...l }));
+  for (let k = 1; k < legs.length; k++) {
+    const [exit, entry] = bestJoint(files.get(legs[k - 1].road)!, legs[k - 1], files.get(legs[k].road)!, legs[k], step);
+    legs[k - 1].s1 = exit;
+    legs[k].s0 = entry;
+  }
   const offsets = first.terrain.offsets;
   /** 연결로 앞뒤 점 번호: [앞 조각의 끝 점, 뒤 조각의 첫 점] */
   const joints: [number, number][] = [];
@@ -436,14 +502,14 @@ export function joinRoute(plan: RoutePlan, files: Map<string, RoadFile>): RoadFi
     return a.map((v, k) => v + (b[k] - v) * t);
   };
 
-  plan.legs.forEach((leg, li) => {
+  legs.forEach((leg, li) => {
     const f = files.get(leg.road)!;
     const pos = cumulative(f);
     const i0 = Math.round(leg.s0 / f.step);
     const i1 = Math.round(leg.s1 / f.step);
     // 앞 조각과 잇는 연결로
     if (li > 0) {
-      const prevLeg = plan.legs[li - 1];
+      const prevLeg = legs[li - 1];
       const pf = files.get(prevLeg.road)!;
       const a = fileAt(pf, Math.round(prevLeg.s1 / pf.step) * pf.step);
       const b = fileAt(f, i0 * f.step);
@@ -568,7 +634,9 @@ function smoothJoints(pts: Pt[], joints: [number, number][], step: number) {
     for (let i = s0 + 1; i < s1; i++) {
       let sum = 0;
       let cnt = 0;
-      for (let j = Math.max(s0, i - SMOOTH); j <= Math.min(s1, i + SMOOTH); j++) {
+      // 창은 앞뒤 같은 폭으로 (가장자리에서 한쪽만 줄이면 비탈에서 높이가 한 번에 몇 m씩 꺼진다)
+      const w = Math.min(SMOOTH, i - s0, s1 - i);
+      for (let j = i - w; j <= i + w; j++) {
         sum += src[j - s0];
         cnt++;
       }

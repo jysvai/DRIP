@@ -112,7 +112,9 @@ describe("경로 이어 붙이기", () => {
     expect(road.isRoute).toBe(true);
     expect(road.legs).toHaveLength(2);
     const [l0, l1] = road.legs;
-    expect(l0.s1).toBe(3000);
+    // 연결로가 완만해지도록 JC 조금 앞에서 빠져나간다
+    expect(l0.s1).toBeGreaterThanOrEqual(2500);
+    expect(l0.s1).toBeLessThanOrEqual(3000);
     expect(l1.s0).toBeGreaterThan(l0.s1);
     expect(road.refAt(100)).toBe("A");
     expect(road.refAt(l1.s0 + 10)).toBe("B");
@@ -137,6 +139,20 @@ describe("경로 이어 붙이기", () => {
     expect(road.sample(l0.s1 - 100).te).toBeCloseTo(1, 2);
     expect(road.sample(l1.s0 + 100).tn).toBeCloseTo(1, 2);
     expect(road.sample(road.length).z).toBeCloseTo(120, 0);
+  });
+
+  it("갈아탈 길의 들어갈 점이 빠져나갈 점보다 뒤에 있어도 연결로가 머리핀처럼 꺾이지 않는다", () => {
+    // 동쪽으로 가는 A의 3km 지점 JC. 남쪽으로 가는 C는 그보다 300m 뒤에서 시작해 A 아래로 지나간다
+    const C = straight("C", 2700, -50, -Math.PI / 2, 6000, { from: "북쪽", to: "남쪽", junctions: [[3000, "셋IC", "7"]] });
+    const n2 = toNet([A, C], [{ a: "A", sa: 3000, b: "C", sb: 0, name: "가다JC", kind: "JC" }]);
+    const p2 = buildPlaces(n2);
+    const plan2 = findRoute(n2, p2.find((p) => p.name === "서쪽")!, p2.find((p) => p.name === "남쪽")!)!;
+    const r2 = new Road(joinRoute(plan2, new Map([["A", A], ["C", C]])));
+    const [m0, m1] = r2.legs;
+    let kmax = 0;
+    for (let s = m0.s1 - 100; s < m1.s0 + 100; s += 5) kmax = Math.max(kmax, Math.abs(r2.sample(s).kappa));
+    expect(1 / kmax).toBeGreaterThan(60);
+    expect(r2.sample(m1.s0 + 100).tn).toBeCloseTo(-1, 2);
   });
 
   it("연결로 제한속도는 곡률에 맞춘다", () => {

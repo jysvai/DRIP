@@ -53,6 +53,11 @@ STEP = 10.0             # 주행선 좌표 간격(m)
 SMOOTH_SIGMA = 20.0     # 좌표를 매끄럽게 하는 폭(m). OSM 꺾인 점 때문에 곡률이 튀지 않게 한다.
 MIN_CHAIN_KM = 5.0      # 이보다 짧은 조각은 버린다 (램프·요금소 부근 자투리)
 MAX_GRADE = 0.07        # 고속도로 최대 종단경사 근사
+KINK_R = 250.0          # 매끄럽게 한 뒤에도 이보다 급하게 꺾이는 곳(OSM 조각을 잇는 곳 등)은 둘레를 더 넓게 고른다 (m)
+KINK_SIGMA = 70.0       # 그곳을 고르는 폭 (m)
+AUTO_STRUCT_M = 25.0    # 고른 도로가 땅보다 이만큼 넘게 낮으면 터널, 높으면 다리로 본다 (OSM에 빠진 터널 조각 등)
+SIDE_STRUCT_M = 40.0    # 양옆 45m 땅이 둘 다 도로보다 이만큼 넘게 높으면 터널로, 둘 다 낮으면 다리로 그린다 (높이는 그대로)
+MIN_SPEED_RUN = 200.0   # 앞뒤가 같은 제한속도인데 이보다 짧게 다른 값이 끼어 있으면 앞뒤 값으로 덮는다 (m)
 
 # 지형 띠: 주행선 기준 좌우 거리(m)와 앞뒤 간격(m)
 TERRAIN_STEP = 40.0
@@ -370,19 +375,37 @@ class Terrain:
 
 
 def road_profile(ground: np.ndarray, structure: np.ndarray) -> np.ndarray:
-    """지형 고도에서 도로 종단면을 만든다. 교량·터널 구간은 양 끝을 직선으로 잇고, 매끄럽게 한 뒤 경사를 제한한다."""
+    """지형 고도에서 도로 종단면을 만든다. 교량·터널 구간은 양 끝을 직선으로 잇고, 매끄럽게 한 뒤 경사를 제한한다.
+    다리와 터널이 붙어 있으면 하나씩 따로 잇는다 (묶어서 이으면 산골짜기의 다리·터널 줄이 수 km 직선이 되어 골짜기보다 100m 넘게 낮아진다).
+    다리와 터널이 맞닿은 곳은 터널 쪽(산 쪽) 땅 높이로 잇는다."""
     z = ground.copy()
     n = len(z)
+
+    def anchor(i: int) -> float:
+        """점 i-1과 i 사이 경계의 높이"""
+        left, right = structure[i - 1], structure[i]
+        if left == 0:
+            return ground[i - 1]
+        if right == 0:
+            return ground[i]
+        return ground[i] if right == 1 else ground[i - 1]
+
     i = 0
     while i < n:
         if structure[i] == 0:
             i += 1
             continue
         j = i
-        while j < n and structure[j] != 0:
+        while j < n and structure[j] == structure[i]:
             j += 1
-        a = z[i - 1] if i > 0 else z[j] if j < n else z[i]
-        b = z[j] if j < n else a
+        if i == 0 and j == n:
+            a = b = float(np.median(ground))
+        elif i == 0:
+            a = b = anchor(j)
+        elif j == n:
+            a = b = anchor(i)
+        else:
+            a, b = anchor(i), anchor(j)
         z[i:j] = np.linspace(a, b, j - i + 2)[1:-1]
         i = j
     z = smooth(z, 150.0 / STEP)
@@ -395,6 +418,95 @@ def road_profile(ground: np.ndarray, structure: np.ndarray) -> np.ndarray:
             z[k] = min(max(z[k], z[k + 1] - limit), z[k + 1] + limit)
         z = smooth(z, 60.0 / STEP)
     return z
+
+
+def auto_structures(ground: np.ndarray, struct: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """OSM에 터널·다리 표시가 빠진 곳을 채운다: 고른 도로가 땅보다 AUTO_STRUCT_M 넘게 낮으면 터널, 높으면 다리.
+    (긴 터널 가운데 한 조각에 tunnel 태그가 빠지면 그 자리는 산꼭대기 높이를 받고, 경사 제한에 눌려 도로가 수백 m 깊은 협곡 바닥처럼 된다)"""
+    z = road_profile(ground, struct)
+    for _ in range(4):
+        gap = ground - z
+        auto = struct.copy()
+        auto[(struct == 0) & (gap > AUTO_STRUCT_M)] = 1
+        auto[(struct == 0) & (gap < -AUTO_STRUCT_M)] = 2
+        auto = tidy_auto(auto, struct)
+        if np.array_equal(auto, struct):
+            break
+        struct = auto
+        z = road_profile(ground, struct)
+    return struct, z
+
+
+def tidy_auto(auto: np.ndarray, orig: np.ndarray) -> np.ndarray:
+    """새로 채운 터널·다리 가운데 40m보다 짧은 것은 버리고, 같은 종류 사이에 낀 60m보다 짧은 보통 길은 그 종류로 잇는다"""
+    out = auto.copy()
+    n = len(out)
+    spans = []
+    i = 0
+    while i < n:
+        j = i
+        while j < n and out[j] == out[i]:
+            j += 1
+        spans.append([i, j, int(out[i])])
+        i = j
+    for i, j, v in spans:
+        if v != 0 and not np.any(orig[i:j] == v) and (j - i) * STEP < 40:
+            out[i:j] = orig[i:j]
+    for k in range(1, len(spans) - 1):
+        i, j, v = spans[k]
+        if v == 0 and (j - i) * STEP < 60 and spans[k - 1][2] == spans[k + 1][2] != 0:
+            # OSM에 원래 있던 터널·다리 사이의 짧은 틈(골짜기)은 그대로, 새로 채운 것과 맞닿은 틈만
+            pa, pb = spans[k - 1], spans[k + 1]
+            if np.any(orig[pa[0]:pa[1]] != pa[2]) or np.any(orig[pb[0]:pb[1]] != pb[2]):
+                out[i:j] = spans[k - 1][2]
+    return out
+
+
+def side_structures(struct: np.ndarray, s: np.ndarray, ts: np.ndarray, rel: np.ndarray) -> np.ndarray:
+    """그려질 양옆 땅(가장 가까운 ±45m 줄)을 보고 구조물을 고친다: 둘 다 SIDE_STRUCT_M 넘게 높으면 터널, 둘 다 넘게 낮으면 다리.
+    OSM의 다리가 산을 뚫고 지나가는 것처럼 나오거나(양옆에 수백 m 절벽) 터널이 골짜기 위 허공에 떠 있는 곳"""
+    rc = TERRAIN_OFFSETS.index(min(o for o in TERRAIN_OFFSETS if o > 0))
+    lo = np.interp(s, ts, np.minimum(rel[:, rc], rel[:, rc - 1]))
+    hi = np.interp(s, ts, np.maximum(rel[:, rc], rel[:, rc - 1]))
+    out = struct.copy()
+    out[lo > SIDE_STRUCT_M] = 1
+    out[(hi < -SIDE_STRUCT_M) & (struct == 1)] = 2
+    return tidy_auto(out, struct)
+
+
+def unkink(fine: np.ndarray, xs: np.ndarray, ys: np.ndarray, rx: np.ndarray, ry: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """매끄럽게 한 뒤에도 반지름 KINK_R보다 급하게 꺾이는 곳 둘레(앞뒤 150m)만 KINK_SIGMA로 더 넓게 고른다.
+    rx·ry는 매끄럽게 하기 전 선 (fine 간격)"""
+    h = fine[1] - fine[0]
+    th = np.unwrap(np.arctan2(np.gradient(ys), np.gradient(xs)))
+    k = np.abs(np.gradient(smooth(th, 10.0 / h))) / h
+    sharp = k > 1.0 / KINK_R
+    if not sharp.any():
+        return xs, ys
+    reach = int(150.0 / h)
+    near = np.convolve(sharp.astype(float), np.ones(2 * reach + 1), mode="same") > 0
+    w = np.clip(smooth(near.astype(float), 40.0 / h), 0.0, 1.0)
+    wide_x = smooth(rx, KINK_SIGMA / h)
+    wide_y = smooth(ry, KINK_SIGMA / h)
+    return xs * (1 - w) + wide_x * w, ys * (1 - w) + wide_y * w
+
+
+def merge_short(values: list, min_len: float) -> list:
+    """앞뒤가 같은 값인데 min_len보다 짧게 다른 값이 끼어 있으면 앞뒤 값으로 덮는다"""
+    out = list(values)
+    spans = []
+    i = 0
+    while i < len(out):
+        j = i
+        while j < len(out) and out[j] == out[i]:
+            j += 1
+        spans.append((i, j))
+        i = j
+    for k in range(1, len(spans) - 1):
+        i, j = spans[k]
+        if (j - i) * STEP < min_len and out[spans[k - 1][0]] == out[spans[k + 1][0]]:
+            out[i:j] = [out[spans[k - 1][0]]] * (j - i)
+    return out
 
 
 # ---------- 주행선 하나 만들기 ----------
@@ -429,8 +541,10 @@ def build_chain(chain: list[Way], junctions: dict[int, dict], to_utm: Transforme
     seg = np.hypot(np.diff(x), np.diff(y))
     s_raw = np.concatenate([[0.0], np.cumsum(seg)])
     fine = np.arange(0.0, float(s_raw[-1]), STEP / 2)
-    xs = smooth(np.interp(fine, s_raw, x), SMOOTH_SIGMA / (STEP / 2))
-    ys = smooth(np.interp(fine, s_raw, y), SMOOTH_SIGMA / (STEP / 2))
+    rx, ry = np.interp(fine, s_raw, x), np.interp(fine, s_raw, y)
+    xs = smooth(rx, SMOOTH_SIGMA / (STEP / 2))
+    ys = smooth(ry, SMOOTH_SIGMA / (STEP / 2))
+    xs, ys = unkink(fine, xs, ys, rx, ry)
     # 매끄럽게 하면 굽은 곳이 조금 짧아지므로, 실제 길이로 다시 재서 정확히 STEP 간격으로 뽑는다
     s_smooth = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xs), np.diff(ys)))])
     s = np.arange(0.0, float(s_smooth[-1]), STEP)
@@ -461,8 +575,8 @@ def build_chain(chain: list[Way], junctions: dict[int, dict], to_utm: Transforme
             lanes[i:j] = [lanes[i - 1]] * (j - i)
         i = j
 
-    speed = [attrs[i][1] or 100 for i in idx]
-    hgv = [attrs[i][2] or (80 if (attrs[i][1] or 100) <= 100 else 90) for i in idx]
+    speed = merge_short([attrs[i][1] or 100 for i in idx], MIN_SPEED_RUN)
+    hgv = merge_short([attrs[i][2] or (80 if (attrs[i][1] or 100) <= 100 else 90) for i in idx], MIN_SPEED_RUN)
     minspeed = [attrs[i][3] or 50 for i in idx]
     struct = np.array([attrs[i][4] for i in idx])
     names = [attrs[i][5] for i in idx]
@@ -473,7 +587,7 @@ def build_chain(chain: list[Way], junctions: dict[int, dict], to_utm: Transforme
         ground = terrain.sample(np.array(lat_s), np.array(lon_s))
     else:
         ground = np.zeros(len(s))
-    z = road_profile(ground, struct)
+    struct, z = auto_structures(ground, struct) if terrain else (struct, road_profile(ground, struct))
 
     # 주변 지형 띠
     terrain_rows = []
@@ -488,7 +602,9 @@ def build_chain(chain: list[Way], junctions: dict[int, dict], to_utm: Transforme
         grid_y = ys[ti][:, None] + ny[ti][:, None] * np.array(TERRAIN_OFFSETS)[None, :]
         glon, glat = to_ll.transform(grid_x.ravel(), grid_y.ravel())
         gz = terrain.sample(np.array(glat), np.array(glon)).reshape(grid_x.shape)
-        terrain_rows = np.round(gz - z[ti][:, None]).astype(int).tolist()
+        rel = gz - z[ti][:, None]
+        terrain_rows = np.round(rel).astype(int).tolist()
+        struct = side_structures(struct, s, ts, rel)
 
     jlist = []
     for node_id, raw_i in node_at.items():
@@ -515,7 +631,8 @@ def build_chain(chain: list[Way], junctions: dict[int, dict], to_utm: Transforme
         "speedHgv": runs(hgv, s),
         "minSpeed": runs(minspeed, s),
         "structure": runs([int(v) for v in struct], s),
-        "structureName": runs(struct_names, s),
+        # 구조물 종류를 고친 곳은 OSM 이름을 뺀다 (다리 이름이 터널에 붙지 않게)
+        "structureName": runs([n if int(struct[i]) == attrs[idx[i]][4] else "" for i, n in enumerate(struct_names)], s),
         "sectionName": runs(names, s),
         "junctions": jlist,
         "terrain": {"step": TERRAIN_STEP, "offsets": TERRAIN_OFFSETS, "rows": terrain_rows},
