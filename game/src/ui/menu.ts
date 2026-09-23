@@ -11,6 +11,7 @@ import { VehiclePreview } from "./vehiclePreview";
 import { controlsHtml, showControls } from "./help";
 import { ICON, WORDMARK } from "./icons";
 import { COLLECTING } from "../log/recorder";
+import type { PedalMode } from "../sim/input";
 import { digestForLegs, playDistance } from "../sim/pacing";
 
 export type Preset = "자동" | "한산" | "보통" | "혼잡" | "정체" | "실제";
@@ -52,6 +53,8 @@ export interface DriveSettings {
   pace?: Pace;
   /** 차로 유지 보조 (없으면 켬) */
   lka?: boolean;
+  /** 키보드 가속 페달 (없으면 누른 만큼 유지) */
+  pedal?: PedalMode;
   seed: number;
 }
 
@@ -154,6 +157,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let shake: ShakeLevel = saved.shake ?? "on";
     let pace: Pace = saved.pace ?? "digest";
     let lka = saved.lka ?? true;
+    let pedal: PedalMode = saved.pedal ?? "hold";
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
 
@@ -577,6 +581,21 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
           "시속 60km 넘게 달릴 때 방향지시등 없이 차선을 넘으려 하면 경고하고 운전대를 살짝 돌려 줍니다. 주행 중 L 키로 켜고 끕니다.",
         ),
       );
+      body.appendChild(
+        field(
+          "키보드 가속 페달",
+          seg<PedalMode>(
+            [
+              ["hold", "누른 만큼 유지"],
+              ["momentary", "누르는 동안만"],
+            ],
+            pedal,
+            (v) => (pedal = v),
+            "키보드 가속 페달",
+          ),
+          "누른 만큼 유지: ↑를 누르는 동안 페달이 깊어지고, 떼면 그 깊이로 계속 밟고 달립니다 (속도·rpm이 그 자리에서 유지). ↓는 먼저 발을 떼고, 더 누르면 브레이크입니다.",
+        ),
+      );
       preview.show(vehicle, color);
     }
 
@@ -681,6 +700,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         shake,
         pace,
         lka,
+        pedal,
         seed: Math.floor(Math.random() * 2 ** 31),
       };
       save(s);

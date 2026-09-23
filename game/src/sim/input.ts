@@ -3,6 +3,14 @@
 import type { Controls } from "./player";
 
 export type InputMode = "keyboard" | "mouse" | "gamepad";
+/** 키보드 페달: hold는 누른 만큼 밟히고 떼면 그 자리에 발을 둔다 (진짜 페달처럼 일정하게 밟고 달린다), momentary는 누르는 동안만 */
+export type PedalMode = "hold" | "momentary";
+
+/**
+ * hold 페달 빠르기 (1초에 페달 깊이가 바뀌는 양). 고속도로 정속은 페달 15~30% 사이라 짧게 누르면 조금씩 바뀌게 한다.
+ * ↑: 처음 0.4초는 fine, 그 뒤는 press. ↓: 처음 0.2초는 fine으로 조금 떼고, 더 누르면 lift로 다 뗀 뒤 brake로 밟는다.
+ */
+export const PEDAL = { fine: 0.35, press: 0.9, fineFor: 0.4, liftFineFor: 0.2, lift: 4, brake: 2.5, brakeRelease: 6 };
 
 export interface InputActions {
   signalLeft: boolean;
@@ -34,10 +42,14 @@ const KEY_FALLBACK: Record<string, string> = { ",": "Comma", ".": "Period", " ":
 
 export class Input {
   mode: InputMode = "keyboard";
+  pedal: PedalMode = "hold";
   controls: Controls = { throttle: 0, brake: 0, steer: 0, reverse: false };
   private pressed = new Set<string>();
   private throttleKey = 0;
   private brakeKey = 0;
+  /** ↑·↓를 이어서 누른 시간 (s) */
+  private upFor = 0;
+  private downFor = 0;
   private steerKey = 0;
   private mouseX = 0.5;
   private gamepadIndex: number | null = null;
@@ -55,6 +67,8 @@ export class Input {
     window.addEventListener("blur", () => {
       keysDown.up = keysDown.down = keysDown.left = keysDown.right = false;
       this.pressed.clear();
+      // 밟아 둔 가속 페달도 뗀다 (창을 벗어난 사이 혼자 달려 나가지 않게)
+      this.throttleKey = 0;
     });
     target.addEventListener("mousemove", (e) => {
       const rect = target.getBoundingClientRect();
@@ -144,9 +158,11 @@ export class Input {
       return c;
     }
 
-    // 키보드 페달은 눌린 시간만큼 서서히 올라간다
-    this.throttleKey = approach(this.throttleKey, keysDown.up ? 1 : 0, dt * (keysDown.up ? 2.2 : 5));
-    this.brakeKey = approach(this.brakeKey, keysDown.down ? 1 : 0, dt * (keysDown.down ? 2.5 : 6));
+    this.upFor = keysDown.up ? this.upFor + dt : 0;
+    this.downFor = keysDown.down ? this.downFor + dt : 0;
+    const pedals = pedalStep(this.pedal, this.throttleKey, this.brakeKey, keysDown.up, keysDown.down, dt, this.upFor, this.downFor);
+    this.throttleKey = pedals.throttle;
+    this.brakeKey = pedals.brake;
     c.throttle = this.throttleKey;
     c.brake = this.brakeKey;
 
@@ -220,6 +236,34 @@ export class Input {
     if (edge(2)) this.pendingActions.horn = true; // X
     this.prevButtons = b;
   }
+}
+
+/**
+ * 키보드 페달 한 걸음.
+ * hold: ↑를 누르는 동안 서서히 깊게 밟고, 떼면 그 깊이를 그대로 둔다 (속도·엔진 회전수가 그 자리에서 자리 잡는다).
+ *       ↓를 누르면 먼저 가속 페달에서 발을 떼고, 다 뗀 뒤에도 누르고 있으면 브레이크를 밟는다. 브레이크는 떼면 풀린다.
+ * momentary: 누르는 동안만 밟히고 떼면 곧 풀린다.
+ */
+export function pedalStep(
+  mode: PedalMode,
+  throttle: number,
+  brake: number,
+  up: boolean,
+  down: boolean,
+  dt: number,
+  upFor = 1,
+  downFor = 1,
+): { throttle: number; brake: number } {
+  if (mode === "momentary") {
+    return { throttle: approach(throttle, up ? 1 : 0, dt * (up ? 2.2 : 5)), brake: approach(brake, down ? 1 : 0, dt * (down ? 2.5 : 6)) };
+  }
+  if (down) {
+    const lift = downFor < PEDAL.liftFineFor ? PEDAL.fine : PEDAL.lift;
+    if (throttle > 0) return { throttle: Math.max(0, throttle - dt * lift), brake: approach(brake, 0, dt * PEDAL.brakeRelease) };
+    return { throttle: 0, brake: approach(brake, 1, dt * PEDAL.brake) };
+  }
+  const press = upFor < PEDAL.fineFor ? PEDAL.fine : PEDAL.press;
+  return { throttle: up ? Math.min(1, throttle + dt * press) : throttle, brake: approach(brake, 0, dt * PEDAL.brakeRelease) };
 }
 
 function clamp01(x: number): number {

@@ -152,7 +152,23 @@ export class PlayerCar {
     return rpm > this.spec.redline ? 0 : c[c.length - 1][1];
   }
 
-  /** 자동변속: 가속 페달을 많이 밟을수록 높은 rpm까지 끌고 간다 */
+  /**
+   * 주행 중 자동변속: 한 단씩, 올리는 rpm과 내리는 rpm 사이를 벌려(히스테리시스) 같은 페달로 정속할 때 기어가 오르내리지 않게 한다.
+   * 올림: 지금 기어 rpm이 (페달이 깊을수록 높은) 올림 rpm을 넘을 때. 내림: 지금 rpm이 내림 rpm 아래이고 한 단 내려도 올림 rpm을 넘지 않을 때
+   * (페달을 깊게 밟으면 내림 rpm이 올라가 킥다운).
+   */
+  private nextGear(v: number, throttle: number): number {
+    const n = this.spec.gears.length;
+    const g = this.gear;
+    const [lo, hi] = this.spec.shiftRpm ?? [2000, 5800];
+    const upRpm = lo + throttle * (hi - lo);
+    const downRpm = Math.max(this.spec.idleRpm * 1.15, lo * 0.7 + throttle * (hi - lo) * 0.55);
+    if (g < n && this.engineRpm(v, g) > upRpm) return g + 1;
+    if (g > 1 && this.engineRpm(v, g) < downRpm && this.engineRpm(v, g - 1) < upRpm) return g - 1;
+    return g;
+  }
+
+  /** 자리에 놓을 때 기어: 가속 페달을 많이 밟을수록 높은 rpm까지 끌고 간다 */
   private pickGear(v: number, throttle: number): number {
     const [lo, hi] = this.spec.shiftRpm ?? [2000, 5800];
     const upRpm = lo + throttle * (hi - lo);
@@ -178,7 +194,7 @@ export class PlayerCar {
     this.shiftCooldown -= dt;
     this.shiftAge += dt;
     if (!c.reverse && this.shiftCooldown <= 0) {
-      const want = this.pickGear(Math.max(v, 0), c.throttle);
+      const want = this.nextGear(Math.max(v, 0), c.throttle);
       if (want !== this.gear) {
         this.shiftDir = want > this.gear ? 1 : -1;
         this.gear = want;

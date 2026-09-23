@@ -308,6 +308,7 @@ export class Game {
     this.recorder = new Recorder(settings.consent);
     this.rules.onEvent = (e) => this.recorder.event(e);
     this.lka = settings.lka ?? true;
+    this.input.pedal = settings.pedal ?? "hold";
     this.startS = s0;
     // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다
     if ((settings.pace ?? "digest") === "digest") {
@@ -334,7 +335,7 @@ export class Game {
       seed: settings.seed,
       inputMode: this.input.mode,
       camera: settings.camera,
-      drive: { pace: this.digest ? "digest" : "full", windows: this.digest ? this.digest.map((w) => [Math.round(w.s0), Math.round(w.s1)]) : null, lka: this.lka },
+      drive: { pace: this.digest ? "digest" : "full", windows: this.digest ? this.digest.map((w) => [Math.round(w.s0), Math.round(w.s1)]) : null, lka: this.lka, pedal: this.input.pedal },
     });
 
     this.sound.enabled = settings.sound;

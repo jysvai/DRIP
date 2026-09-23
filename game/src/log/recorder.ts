@@ -36,7 +36,7 @@ export interface SessionInfo {
    * 주행 방식: digest(요약 주행)면 windows 구간만 실제로 달리고 사이는 건너뛴다 (건너뛴 길에는 1초 기록이 없다).
    * lka: 차로 유지 보조를 켜고 출발했는지 (주행 중 L로 바꾸면 이벤트로 남는다)
    */
-  drive: { pace: "digest" | "full"; windows: [number, number][] | null; lka: boolean };
+  drive: { pace: "digest" | "full"; windows: [number, number][] | null; lka: boolean; pedal: "hold" | "momentary" };
 }
 
 function participantId(): string {

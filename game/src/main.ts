@@ -5,7 +5,7 @@
 //   preset=한산|보통|혼잡|정체|자동|실제, hour=0~23, weekend=1, weather=clear|cloudy|rain|heavy_rain|fog|real(어제 실제),
 //   cam=cockpit|hood|chase, auto=1(자동 운전), sound=0, voice=0(음성 안내 끄기),
 //   car=차종 id, color=#rrggbb, quality=auto|low|medium|high|ultra, shake=on|low|off(화면 흔들림), go=1(출발 안내 없이),
-//   pace=full(요약 없이 처음부터 끝까지, 기본은 요약 주행), lka=0(차로 유지 보조 끄기)
+//   pace=full(요약 없이 처음부터 끝까지, 기본은 요약 주행), lka=0(차로 유지 보조 끄기), pedal=momentary(키보드 가속 페달을 누르는 동안만)
 
 import "./ui/style.css";
 import { Sound } from "./audio/sound";
@@ -79,6 +79,7 @@ function fromParams(p: URLSearchParams, net: Network, cfg: GameConfig): DriveSet
     shake: (["on", "low", "off"].includes(p.get("shake") ?? "") ? p.get("shake") : "on") as ShakeLevel,
     pace: p.get("pace") === "full" ? "full" : "digest",
     lka: p.get("lka") !== "0",
+    pedal: p.get("pedal") === "momentary" ? "momentary" : "hold",
     seed: Number(p.get("seed") ?? 12345),
   };
 }
