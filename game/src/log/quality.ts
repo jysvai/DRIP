@@ -18,18 +18,7 @@ export interface QualityRules {
   participant: { window: number; maxRejected: number; clearAfterAccepted: number };
 }
 
-export type RejectReason =
-  | "too_short"
-  | "jam_speeding"
-  | "extreme_speed"
-  | "crashes"
-  | "contacts"
-  | "shoulder"
-  | "idle"
-  | "no_input"
-  | "near_miss"
-  | "autopilot"
-  | "participant";
+export type RejectReason = "too_short" | "jam_speeding" | "extreme_speed" | "crashes" | "contacts" | "shoulder" | "idle" | "no_input" | "near_miss" | "autopilot" | "participant";
 
 export const REJECT_LABELS: Record<RejectReason, string> = {
   too_short: "주행이 너무 짧음",
@@ -84,7 +73,19 @@ export function assessSession(columns: readonly string[], samples: readonly (rea
   const iSteer = col("steer");
   const num = (row: readonly (number | null)[], i: number): number | null => (i >= 0 && row[i] !== null && row[i] !== undefined ? Number(row[i]) : null);
 
-  const m: QualityMetrics = { driveSec: samples.length, distanceM: 0, congestedSec: 0, jamSpeedingSec: 0, extremeSec: 0, shoulderSec: 0, idleSec: 0, noInputSec: 0, crashes: 0, seriousCrashes: 0, nearMisses: 0 };
+  const m: QualityMetrics = {
+    driveSec: samples.length,
+    distanceM: 0,
+    congestedSec: 0,
+    jamSpeedingSec: 0,
+    extremeSec: 0,
+    shoulderSec: 0,
+    idleSec: 0,
+    noInputSec: 0,
+    crashes: 0,
+    seriousCrashes: 0,
+    nearMisses: 0,
+  };
   const r = rules;
   for (const row of samples) {
     const kmh = num(row, iSpeed) ?? 0;

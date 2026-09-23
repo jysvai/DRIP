@@ -1,26 +1,47 @@
-// 합성음: 엔진(가솔린·디젤·대형 디젤·전기 모터), 타이어 노면음, 바람, 터널 울림, 방향지시등 딸깍 소리,
-// 충돌, 경적, 대형차 에어브레이크, 빗소리와 젖은 노면 타이어 소리. 파일 없이 Web Audio로 만든다.
+// 합성음: 엔진(audio/engine.ts), 타이어·노면(audio/road.ts), 주변 차(audio/traffic.ts), 바람(돌풍·A필러 휘파람),
+// 타이어 노면음, 터널 울림, 방향지시등 딸깍 소리, 충돌(쿵·찌그러짐·유리), 경적(내 차와 뒤차), 대형차 에어브레이크,
+// 빗소리와 젖은 노면 타이어 소리. 파일 없이 Web Audio로 만든다.
 // 내비 음성 안내는 브라우저 음성 합성(ko-KR)을 쓰고, 한국어 음성이 없는 브라우저에서는 말하지 않는다.
 
-export type SoundPowertrain = "gasoline" | "diesel_light" | "diesel_heavy" | "electric";
+import { EngineVoice, type SoundPowertrain } from "./engine";
+import { RoadVoice } from "./road";
+import { TrafficVoices, type NearbyCar } from "./traffic";
 
-/** 동력원별 소리: 기본음 = rpm/60 × 폭발 수, 필터, 음량 */
-const ENGINE: Record<SoundPowertrain, { fires: number; wave1: OscillatorType; wave2: OscillatorType; filter: number; filterThrottle: number; gain: number; gainThrottle: number }> = {
-  gasoline: { fires: 2, wave1: "sawtooth", wave2: "square", filter: 400, filterThrottle: 900, gain: 0.05, gainThrottle: 0.07 },
-  diesel_light: { fires: 2, wave1: "sawtooth", wave2: "square", filter: 320, filterThrottle: 650, gain: 0.07, gainThrottle: 0.07 },
-  diesel_heavy: { fires: 3, wave1: "sawtooth", wave2: "square", filter: 220, filterThrottle: 520, gain: 0.09, gainThrottle: 0.08 },
-  electric: { fires: 4, wave1: "sine", wave2: "triangle", filter: 3200, filterThrottle: 0, gain: 0.006, gainThrottle: 0.02 },
-};
+export type { SoundPowertrain } from "./engine";
+export type { NearbyCar } from "./traffic";
+
+/** 매 프레임 소리에 넘기는 주행 상태 */
+export interface DriveAudio {
+  dt: number;
+  /** 엔진 회전수 (PlayerCar.revs) */
+  revs: number;
+  redline: number;
+  throttle: number;
+  brake: number;
+  /** m/s */
+  speed: number;
+  inTunnel: boolean;
+  /** 운전석 시점 (차 안에서 듣는 소리) */
+  cockpit: boolean;
+  slip: number;
+  abs: boolean;
+  surface: "dry" | "wet" | "ice";
+  rumble: number;
+  rumbleSide: number;
+  scrape: number;
+  scrapeSide: number;
+}
 
 export class Sound {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
   private bus!: GainNode;
-  private engineOsc!: OscillatorNode;
-  private engineOsc2!: OscillatorNode;
-  private engineGain!: GainNode;
-  private engineFilter!: BiquadFilterNode;
+  private engine!: EngineVoice;
+  private roadVoice!: RoadVoice;
+  private trafficVoices!: TrafficVoices;
   private windGain!: GainNode;
+  private whistleGain!: GainNode;
+  private gustT = 0;
   private windFilter!: BiquadFilterNode;
   private tireGain!: GainNode;
   private tireFilter!: BiquadFilterNode;
@@ -65,20 +86,6 @@ export class Sound {
     this.bus.connect(delay);
     delay.connect(echoFilter).connect(feedback).connect(delay);
     echoFilter.connect(this.wet).connect(this.master);
-
-    this.engineFilter = ctx.createBiquadFilter();
-    this.engineFilter.type = "lowpass";
-    this.engineFilter.frequency.value = 900;
-    this.engineGain = ctx.createGain();
-    this.engineGain.gain.value = 0.0;
-    this.engineOsc = ctx.createOscillator();
-    this.engineOsc2 = ctx.createOscillator();
-    this.engineOsc.connect(this.engineFilter);
-    this.engineOsc2.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain).connect(this.bus);
-    this.engineOsc.start();
-    this.engineOsc2.start();
-    this.setPowertrain(this.pt);
 
     this.pickVoice();
     if (typeof speechSynthesis !== "undefined") speechSynthesis.addEventListener("voiceschanged", () => this.pickVoice());
@@ -137,6 +144,19 @@ export class Sound {
     this.hissGain = ctx.createGain();
     this.hissGain.gain.value = 0;
     whiteSrc().connect(this.hissFilter).connect(this.hissGain).connect(this.bus);
+    // A필러 휘파람: 빠를 때 창틀에서 나는 가는 바람 소리
+    const whistle = ctx.createBiquadFilter();
+    whistle.type = "bandpass";
+    whistle.frequency.value = 2300;
+    whistle.Q.value = 14;
+    this.whistleGain = ctx.createGain();
+    this.whistleGain.gain.value = 0;
+    whiteSrc().connect(whistle).connect(this.whistleGain).connect(this.bus);
+
+    this.engine = new EngineVoice(ctx, this.bus, this.noise);
+    this.engine.setPowertrain(this.pt);
+    this.roadVoice = new RoadVoice(ctx, this.bus, this.noise, white);
+    this.trafficVoices = new TrafficVoices(ctx, this.bus, this.noise);
   }
 
   private pickVoice() {
@@ -159,28 +179,27 @@ export class Sound {
 
   setPowertrain(pt: SoundPowertrain) {
     this.pt = pt;
-    if (!this.ctx) return;
-    this.engineOsc.type = ENGINE[pt].wave1;
-    this.engineOsc2.type = ENGINE[pt].wave2;
+    this.engine?.setPowertrain(pt);
   }
 
-  update(rpm: number, throttle: number, speed: number, inTunnel: boolean, brake = 0) {
+  update(a: DriveAudio) {
     const ctx = this.ctx;
     if (!ctx) return;
     const t = ctx.currentTime;
     const on = this.enabled ? 1 : 0;
-    const e = ENGINE[this.pt];
-    const f = 12 + (rpm / 60) * e.fires;
-    this.engineOsc.frequency.setTargetAtTime(this.pt === "electric" ? f : f * 2, t, 0.05);
-    this.engineOsc2.frequency.setTargetAtTime(this.pt === "electric" ? f * 2.01 : f, t, 0.05);
-    this.engineFilter.frequency.setTargetAtTime(e.filter + throttle * e.filterThrottle + rpm * (this.pt === "electric" ? 0 : 0.1), t, 0.1);
-    const evSpeed = this.pt === "electric" ? Math.min(1, speed / 8) : 1;
-    this.engineGain.gain.setTargetAtTime(on * (e.gain + throttle * e.gainThrottle) * evSpeed, t, 0.1);
+    const { speed, inTunnel, brake } = a;
+    this.engine.update({ revs: a.revs, redline: a.redline, throttle: a.throttle, speed, cockpit: a.cockpit }, on, a.dt);
+    this.roadVoice.update({ speed, slip: a.slip, abs: a.abs, surface: a.surface, rumble: a.rumble, rumbleSide: a.rumbleSide, scrape: a.scrape, scrapeSide: a.scrapeSide }, on);
     const kmh = speed * 3.6;
+    // 바람: 빠를수록 크고, 돌풍처럼 천천히 일렁인다 (터널 안은 잔잔)
+    this.gustT += a.dt;
+    const gust = inTunnel ? 1 : 1 + 0.18 * Math.sin(this.gustT * 0.7) * Math.sin(this.gustT * 1.9 + 1.3) + 0.08 * Math.sin(this.gustT * 5.3);
     this.windFilter.frequency.setTargetAtTime(600 + kmh * 8, t, 0.2);
-    this.windGain.gain.setTargetAtTime(on * Math.min(0.45, (kmh / 130) ** 2 * 0.3), t, 0.3);
+    this.windGain.gain.setTargetAtTime(on * gust * Math.min(0.45, (kmh / 130) ** 2 * 0.3) * (a.cockpit ? 0.85 : 1), t, 0.3);
+    this.whistleGain.gain.setTargetAtTime(on * gust * Math.max(0, Math.min(1, (kmh - 95) / 60)) * 0.02 * (a.cockpit ? 1 : 0.3), t, 0.4);
+    // 타이어 노면음: 터널 안에서는 벽에 울려 크게
     this.tireFilter.frequency.setTargetAtTime(140 + kmh * 2.2, t, 0.3);
-    this.tireGain.gain.setTargetAtTime(on * Math.min(0.4, (kmh / 120) ** 1.4 * 0.28), t, 0.3);
+    this.tireGain.gain.setTargetAtTime(on * Math.min(0.5, (kmh / 120) ** 1.4 * 0.28 * (inTunnel ? 1.5 : 1)), t, 0.3);
     this.wet.gain.setTargetAtTime(inTunnel ? 0.55 : 0, t, 0.4);
     // 터널 안에는 비가 들이치지 않고, 노면도 곧 마른다
     this.rainGain.gain.setTargetAtTime(on * this.rain * (inTunnel ? 0.08 : 0.16), t, 0.5);
@@ -282,20 +301,113 @@ export class Sound {
     o.stop(ctx.currentTime + 0.04);
   }
 
-  crash(strength: number) {
+  /** 주변 차 (가까운 순서) */
+  traffic(cars: NearbyCar[], cockpit: boolean) {
+    if (!this.ctx) return;
+    this.trafficVoices.update(cars, this.enabled ? 1 : 0, cockpit);
+  }
+
+  /** 변속 */
+  shift(up: boolean) {
+    if (!this.ctx || this.paused) return;
+    this.engine.shift(up, this.enabled ? 1 : 0);
+  }
+
+  /** 신축이음·이음매를 넘는 소리 */
+  thump(strength: number, pan = 0) {
+    if (!this.ctx || this.paused) return;
+    this.roadVoice.thump(strength, this.enabled ? 1 : 0, pan);
+  }
+
+  /** 충돌: 차체가 받는 낮은 쿵, 찌그러지는 금속, 세면 유리 깨지는 소리. side: -1 왼쪽, 1 오른쪽 */
+  crash(strength: number, side = 0) {
     const ctx = this.ctx;
     if (!ctx || !this.enabled) return;
-    const src = ctx.createBufferSource();
-    src.buffer = this.noise;
-    const g = ctx.createGain();
-    const f = ctx.createBiquadFilter();
-    f.type = "lowpass";
-    f.frequency.value = 1200;
-    g.gain.setValueAtTime(Math.min(1.2, 0.3 + strength), ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
-    src.connect(f).connect(g).connect(this.bus);
-    src.start();
-    src.stop(ctx.currentTime + 0.9);
+    const t0 = ctx.currentTime;
+    const k = Math.max(0.05, Math.min(1, strength));
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = side * 0.5;
+    pan.connect(this.bus);
+    // 쿵
+    const o = ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(70, t0);
+    o.frequency.exponentialRampToValueAtTime(32, t0 + 0.35);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t0);
+    og.gain.exponentialRampToValueAtTime(0.9 * k, t0 + 0.01);
+    og.gain.exponentialRampToValueAtTime(0.001, t0 + 0.45);
+    o.connect(og).connect(pan);
+    o.start(t0);
+    o.stop(t0 + 0.5);
+    // 찌그러짐
+    const noiseHit = (type: BiquadFilterType, freq: number, q: number, level: number, dur: number, delay = 0) => {
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0 + delay);
+      g.gain.exponentialRampToValueAtTime(level, t0 + delay + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0008, t0 + delay + dur);
+      src.connect(f).connect(g).connect(pan);
+      src.start(t0 + delay, Math.random());
+      src.stop(t0 + delay + dur + 0.05);
+    };
+    noiseHit("lowpass", 1200, 0.7, Math.min(1.2, 0.3 + k), 0.8);
+    noiseHit("bandpass", 2400, 1.5, 0.5 * k, 0.35, 0.02);
+    // 유리: 세게 부딪히면 높은 파편 소리가 흩어진다
+    if (k > 0.6) {
+      for (let i = 0; i < 7; i++) {
+        const d = 0.04 + Math.random() * 0.35;
+        const p = ctx.createOscillator();
+        p.type = "sine";
+        p.frequency.value = 3200 + Math.random() * 4200;
+        const pg = ctx.createGain();
+        pg.gain.setValueAtTime(0.0001, t0 + d);
+        pg.gain.exponentialRampToValueAtTime(0.05 * k, t0 + d + 0.003);
+        pg.gain.exponentialRampToValueAtTime(0.0005, t0 + d + 0.09);
+        p.connect(pg).connect(pan);
+        p.start(t0 + d);
+        p.stop(t0 + d + 0.12);
+      }
+      noiseHit("highpass", 5000, 0.7, 0.25 * k, 0.5, 0.03);
+    }
+  }
+
+  /** 다른 차의 경적 (끼어들어 급제동하게 만든 뒤차 등). pan: -1 왼쪽 ~ 1 오른쪽, dist: m */
+  hornFrom(pan: number, dist: number, heavy: boolean, long = false) {
+    const ctx = this.ctx;
+    if (!ctx || !this.enabled || this.paused) return;
+    const t0 = ctx.currentTime;
+    const level = 0.06 / (1 + (dist / 25) ** 2) + 0.012;
+    const p = ctx.createStereoPanner();
+    p.pan.value = Math.max(-1, Math.min(1, pan));
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 2200 - Math.min(1200, dist * 12);
+    lp.connect(p).connect(this.bus);
+    const base = heavy ? 230 : 380 + Math.random() * 80;
+    const dur = long ? 0.9 : 0.28;
+    // 짧게 두 번 또는 길게 한 번
+    const beeps = long ? [0] : [0, 0.36];
+    for (const d of beeps) {
+      for (const ratio of heavy ? [1, 1.26, 1.5] : [1, 1.19]) {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sawtooth";
+        o.frequency.value = base * ratio;
+        g.gain.setValueAtTime(0.0001, t0 + d);
+        g.gain.exponentialRampToValueAtTime(level, t0 + d + 0.015);
+        g.gain.setValueAtTime(level, t0 + d + dur - 0.05);
+        g.gain.exponentialRampToValueAtTime(0.0005, t0 + d + dur);
+        o.connect(g).connect(lp);
+        o.start(t0 + d);
+        o.stop(t0 + d + dur + 0.02);
+      }
+    }
   }
 
   horn() {

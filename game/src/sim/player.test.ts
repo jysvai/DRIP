@@ -97,6 +97,49 @@ describe("PlayerCar", () => {
     expect(wet / dry).toBeLessThan(1.95);
   });
 
+  it("서 있다가 밟으면 엔진이 먼저 오르고(토크컨버터), 변속하면 기어가 오른다", () => {
+    const car = new PlayerCar();
+    car.place(road, 100, 2, 0);
+    car.step(DT, road, { throttle: 1, brake: 0, steer: 0, reverse: false });
+    for (let i = 0; i < 20; i++) car.step(DT, road, { throttle: 1, brake: 0, steer: 0, reverse: false });
+    expect(car.revs).toBeGreaterThan(car.rpm + 500);
+    let shifts = 0;
+    let gear = car.gear;
+    for (let i = 0; i < 8 / DT; i++) {
+      car.step(DT, road, { throttle: 1, brake: 0, steer: 0, reverse: false });
+      if (car.gear !== gear) {
+        shifts++;
+        gear = car.gear;
+        expect(car.shiftDir).toBe(1);
+      }
+    }
+    expect(shifts).toBeGreaterThan(1);
+  });
+
+  it("세게 꺾으면 타이어가 한계에 닿고, 곧게 가면 여유가 있다", () => {
+    const straight = new PlayerCar();
+    straight.place(road, 100, 2, 100 / 3.6);
+    run(straight, road, { throttle: 0.3, brake: 0, steer: 0, reverse: false }, 1);
+    expect(straight.slip).toBeLessThan(0.1);
+    const hard = new PlayerCar();
+    hard.place(road, 100, 2, 100 / 3.6);
+    run(hard, road, { throttle: 0.3, brake: 0, steer: 0.6, reverse: false }, 0.5);
+    expect(hard.slip).toBeGreaterThan(0.9);
+  });
+
+  it("ABS는 마른 길에서는 끝까지 밟아야, 젖은 길에서는 덜 밟아도 작동한다", () => {
+    const brake = (wet: boolean, pedal: number) => {
+      const car = new PlayerCar();
+      if (wet) car.grip = (kmh) => gripAt(WEATHERS.rain, kmh);
+      car.place(road, 100, 2, 80 / 3.6);
+      run(car, road, { throttle: 0, brake: pedal, steer: 0, reverse: false }, 0.2);
+      return car.abs;
+    };
+    expect(brake(false, 0.7)).toBe(false);
+    expect(brake(false, 1)).toBe(true);
+    expect(brake(true, 0.7)).toBe(true);
+  });
+
   it("폭우에 빠르면 수막현상으로 마찰이 더 준다", () => {
     expect(gripAt(WEATHERS.heavy_rain, 120)).toBeLessThan(gripAt(WEATHERS.heavy_rain, 60) * 0.8);
     expect(gripAt(WEATHERS.rain, 120)).toBe(gripAt(WEATHERS.rain, 60));

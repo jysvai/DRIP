@@ -162,7 +162,9 @@ export class Recorder {
       const { error } = await client.from("drip_samples").insert(rows.slice(i, i + 20));
       if (error) return fail("주행 기록", error.message);
     }
-    const { error } = await client.from("drip_summaries").insert({ session_id: this.sessionId, ended_reason: reason, summary: { ...summary, quality: quality.metrics, qualityVersion: quality.rulesVersion } });
+    const { error } = await client
+      .from("drip_summaries")
+      .insert({ session_id: this.sessionId, ended_reason: reason, summary: { ...summary, quality: quality.metrics, qualityVersion: quality.rulesVersion } });
     if (error) return fail("요약", error.message);
     this.status = "ok";
     return "ok";

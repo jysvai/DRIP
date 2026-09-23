@@ -8,6 +8,7 @@ import { coneLine, END_TAPER_M, type WorkZone } from "../sim/workzones";
 import type { Enforcement } from "../sim/cameras";
 import { incidentBlockS, incidentVehicleS, type Incident } from "../sim/incidents";
 import { iceAt, type IcePatch } from "../sim/ice";
+import { expansionJoints, RUMBLE } from "../road/surface";
 import type { World } from "./world";
 
 export const CHUNK = 200;
@@ -187,6 +188,28 @@ function glareTexture(): THREE.CanvasTexture {
   return t;
 }
 
+/** 노면요철: 가로로 판 홈이 약 31cm마다 (4m에 13줄). 홈 안쪽은 어둡고 가장자리는 조금 밝다 */
+function rumbleTexture(): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 208;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#9a9a98";
+  g.fillRect(0, 0, 8, 208);
+  for (let k = 0; k < 13; k++) {
+    const y = k * 16;
+    g.fillStyle = "#4a4b4c";
+    g.fillRect(0, y + 3, 8, 7);
+    g.fillStyle = "#b4b4b0";
+    g.fillRect(0, y + 10, 8, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
 function hash(n: number): number {
   let x = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
   x ^= x >>> 13;
@@ -218,6 +241,8 @@ export class RoadChunks {
   private personGeo = makePersonGeometry();
   private flareMat = new THREE.MeshBasicMaterial({ color: 0xff3b1a, toneMapped: false });
   private triangleMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  /** 교량 신축이음 위치 (road/surface.ts) */
+  private joints: { s: number; strength: number }[] = [];
 
   /** 공사 구간과 그 표지를 넣는다 (조각을 만들기 전에 부른다) */
   setWorkZones(zones: WorkZone[]) {
@@ -243,7 +268,12 @@ export class RoadChunks {
     marks.roughness = 0.7 - 0.35 * k;
     marks.envMap = surface.envMap;
     marks.envMapIntensity = 0.5 * k;
-    surface.needsUpdate = marks.needsUpdate = true;
+    const rumble = this.mats.rumble as THREE.MeshStandardMaterial;
+    rumble.color.setScalar(1 - 0.35 * k);
+    rumble.roughness = 0.95 - 0.5 * k;
+    rumble.envMap = surface.envMap;
+    rumble.envMapIntensity = 0.5 * k;
+    surface.needsUpdate = marks.needsUpdate = rumble.needsUpdate = true;
   }
 
   /** 눈이 쌓인다: 땅·나무·콘크리트(방호벽 윗면 등)의 위를 보는 면이 하얘진다. k 0~1 (노면은 제설돼 젖은 채로 둔다) */
@@ -305,8 +335,10 @@ export class RoadChunks {
       post: new THREE.MeshStandardMaterial({ color: 0x8e9396, roughness: 0.5, metalness: 0.6 }),
       cone: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 }),
       glare: new THREE.MeshStandardMaterial({ vertexColors: true, map: glareTexture(), transparent: true, depthWrite: false, roughness: 0.7, side: THREE.DoubleSide }),
+      rumble: new THREE.MeshStandardMaterial({ vertexColors: true, map: rumbleTexture(), roughness: 0.95, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
       signBack: new THREE.MeshStandardMaterial({ color: 0x9aa0a4, roughness: 0.6, metalness: 0.4, side: THREE.DoubleSide }),
     };
+    this.joints = expansionJoints(road);
     this.pineGeo = makePineGeometry();
     this.broadGeo = makeBroadleafGeometry();
     // 방음벽 구간: IC·JC 근처(도시 부근)일수록 자주
@@ -464,6 +496,49 @@ export class RoadChunks {
     laned(asphaltOpp, -1);
     strip(surface, (_, L) => L.oppShoulder, (_, L) => L.oppOuter, 0, shoulderCol);
     strip(surface, (_, L) => L.oppInner, (_, L) => L.oppInner + 1.4, 0.001, shoulderCol, (r) => !inTunnel(r));
+    // 갓길 노면요철 (졸음운전 방지 럼블 스트립): 바깥 차선 바로 옆 갓길에 가로 홈 띠. 터널 안에는 없다
+    const rumbleGeo = new Geo();
+    const rumbleCol = new THREE.Color(0x8a8b8b);
+    strip(rumbleGeo, (_, L) => L.ourR + RUMBLE.right[0], (_, L) => L.ourR + RUMBLE.right[1], 0.002, rumbleCol, inTunnel);
+    strip(rumbleGeo, (_, L) => L.ourL - RUMBLE.left[1], (_, L) => L.ourL - RUMBLE.left[0], 0.002, rumbleCol, inTunnel);
+    // 교량 신축이음: 노면을 가로지르는 철판 띠 (우리 쪽과 반대편)
+    for (const j of this.joints) {
+      if (j.strength < 0.5 || j.s < s0 || j.s >= s1) continue;
+      const [ra, rb] = [this.rows(j.s - 0.2, j.s - 0.2, 1)[0], this.rows(j.s + 0.2, j.s + 0.2, 1)[0]];
+      const steel = new THREE.Color(0x5d6064);
+      const gap = new THREE.Color(0x1d1e20);
+      for (const [dA, dB] of [
+        [(L: ReturnType<typeof layout>) => L.shoulderL, (L: ReturnType<typeof layout>) => L.shoulderR],
+        [(L: ReturnType<typeof layout>) => L.oppShoulder, (L: ReturnType<typeof layout>) => L.oppInner + 1.4],
+      ]) {
+        const La = layout(ra.w);
+        const Lb = layout(rb.w);
+        P(ra, dA(La), 0.004, a);
+        P(ra, dB(La), 0.004, b);
+        const i0 = metal.vertex(a.x, a.y, a.z, 0, 1, 0, steel);
+        const i1 = metal.vertex(b.x, b.y, b.z, 0, 1, 0, steel);
+        P(rb, dA(Lb), 0.004, a);
+        P(rb, dB(Lb), 0.004, b);
+        const i2 = metal.vertex(b.x, b.y, b.z, 0, 1, 0, steel);
+        const i3 = metal.vertex(a.x, a.y, a.z, 0, 1, 0, steel);
+        metal.quad(i0, i1, i2, i3);
+        // 가운데 틈 (고무 씰)
+        const rc = this.rows(j.s, j.s, 1)[0];
+        const Lc = layout(rc.w);
+        P(rc, dA(Lc), 0.005, a);
+        P(rc, dB(Lc), 0.005, b);
+        const g0 = marks.vertex(a.x, a.y, a.z, 0, 1, 0, gap);
+        const g1 = marks.vertex(b.x, b.y, b.z, 0, 1, 0, gap);
+        const rd = this.rows(j.s + 0.04, j.s + 0.04, 1)[0];
+        const Ld = layout(rd.w);
+        P(rd, dA(Ld), 0.005, a);
+        P(rd, dB(Ld), 0.005, b);
+        const g2 = marks.vertex(b.x, b.y, b.z, 0, 1, 0, gap);
+        const g3 = marks.vertex(a.x, a.y, a.z, 0, 1, 0, gap);
+        marks.quad(g0, g1, g2, g3);
+      }
+    }
+
     // 새벽 결빙: 우리 쪽 노면(차로+갓길)에 얇은 얼음막
     const iceGeo = new Geo();
     if (this.ice.some((p) => p.s1 > s0 && p.s0 < s1)) strip(iceGeo, (_, L) => L.ourL, (_, L) => L.shoulderR, 0.003, shoulderCol, (r) => !iceAt(this.ice, r.s));
@@ -725,6 +800,7 @@ export class RoadChunks {
     };
     add(surface, this.mats.surface, { cast: false, receive: true });
     add(iceGeo, this.mats.ice, { cast: false, receive: true });
+    add(rumbleGeo, this.mats.rumble, { cast: false, receive: true });
     add(marks, this.mats.marks, { cast: false, receive: true });
     add(concrete, this.mats.concrete, { cast: true, receive: true });
     add(metal, this.mats.metal, { cast: true, receive: true });

@@ -1,10 +1,14 @@
 // 한 번의 주행: 물리·교통·법규 판정·기록·화면을 한 루프로 돌린다.
 
+import * as THREE from "three";
 import type { Road, RoadFile } from "./road/road";
 import { Structure } from "./road/road";
 import type { Network } from "./road/route";
 import { RoadChunks, type LaneOverride } from "./render/roadChunks";
-import { PlayerView, CAMERA_LABELS, type CameraMode } from "./render/playerView";
+import { PlayerView, CAMERA_LABELS, SHAKE_SCALE, type CameraMode } from "./render/playerView";
+import { Sparks } from "./render/sparks";
+import { expansionJoints, rumbleContact } from "./road/surface";
+import { DriveFx } from "./ui/fx";
 import { SprayView, type SpraySource } from "./render/spray";
 import { ICE_GRIP, iceAt, planIce, type IcePatch } from "./sim/ice";
 import { TrafficView } from "./render/trafficView";
@@ -13,7 +17,7 @@ import { WeatherView } from "./render/weather";
 import { RuleEngine, type PlayerFrame } from "./rules/engine";
 import { Recorder, SAMPLE_COLUMNS, type Sample, type UploadStatus } from "./log/recorder";
 import { assessSession, loadParticipant, saveParticipant, updateParticipant, type QualityResult } from "./log/quality";
-import { Sound } from "./audio/sound";
+import { Sound, type NearbyCar } from "./audio/sound";
 import { enforcementFor, type Enforcement } from "./sim/cameras";
 import { coneLine, END_TAPER_M, planWorkZones, ZONE_KMH, type WorkZone } from "./sim/workzones";
 import { gripAt, legalFactor, realWeatherAt, trafficResponse, weatherOf, type Weather } from "./sim/weather";
@@ -106,6 +110,25 @@ export class Game {
   private assistWeight = 0;
   private controls: Controls = { throttle: 0, brake: 0, steer: 0, reverse: false };
   private legIndex = -1;
+  // ---- 주행감 (소리·화면 흔들림·진동). 판정·기록에는 쓰지 않는다 ----
+  /** 가드레일 불똥 */
+  private sparks: Sparks;
+  /** 속도감·충돌 번쩍임 */
+  private fx: DriveFx;
+  /** 교량 신축이음 위치와 앞·뒤 바퀴가 지난 s */
+  private joints: { s: number; strength: number }[];
+  private axleS: [number, number] = [NaN, NaN];
+  /** 벽에 긁히는 정도 (0~1)와 쪽, 불똥 뿌릴 몫 */
+  private scrape = 0;
+  private scrapeSide = 0;
+  private sparkDebt = 0;
+  private lastGear = 1;
+  private nearby: NearbyCar[] = [];
+  /** 경적을 울렸거나 안 울리기로 한 차 (id → 시각) */
+  private honked = new Map<number, number>();
+  private hornCooldown = 0;
+  private tmpDir = new THREE.Vector3();
+  private tmpOut = new THREE.Vector3();
 
   constructor(
     app: HTMLElement,
@@ -161,6 +184,7 @@ export class Game {
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
     const startKmh = Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
+    this.lastGear = this.player.gear;
     const night = sun.night > 0.5;
     // '실제' 교통을 고르고 실제 돌발상황(ITS)이 있으면 그 공사·선 차를 쓴다
     const real = settings.preset === "실제" ? realEventsFor(road, cfg.events) : null;
@@ -204,6 +228,9 @@ export class Game {
 
     this.trafficView = new TrafficView(this.world, road, cfg.catalog);
     this.spray = new SprayView(this.world);
+    this.sparks = new Sparks(this.world);
+    this.fx = new DriveFx();
+    this.joints = expansionJoints(road);
     this.hud = new Hud(document.body, road, this.busZones, {
       finishS: setup.finishS,
       destName: setup.destName,
@@ -228,6 +255,7 @@ export class Game {
     });
     this.view = new PlayerView(this.world, type, settings.color, this.hud.root);
     this.view.setMode(settings.camera as CameraMode);
+    this.view.shake.scale = SHAKE_SCALE[(settings as DriveSettings & { shake?: keyof typeof SHAKE_SCALE }).shake ?? "on"];
     this.view.setNight(sun.night);
     this.input = new Input(this.world.renderer.domElement);
 
@@ -438,19 +466,26 @@ export class Game {
 
     // 물리 (고정 간격)
     this.acc += dt;
+    let scraping = 0;
     while (this.acc >= PHYS_DT) {
       p.step(PHYS_DT, road, c);
       this.acc -= PHYS_DT;
-      for (const h of p.hits) this.guardrail(h.lateralSpeed, h.side);
+      for (const h of p.hits) {
+        this.guardrail(h.lateralSpeed, h.side);
+        scraping = Math.max(scraping, Math.min(1, h.speed / 20));
+        this.scrapeSide = h.side === "left" ? -1 : 1;
+      }
       this.workZoneContact();
       if (this.state !== "run") return;
     }
     this.contactCooldown -= dt;
+    this.feel(dt, scraping);
 
     // 교통
     if (this.road.isRoute) this.updateLegTraffic();
     const ps = this.playerState();
     this.traffic.update(dt, ps, this.t);
+    this.honks(dt);
     this.collide();
     if (this.state !== "run") return;
 
@@ -474,11 +509,138 @@ export class Game {
       this.recorder.sample(this.t, this.sample(lane));
     }
 
-    this.sound.update(p.rpm, c.throttle, p.speed, road.structureAt(p.s) === Structure.Tunnel, c.brake);
+    const inTunnel = road.structureAt(p.s) === Structure.Tunnel;
+    const rc = rumbleContact(road, p.s, p.d, p.spec.width / 2 - 0.12);
+    const surface = this.ice.length && iceAt(this.ice, p.s) ? "ice" : this.weather.wet && !inTunnel ? "wet" : "dry";
+    this.sound.update({
+      dt,
+      revs: p.revs,
+      redline: p.spec.redline,
+      throttle: c.throttle,
+      brake: c.brake,
+      speed: p.speed,
+      inTunnel,
+      cockpit: this.view.mode === "cockpit",
+      slip: p.slip,
+      abs: p.abs,
+      surface,
+      rumble: rc.amount,
+      rumbleSide: rc.side,
+      scrape: this.scrape,
+      scrapeSide: this.scrapeSide,
+    });
+    this.sound.traffic(this.nearbyCars(), this.view.mode === "cockpit");
     this.sound.signal(this.signal !== 0 || this.hazard, this.t);
+    // 노면요철은 차체가 떨고, 게임패드는 요철·ABS·고속 잔떨림·긁힘으로 운다
+    this.view.shake.hum = rc.amount * Math.min(1, p.speed / 10);
+    const road2 = Math.min(1, (p.speed / 45) ** 2);
+    const squeal = Math.max(0, Math.min(1, (p.slip - 0.85) / 0.3));
+    this.input.rumble(rc.amount * 0.75 + this.scrape * 0.6 + (p.abs ? 0.25 : 0), road2 * 0.06 + rc.amount * 0.5 + (p.abs ? 0.55 : 0) + squeal * 0.3);
 
     if (p.s >= this.setup.finishS - 30) this.finish("arrived");
     else if (p.s >= road.length - 40) this.finish("road_end");
+  }
+
+  /**
+   * 주행감: 변속 소리, 신축이음 덜컥(앞바퀴·뒷바퀴), 벽 긁힘 소리·불똥. 판정·기록에는 쓰지 않는다.
+   * scraping: 이번 프레임에 벽에 닿은 정도 (0~1)
+   */
+  private feel(dt: number, scraping: number) {
+    const p = this.player;
+    if (p.gear !== this.lastGear) {
+      this.sound.shift(p.gear > this.lastGear);
+      this.lastGear = p.gear;
+    }
+    // 신축이음: 앞바퀴와 뒷바퀴가 지날 때마다 한 번씩
+    const axles: [number, number] = [p.s + p.spec.lf, p.s - p.spec.lr];
+    const speedK = Math.min(1, p.speed / 25);
+    for (let k = 0; k < 2; k++) {
+      const prev = this.axleS[k];
+      const cur = axles[k];
+      if (Number.isFinite(prev) && cur > prev && cur - prev < 30) {
+        for (const j of this.joints) {
+          if (j.s <= prev) continue;
+          if (j.s > cur) break;
+          const kk = j.strength * speedK * (this.spec.vehicleClass === "car" ? 1 : 0.8);
+          if (kk < 0.05) continue;
+          this.sound.thump(kk);
+          this.view.bump(kk, k === 0);
+          this.input.pulse(0.55 * kk, 0.35 * kk, 90);
+        }
+      }
+      this.axleS[k] = cur;
+    }
+    // 벽 긁힘: 닿는 동안 이어지고 떨어지면 금방 잦아든다
+    this.scrape = Math.max(scraping, this.scrape * Math.exp(-dt * 6));
+    // 벽에 붙어 달리는 동안(닿았다 떨어졌다 해도) 불똥이 끊기지 않게 긁힘 값으로 뿌린다
+    if (this.scrape > 0.15 && p.speed > 4) {
+      this.view.shake.add(dt * 1.2 * this.scrape);
+      this.sparkDebt += dt * p.speed * 14 * Math.max(0.4, this.scrape);
+      const n = Math.floor(this.sparkDebt);
+      if (n > 0) {
+        this.sparkDebt -= n;
+        const car = this.view.car;
+        const side = this.scrapeSide;
+        const along = (Math.random() - 0.2) * p.spec.length * 0.45;
+        const at = this.sparks.worldPoint(car, along, 0.35 + Math.random() * 0.2, side * (p.spec.width / 2 + 0.05)).clone();
+        const yaw = this.world.heading;
+        const dir = this.tmpDir.set(Math.cos(yaw), 0, -Math.sin(yaw));
+        const out = this.tmpOut.set(-side * Math.sin(yaw), 0, -side * Math.cos(yaw));
+        this.sparks.emit(at, dir, p.speed, out, Math.min(12, n));
+      }
+    } else this.sparkDebt = 0;
+  }
+
+  /** 가까운 차 (소리용, 가까운 순서)와 옆 대형차 풍압 */
+  private nearbyCars(): NearbyCar[] {
+    const p = this.player;
+    const vp = p.vx * Math.cos(p.theta);
+    const out = this.nearby;
+    out.length = 0;
+    let buffet = 0;
+    const add = (a: Agent, opposite: boolean) => {
+      const s = opposite ? -a.s : a.s;
+      const dx = s - p.s;
+      if (Math.abs(dx) > 70) return;
+      const dy = a.d - p.d;
+      const r = Math.hypot(dx, dy);
+      const va = opposite ? -a.v : a.v;
+      const dv = va - vp;
+      const vr = r > 0.1 ? (dx * dv) / r : 0;
+      const heavy = a.heavy || a.len > 7;
+      if (!a.parked) out.push({ dx, dy, vr, v: a.v, heavy });
+      // 대형차 옆을 지나면 공기에 밀린다 (차가 나란할 때, 가까울수록·빠를수록)
+      if (heavy && Math.abs(dy) < 7) {
+        const along = Math.exp(-((dx / (a.len / 2 + 4)) ** 2));
+        const near = 1 / (1 + ((Math.abs(dy) - 2.2) / 1.6) ** 2);
+        const push = Math.min(1, (Math.abs(dv) * 0.6 + a.v * 0.25) / 22);
+        buffet += -Math.sign(dy) * along * near * push * (opposite ? 0.5 : 1);
+      }
+    };
+    for (const a of this.traffic.agents) add(a, false);
+    for (const a of this.traffic.opposite) add(a, true);
+    out.sort((a, b) => Math.hypot(a.dx, a.dy) - Math.hypot(b.dx, b.dy));
+    this.view.shake.buffet = Math.max(-1, Math.min(1, buffet));
+    return out;
+  }
+
+  /** 내가 끼어들거나 급히 서서 뒤차가 세게 브레이크를 밟으면, 뒤차가 경적을 울리기도 한다 (한 차에 한 번) */
+  private honks(dt: number) {
+    this.hornCooldown -= dt;
+    for (const [id, t] of this.honked) if (this.t - t > 20) this.honked.delete(id);
+    if (this.hornCooldown > 0) return;
+    const p = this.player;
+    for (const a of this.traffic.agents) {
+      if (!(a.brakedByPlayer > 0 && this.t - a.brakedByPlayer < 0.2) || this.honked.has(a.id)) continue;
+      this.honked.set(a.id, this.t);
+      if (Math.random() > 0.55) continue;
+      const dx = a.s - p.s;
+      const dy = a.d - p.d;
+      const r = Math.hypot(dx, dy);
+      this.sound.hornFrom(dy / (Math.abs(dy) + 3 + Math.abs(dx) * 0.2), r, a.heavy, a.acc < -6);
+      this.hornCooldown = 5;
+      return;
+    }
   }
 
   private setSignal(dir: -1 | 0 | 1) {
@@ -572,7 +734,10 @@ export class Game {
         p.theta *= 0.5;
         p.r *= 0.5;
       }
-      this.sound.crash(0.2);
+      this.sound.crash(0.25, Math.sign(dd) || 0);
+      this.view.shake.add(0.35);
+      this.fx.flash(0.35);
+      this.input.pulse(0.6, 0.4, 160);
       this.hud.toast("접촉", 1.2);
     }
   }
@@ -608,7 +773,9 @@ export class Game {
     if (this.contactCooldown <= 0) {
       this.rules.crash(this.frameInfo(0), side === "left" ? "median_barrier" : "guardrail", kmh);
       this.contactCooldown = 1;
-      this.sound.crash(Math.min(1, kmh / 40));
+      this.sound.crash(Math.min(1, kmh / 40), side === "left" ? -1 : 1);
+      this.view.shake.add(Math.min(0.6, kmh / 50));
+      this.input.pulse(Math.min(1, kmh / 30), 0.5, 150);
     }
     if (kmh >= SERIOUS_KMH + 5) this.crashed(side === "left" ? "중앙분리대 충돌" : "가드레일 충돌", kmh);
     else this.hud.toast(side === "left" ? "중앙분리대에 닿았습니다" : "가드레일에 닿았습니다", 1.2);
@@ -620,11 +787,18 @@ export class Game {
     this.player.vx = 0;
     this.player.vy = 0;
     this.player.r = 0;
-    this.sound.crash(1);
-    showDialog("충돌", `${what} · 충돌 속도 약 ${Math.round(kmh)}km/h. 충돌은 기록에 남습니다.`, [
-      { label: "이어서 달리기 (Enter)", primary: true, key: "Enter", onClick: () => this.respawn() },
-      { label: "주행 끝내기", onClick: () => this.finish("crash") },
-    ]);
+    this.sound.crash(1, this.scrapeSide);
+    // 부딪힌 순간: 화면이 크게 흔들리고 붉게 번쩍인 뒤, 잠깐 멈췄다가 안내 창을 띄운다
+    this.view.shake.add(1);
+    this.fx.flash(1);
+    this.input.pulse(1, 1, 450);
+    setTimeout(() => {
+      if (this.state !== "crash") return;
+      showDialog("충돌", `${what} · 충돌 속도 약 ${Math.round(kmh)}km/h. 충돌은 기록에 남습니다.`, [
+        { label: "이어서 달리기 (Enter)", primary: true, key: "Enter", onClick: () => this.respawn() },
+        { label: "주행 끝내기", onClick: () => this.finish("crash") },
+      ]);
+    }, 850);
   }
 
   private respawn() {
@@ -638,6 +812,8 @@ export class Game {
     if (zone) lane = zone.side === "right" ? lane - 1 : lane + 1;
     this.traffic.clearAround(s, 300);
     p.place(road, s, lane, 50 / 3.6);
+    this.axleS = [NaN, NaN];
+    this.lastGear = p.gear;
     this.hazard = false;
     this.acc = 0;
     this.last = performance.now();
@@ -650,6 +826,7 @@ export class Game {
     this.sound.suspend();
     if (reason === "arrived") this.sound.say("목적지에 도착했습니다. 경로 안내를 종료합니다.", true);
     this.hud.visible = false;
+    this.fx.visible = false;
     if (this.view.mirrorsOn) this.view.toggleMirrors();
     const f = this.frameInfo(0);
     this.rules.finish(f);
@@ -811,6 +988,8 @@ export class Game {
     this.trafficView.viewGround = this.view.car.position.y;
     this.trafficView.update(this.traffic.agents, this.traffic.opposite, this.t, this.world.camera.position);
     this.updateSpray(dt, inTunnel);
+    this.sparks.update(dt);
+    this.fx.speed(this.state === "run" ? p.speed * 3.6 : 0, this.view.shake.scale);
     this.world.update(this.view.car.position);
     this.weatherView.update(dt, this.view.car, road.sample(p.s).heading + p.theta, p.spec.length, p.spec.width, this.setup.vehicle.height, inTunnel);
     this.view.render();
@@ -819,7 +998,7 @@ export class Game {
       {
         kmh: p.speed * 3.6 * Math.sign(p.vx || 1),
         gear: this.controls.reverse ? "R" : p.vx < 0.3 && this.controls.brake > 0.1 ? "D" : `D${this.spec.gears.length > 1 ? p.gear : ""}`,
-        rpm: p.rpm,
+        rpm: p.revs,
         signal: this.signal,
         hazard: this.hazard,
         s: p.s,

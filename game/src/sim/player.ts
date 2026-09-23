@@ -28,6 +28,8 @@ export interface CarSpec {
   governor?: number;
   /** 자동변속 [적게 밟을 때, 끝까지 밟을 때] 올리는 rpm */
   shiftRpm?: [number, number];
+  /** 토크컨버터 스톨 rpm: 서 있을 때 끝까지 밟으면 엔진이 여기까지 오른다 (없으면 공회전 + 1400) */
+  stallRpm?: number;
 }
 
 export const DEFAULT_CAR: CarSpec = {
@@ -74,6 +76,8 @@ export interface GuardrailHit {
 
 const G = 9.81;
 const RHO = 1.2;
+/** 변속하는 동안 토크가 빠지는 시간 (초) */
+const SHIFT_SEC = 0.15;
 
 export class PlayerCar {
   spec: CarSpec;
@@ -96,6 +100,15 @@ export class PlayerCar {
   ay = 0;
   /** 이번 스텝에 난 가드레일 충돌 */
   hits: GuardrailHit[] = [];
+  /** 소리·화면용 엔진 회전수: 변속하면 바늘이 넘어가듯 따라가고, 출발할 때는 토크컨버터가 미끄러져 먼저 오른다 */
+  revs = 750;
+  /** 타이어가 낼 수 있는 옆 힘 대비 지금 쓰는 비율 (앞뒤 중 큰 쪽, 1이면 미끄러지기 시작) */
+  slip = 0;
+  /** ABS가 브레이크를 풀었다 잡았다 하는 중 */
+  abs = false;
+  /** 마지막 변속 뒤 지난 시간 (초)과 방향 (1 올림, -1 내림) */
+  shiftAge = 99;
+  shiftDir: 1 | -1 = 1;
   /** 노면 마찰 배율 (마른 노면 1). 날씨가 속도에 따라 정한다 (weather.gripAt) */
   grip: (kmh: number) => number = () => 1;
   private shiftCooldown = 0;
@@ -118,6 +131,8 @@ export class PlayerCar {
     this.steerAngle = 0;
     this.gear = this.pickGear(speed, 0.3);
     this.rpm = this.engineRpm(speed, this.gear);
+    this.revs = this.rpm;
+    this.shiftAge = 99;
   }
 
   private engineRpm(v: number, gear: number): number {
@@ -161,14 +176,18 @@ export class PlayerCar {
 
     // 변속
     this.shiftCooldown -= dt;
+    this.shiftAge += dt;
     if (!c.reverse && this.shiftCooldown <= 0) {
       const want = this.pickGear(Math.max(v, 0), c.throttle);
       if (want !== this.gear) {
+        this.shiftDir = want > this.gear ? 1 : -1;
         this.gear = want;
         this.shiftCooldown = 0.35;
+        this.shiftAge = 0;
       }
     }
     this.rpm = this.engineRpm(Math.abs(v), this.gear);
+    this.updateRevs(dt, v, c);
 
     // 길이 방향 힘
     const p = road.sample(this.s);
@@ -180,7 +199,9 @@ export class PlayerCar {
       // 속도제한장치: 제한속도 0.5m/s 앞에서부터 힘을 줄인다
       const gov = sp.governor ?? Infinity;
       const cut = v > gov - 0.5 ? Math.max(0, (gov - v) / 0.5) : 1;
-      const torque = this.torqueAt(this.rpm) * c.throttle * cut;
+      // 변속하는 동안(0.15초) 클러치가 바뀌며 토크가 잠깐 빠진다: 몸이 앞으로 살짝 쏠리는 변속감
+      const shifting = this.shiftDir > 0 && this.shiftAge < SHIFT_SEC && sp.gears.length > 1 ? 0.45 : 1;
+      const torque = this.torqueAt(this.rpm) * c.throttle * cut * shifting;
       fx += (torque * ratio * 0.9) / sp.wheelRadius;
     }
     fx -= 0.5 * RHO * sp.dragArea * v * Math.abs(v);
@@ -209,11 +230,16 @@ export class PlayerCar {
       const fzR = (sp.mass * G * sp.lf) / L;
       const fyF = clamp(-sp.cf * alphaF, -mu * fzF, mu * fzF);
       const fyR = clamp(-sp.cr * alphaR, -mu * fzR, mu * fzR);
+      this.slip = Math.max(Math.abs(sp.cf * alphaF) / (mu * fzF), Math.abs(sp.cr * alphaR) / (mu * fzR));
       ay = (fyF * Math.cos(this.steerAngle) + fyR) / sp.mass;
       rdot = (sp.lf * fyF * Math.cos(this.steerAngle) - sp.lr * fyR) / sp.inertia;
       this.vy += (ay - v * this.r) * dt;
     }
     this.r += rdot * dt;
+
+    if (Math.abs(v) < 3) this.slip = 0;
+    // ABS: 세게 밟아 타이어가 한계에 닿으면 (미끄러운 노면일수록 일찍) 브레이크를 풀었다 잡는다
+    this.abs = c.brake > 0.2 && Math.abs(v) > 2 && c.brake * sp.maxBrakeDecel > 0.92 * sp.maxBrakeDecel * Math.min(1, grip + 0.1);
 
     // 브레이크는 속도를 0 너머로 넘기지 않는다
     let axLong = fx / sp.mass;
@@ -245,6 +271,22 @@ export class PlayerCar {
     this.s = clamp(this.s, 0, road.length - 1);
 
     this.collideWalls(road);
+  }
+
+  /** 소리·계기판용 엔진 회전수. 물리(토크)는 바퀴와 맞물린 rpm을 쓴다 */
+  private updateRevs(dt: number, v: number, c: Controls) {
+    const sp = this.spec;
+    if (sp.idleRpm <= 0) {
+      this.revs = this.rpm;
+      return;
+    }
+    // 토크컨버터: 느릴 때는 밟은 만큼 엔진이 먼저 오른다 (시속 약 25km에서 잠긴다)
+    const stall = sp.stallRpm ?? sp.idleRpm + 1400;
+    const lock = clamp(1 - Math.abs(v) / 7, 0, 1);
+    const target = c.reverse ? sp.idleRpm + c.throttle * (stall - sp.idleRpm) * 0.8 : Math.max(this.rpm, sp.idleRpm + c.throttle * (stall - sp.idleRpm) * lock);
+    // 변속 직후에는 바늘이 새 rpm으로 넘어가는 데 0.2초쯤 걸린다
+    const k = this.shiftAge < 0.3 ? 9 : 22;
+    this.revs += (target - this.revs) * Math.min(1, dt * k);
   }
 
   /** 오른쪽 가드레일·왼쪽 중앙분리대 */

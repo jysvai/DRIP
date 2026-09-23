@@ -41,6 +41,10 @@ export class Input {
   private gamepadIndex: number | null = null;
   private prevButtons: boolean[] = [];
   private pendingActions: InputActions = blank();
+  /** 진동: 마지막으로 보낸 시각(ms)과 세기, 한 번 세게 울리는 것이 끝나는 시각 */
+  private rumbleSent = 0;
+  private rumbleLast: [number, number] = [0, 0];
+  private pulseUntil = 0;
 
   constructor(target: HTMLElement) {
     window.addEventListener("keydown", this.onKey, { passive: false });
@@ -156,6 +160,37 @@ export class Input {
     return c;
   }
 
+  private pad(): Gamepad | null {
+    if (this.gamepadIndex === null || this.mode !== "gamepad") return null;
+    return navigator.getGamepads()[this.gamepadIndex] ?? null;
+  }
+
+  /**
+   * 게임패드 진동 (노면요철·ABS·고속 잔떨림). strong: 큰 모터(묵직한 떨림), weak: 작은 모터(잔떨림), 0~1.
+   * 매 프레임 불러도 되고, 0.1초마다 또는 세기가 바뀔 때만 보낸다.
+   */
+  rumble(strong: number, weak: number) {
+    const act = this.pad()?.vibrationActuator;
+    if (!act) return;
+    const now = performance.now();
+    if (now < this.pulseUntil) return;
+    const [s0, w0] = this.rumbleLast;
+    const changed = Math.abs(strong - s0) > 0.08 || Math.abs(weak - w0) > 0.08;
+    if (!changed && now - this.rumbleSent < 100) return;
+    if (strong < 0.02 && weak < 0.02 && s0 < 0.02 && w0 < 0.02) return;
+    this.rumbleSent = now;
+    this.rumbleLast = [strong, weak];
+    void act.playEffect("dual-rumble", { duration: 140, strongMagnitude: clamp01(strong), weakMagnitude: clamp01(weak) }).catch(() => {});
+  }
+
+  /** 한 번 세게 (충돌·신축이음) */
+  pulse(strong: number, weak: number, ms: number) {
+    const act = this.pad()?.vibrationActuator;
+    if (!act) return;
+    this.pulseUntil = performance.now() + ms;
+    void act.playEffect("dual-rumble", { duration: ms, strongMagnitude: clamp01(strong), weakMagnitude: clamp01(weak) }).catch(() => {});
+  }
+
   private readGamepad(pad: Gamepad) {
     const c = this.controls;
     const steer = pad.axes[0] ?? 0;
@@ -180,6 +215,10 @@ export class Input {
     if (edge(2)) this.pendingActions.horn = true; // X
     this.prevButtons = b;
   }
+}
+
+function clamp01(x: number): number {
+  return Math.max(0, Math.min(1, x));
 }
 
 function approach(x: number, target: number, maxDelta: number): number {

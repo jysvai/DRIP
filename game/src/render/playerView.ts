@@ -1,5 +1,6 @@
 // 플레이어 차: 겉모습, 운전석 실내, 시점 세 가지, 거울 세 개.
 // 차체는 용수철-감쇠로 제동·가속에 앞뒤로, 곡선에서 좌우로 기울고 노면 따라 조금 떨린다. 바퀴는 굴러가고 앞바퀴는 꺾인다.
+// 화면 흔들림(Shake): 신축이음·충돌 같은 충격은 쌓였다 줄어들고, 노면요철·고속 떨림·옆 트럭 풍압은 이어진다. 빠를수록 시야가 조금 넓어진다.
 // 운전석 시점에서는 유리를 숨기고 차 안쪽 면·대시보드·운전대를 그린다. 눈 위치는 차종마다 다르다(모델의 cabin).
 // 한국 차는 왼쪽 운전석. 차 모델 좌표: x 앞, y 위, z 오른쪽 (vehicleModels.ts와 같다)
 
@@ -58,6 +59,51 @@ class Spring {
   }
 }
 
+/** 여러 사인을 겹친 부드러운 잡음 (-1~1 근처). 채널마다 다른 위상 */
+function wobble(t: number, k: number): number {
+  return Math.sin(t * 1.0 + k * 1.7) * 0.5 + Math.sin(t * 2.3 + k * 3.1) * 0.3 + Math.sin(t * 5.7 + k * 0.9) * 0.2;
+}
+
+/** 화면 흔들림 설정: 켜기 1, 약하게 0.45, 끄기 0 */
+export const SHAKE_SCALE = { on: 1, low: 0.45, off: 0 } as const;
+
+/**
+ * 화면 흔들림. 충격은 trauma(0~1)로 쌓고 크기는 trauma²에 비례해 줄어든다 (작은 충격은 살짝, 큰 충격은 확).
+ * hum: 노면요철처럼 이어지는 빠른 상하 떨림, road: 고속 주행의 잔떨림, buffet: 옆 대형차 풍압(부호 = 밀리는 쪽).
+ */
+export class Shake {
+  trauma = 0;
+  hum = 0;
+  road = 0;
+  buffet = 0;
+  scale = 1;
+  private t = 0;
+  private sway = 0;
+  /** 이번 프레임 흔들림: 위치 (m, 차 기준 앞·위·오른쪽)와 각 (rad) */
+  readonly out = { x: 0, y: 0, z: 0, pitch: 0, yaw: 0, roll: 0 };
+
+  add(amount: number) {
+    this.trauma = Math.min(1, this.trauma + amount);
+  }
+
+  step(dt: number) {
+    this.t += dt;
+    this.trauma = Math.max(0, this.trauma - dt * 1.6);
+    this.sway += (this.buffet - this.sway) * Math.min(1, dt * 5);
+    const k = this.scale;
+    const o = this.out;
+    const tr = this.trauma * this.trauma;
+    const T = this.t * 22;
+    const H = this.t * 70;
+    o.x = k * tr * wobble(T, 1) * 0.04;
+    o.y = k * (tr * wobble(T, 2) * 0.05 + this.hum * Math.sin(H) * 0.006 + this.road * wobble(this.t * 40, 7) * 0.0025);
+    o.z = k * (tr * wobble(T, 3) * 0.05 + this.sway * 0.06);
+    o.pitch = k * (tr * wobble(T, 4) * 0.035 + this.hum * Math.sin(H * 1.3) * 0.004 + this.road * wobble(this.t * 33, 8) * 0.0012);
+    o.yaw = k * (tr * wobble(T, 5) * 0.025 + this.sway * 0.004);
+    o.roll = k * (tr * wobble(T, 6) * 0.05 + this.sway * 0.012);
+  }
+}
+
 /** 노면 요철: 거리 s에 따라 정해지는 잔잔한 떨림 (-1~1) */
 function roadNoise(s: number): number {
   return Math.sin(s * 3.7) * 0.45 + Math.sin(s * 9.9 + 1.3) * 0.3 + Math.sin(s * 1.61 + 0.7) * 0.25;
@@ -102,6 +148,10 @@ export class PlayerView {
   mode: CameraMode = "cockpit";
   /** 화면 가장자리 거울 창 (차의 거울 유리에도 비치므로 기본은 끔, V로 켠다) */
   mirrorsOn = false;
+  readonly shake = new Shake();
+  /** 시점별 기본 시야각과, 속도에 따라 더 넓어지는 만큼 */
+  private baseFov = 60;
+  private fovBoost = 0;
 
   constructor(
     private world: World,
@@ -214,7 +264,8 @@ export class PlayerView {
     vehicleUniforms(this.bodyMat).uHideGlass.value = cockpit ? 1 : 0;
     this.chase.init = false;
     const big = this.model.cabin.kind === "bus" || this.model.cabin.kind === "truck";
-    this.world.camera.fov = mode === "chase" ? 60 : mode === "hood" ? 60 : big ? 64 : 60;
+    this.baseFov = mode === "chase" ? 60 : mode === "hood" ? 60 : big ? 64 : 60;
+    this.world.camera.fov = this.baseFov + this.fovBoost;
     this.world.camera.near = cockpit ? 0.08 : 0.1;
     this.world.camera.updateProjectionMatrix();
     this.layoutMirrors();
@@ -277,6 +328,13 @@ export class PlayerView {
     this.headBeam = beam;
   }
 
+  /** 바퀴가 턱을 넘을 때 (신축이음 등): 차체가 튀고 화면이 한 번 흔들린다. front: 앞바퀴면 앞이 먼저 들린다 */
+  bump(strength: number, front: boolean) {
+    this.heave.v += 0.35 * strength;
+    this.pitch.v += (front ? 0.12 : -0.12) * strength;
+    this.shake.add(0.16 * strength);
+  }
+
   /** 차 위치·자세를 맞추고 카메라를 놓는다 */
   update(car: PlayerCar, road: Road, dt: number, signal: -1 | 0 | 1, hazard: boolean, time: number) {
     const w = road.toWorld(car.s, car.d, this.tmpW);
@@ -294,10 +352,12 @@ export class PlayerView {
     const vib = Math.min(1, speed / 30);
     const bump = roadNoise(car.s) * vib;
     const pitchT = Math.max(-0.035, Math.min(0.028, car.ax * (heavy ? 0.0012 : 0.0021))) + bump * 0.0007;
-    const rollT = Math.max(-0.05, Math.min(0.05, car.ay * (heavy ? 0.0075 : 0.0055)));
+    const rollT = Math.max(-0.05, Math.min(0.05, car.ay * (heavy ? 0.0075 : 0.0055))) + this.shake.buffet * 0.006;
     const pitch = this.pitch.step(pitchT, h);
     const roll = this.roll.step(rollT, h);
-    const heave = this.heave.step(bump * 0.0028, h);
+    // 노면요철을 밟으면 차체가 잘게 떤다
+    const hum = this.shake.hum * Math.sin(time * 90) * 0.004 * Math.min(1, speed / 10);
+    const heave = this.heave.step(bump * 0.0028 + hum, h);
     this.body.rotation.set(roll, 0, pitch, "YZX");
     this.body.position.y = this.pivotY + heave;
 
@@ -337,6 +397,16 @@ export class PlayerView {
     // ---- 카메라 ----
     const cam = this.world.camera;
     this.car.updateMatrixWorld(true);
+    const sh = this.shake;
+    sh.road = Math.min(1, (speed / 40) ** 2);
+    sh.step(h);
+    // 속도감: 시속 60km부터 빨라질수록 시야를 넓힌다 (최대 +6도, 흔들림을 끄면 그대로)
+    const boost = sh.scale > 0 && this.mode !== "chase" ? Math.max(0, Math.min(1, (speed * 3.6 - 60) / 120)) * 6 * Math.min(1, sh.scale + 0.3) : 0;
+    this.fovBoost += (boost - this.fovBoost) * Math.min(1, h * 1.5);
+    if (this.mode !== "chase" && Math.abs(cam.fov - (this.baseFov + this.fovBoost)) > 0.01) {
+      cam.fov = this.baseFov + this.fovBoost;
+      cam.updateProjectionMatrix();
+    }
     if (this.mode === "cockpit") {
       // 머리: 가속하면 뒤로, 제동하면 앞으로, 곡선에서 바깥으로 조금. 노면 따라 살짝 흔들린다
       const hx = this.headX.step(Math.max(-0.035, Math.min(0.035, -car.ax * 0.0035)), h);
@@ -344,20 +414,36 @@ export class PlayerView {
       const hy = bump * 0.0015 * vib;
       // 곡선에서 가는 쪽을 조금 먼저 본다
       this.lookYaw += (Math.max(-0.07, Math.min(0.07, car.r * 0.35)) - this.lookYaw) * Math.min(1, h * 3);
-      this.v.set(cab.eye.x + hx, cab.eye.y + hy, cab.eye.z + hz);
+      const o = sh.out;
+      this.v.set(cab.eye.x + hx + o.x, cab.eye.y + hy + o.y, cab.eye.z + hz + o.z);
       cam.position.copy(this.inner.localToWorld(this.v));
       const down = heavy ? 0.075 : 0.05;
       this.v2.set(cab.eye.x + 20 * Math.cos(this.lookYaw), cab.eye.y - 20 * down, cab.eye.z + hz - 20 * Math.sin(this.lookYaw));
       cam.up.set(0, 1, 0).applyQuaternion(this.body.getWorldQuaternion(this.q));
       cam.lookAt(this.inner.localToWorld(this.v2));
+      this.applyShake(1);
     } else if (this.mode === "hood") {
-      cam.position.copy(this.inner.localToWorld(this.v.copy(cab.hoodEye)));
+      const o = sh.out;
+      cam.position.copy(this.inner.localToWorld(this.v.set(cab.hoodEye.x + o.x, cab.hoodEye.y + o.y, cab.hoodEye.z + o.z)));
       cam.up.set(0, 1, 0).applyQuaternion(this.car.getWorldQuaternion(this.q));
       cam.lookAt(this.inner.localToWorld(this.v2.set(cab.hoodEye.x + 20, cab.hoodEye.y - 0.8, 0)));
+      this.applyShake(1);
     } else {
       this.updateChase(yaw, speed, h);
+      // 뒤에서 보면 차가 흔들리는 것이 보이므로 화면은 덜 흔든다
+      this.applyShake(0.4);
     }
     cam.updateMatrixWorld(true);
+  }
+
+  /** 카메라를 자기 축으로 조금 돌린다 (흔들림 각) */
+  private applyShake(k: number) {
+    const o = this.shake.out;
+    if (!o.pitch && !o.yaw && !o.roll) return;
+    const cam = this.world.camera;
+    cam.rotateX(o.pitch * k);
+    cam.rotateY(o.yaw * k);
+    cam.rotateZ(o.roll * k);
   }
 
   /** 뒤따라가는 카메라: 방향·거리가 부드럽게 따라오고 빠를수록 시야가 넓어진다 */
