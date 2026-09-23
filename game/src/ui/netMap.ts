@@ -3,12 +3,15 @@
 
 import type { Network, Place } from "../road/route";
 import { netPoint, placePoint } from "../road/route";
+import { FONT_UI, PAL } from "./palette";
 
 interface Pin {
   x: number;
   y: number;
   label: string;
   color: string;
+  /** 도착 표시 (네모) */
+  end?: boolean;
 }
 
 export class NetMap {
@@ -144,17 +147,17 @@ export class NetMap {
       }
       const first = this.routeLines[0];
       const last = this.routeLines[this.routeLines.length - 1];
-      if (first && first.length >= 2) this.pins.push({ x: first[0], y: first[1], label: from?.name ?? "출발", color: "#3ee07a" });
-      if (last && last.length >= 2) this.pins.push({ x: last[last.length - 2], y: last[last.length - 1], label: to?.name ?? "도착", color: "#ff5a4e" });
+      if (first && first.length >= 2) this.pins.push({ x: first[0], y: first[1], label: from?.name ?? "출발", color: PAL.route });
+      if (last && last.length >= 2) this.pins.push({ x: last[last.length - 2], y: last[last.length - 1], label: to?.name ?? "도착", color: PAL.danger, end: true });
       this.fit(this.bounds(this.routeLines), true, 90);
     } else {
       for (const [p, color] of [
-        [from, "#3ee07a"],
-        [to, "#ff5a4e"],
+        [from, PAL.route],
+        [to, PAL.danger],
       ] as [Place | null | undefined, string][]) {
         if (!p) continue;
         const xy = placePoint(this.net, p);
-        if (xy) this.pins.push({ x: xy[0], y: xy[1], label: p.name, color });
+        if (xy) this.pins.push({ x: xy[0], y: xy[1], label: p.name, color, end: p === to });
       }
     }
     this.dirty = true;
@@ -265,23 +268,24 @@ export class NetMap {
   private draw() {
     const g = this.ctx;
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    g.clearRect(0, 0, this.w, this.h);
-    // 격자 (10km)
+    g.fillStyle = PAL.land;
+    g.fillRect(0, 0, this.w, this.h);
+    // 격자 (10·50·100km)
     const grid = this.mpp < 150 ? 10000 : this.mpp < 600 ? 50000 : 100000;
-    g.strokeStyle = "rgba(120,160,150,0.07)";
+    g.strokeStyle = PAL.grid;
     g.lineWidth = 1;
     g.beginPath();
     const [wx0, wy1] = this.toWorld(0, 0);
     const [wx1, wy0] = this.toWorld(this.w, this.h);
     for (let x = Math.floor(wx0 / grid) * grid; x <= wx1; x += grid) {
       const [sx] = this.toScreen(x, 0);
-      g.moveTo(sx, 0);
-      g.lineTo(sx, this.h);
+      g.moveTo(Math.round(sx) + 0.5, 0);
+      g.lineTo(Math.round(sx) + 0.5, this.h);
     }
     for (let y = Math.floor(wy0 / grid) * grid; y <= wy1; y += grid) {
       const [, sy] = this.toScreen(0, y);
-      g.moveTo(0, sy);
-      g.lineTo(this.w, sy);
+      g.moveTo(0, Math.round(sy) + 0.5);
+      g.lineTo(this.w, Math.round(sy) + 0.5);
     }
     g.stroke();
 
@@ -289,30 +293,30 @@ export class NetMap {
     const lw = Math.max(1, Math.min(3, 400 / this.mpp));
     g.lineJoin = "round";
     g.lineCap = "round";
-    g.strokeStyle = this.routeLines.length ? "rgba(150,175,170,0.32)" : "rgba(160,190,182,0.55)";
+    g.strokeStyle = this.routeLines.length ? PAL.roadDim : PAL.road;
     g.lineWidth = lw;
     g.beginPath();
     for (const r of this.roads) this.path(g, r.pts);
     g.stroke();
 
-    // 경로
+    // 경로: 짙은 테두리 위에 밝은 선 (내비 경로선처럼)
     if (this.routeLines.length) {
-      g.strokeStyle = "rgba(62,224,122,0.25)";
-      g.lineWidth = lw + 9;
+      g.strokeStyle = PAL.routeCasing;
+      g.lineWidth = lw + 6;
       g.beginPath();
       for (const l of this.routeLines) this.path(g, l);
       g.stroke();
-      g.strokeStyle = "#3ee07a";
+      g.strokeStyle = PAL.route;
       g.lineWidth = lw + 2.5;
       g.beginPath();
       for (const l of this.routeLines) this.path(g, l);
       g.stroke();
     }
 
-    // 도시 이름
-    g.font = "600 12px Pretendard, 'Malgun Gothic', sans-serif";
+    // 지명: 도시는 밝게, 분기점·나들목은 가까이 볼 때만
     g.textAlign = "center";
     g.textBaseline = "middle";
+    g.lineJoin = "round";
     const shown: [number, number][] = [];
     for (const q of this.placePts) {
       const major = q.p.kind === "도시";
@@ -322,28 +326,58 @@ export class NetMap {
       if (sx < -20 || sy < -20 || sx > this.w + 20 || sy > this.h + 20) continue;
       if (shown.some(([ax, ay]) => Math.abs(ax - sx) < 46 && Math.abs(ay - sy) < 16)) continue;
       shown.push([sx, sy]);
-      g.fillStyle = major ? "rgba(230,238,234,0.8)" : "rgba(170,190,184,0.7)";
+      g.fillStyle = major ? PAL.ink : q.p.kind === "JC" ? PAL.warn : PAL.labelDim;
       g.beginPath();
-      g.arc(sx, sy, major ? 2.5 : 1.8, 0, Math.PI * 2);
+      if (major) g.arc(sx, sy, 2.75, 0, Math.PI * 2);
+      else g.rect(sx - 1.75, sy - 1.75, 3.5, 3.5);
       g.fill();
-      g.fillText(q.p.name, sx, sy - 10);
+      g.font = major ? `600 12px ${FONT_UI}` : `500 11px ${FONT_UI}`;
+      g.strokeStyle = PAL.halo;
+      g.lineWidth = 3.5;
+      g.strokeText(q.p.name, sx, sy - 11);
+      g.fillStyle = major ? PAL.label : PAL.labelDim;
+      g.fillText(q.p.name, sx, sy - 11);
     }
 
     for (const pin of this.pins) this.drawPin(pin);
     if (this.hover) {
       const [sx, sy] = this.toScreen(this.hover.x, this.hover.y);
-      g.fillStyle = "#fff";
+      g.strokeStyle = PAL.ink;
+      g.lineWidth = 2;
       g.beginPath();
-      g.arc(sx, sy, 5, 0, Math.PI * 2);
-      g.fill();
-      const text = `${this.hover.p.name} · 눌러서 고르기`;
-      g.font = "700 13px Pretendard, 'Malgun Gothic', sans-serif";
-      const tw = g.measureText(text).width + 16;
-      g.fillStyle = "rgba(10,14,15,0.9)";
-      g.fillRect(sx - tw / 2, sy - 36, tw, 22);
-      g.fillStyle = "#fff";
-      g.fillText(text, sx, sy - 25);
+      g.arc(sx, sy, 6.5, 0, Math.PI * 2);
+      g.stroke();
+      const name = this.hover.p.name;
+      const hint = "  눌러서 고르기";
+      g.font = `700 13px ${FONT_UI}`;
+      const nw = g.measureText(name).width;
+      g.font = `500 12px ${FONT_UI}`;
+      const hw = g.measureText(hint).width;
+      const tw = nw + hw + 20;
+      const bx = Math.round(sx - tw / 2);
+      const by = Math.round(sy - 42);
+      this.box(bx, by, tw, 26);
+      g.textAlign = "left";
+      g.font = `700 13px ${FONT_UI}`;
+      g.fillStyle = PAL.ink;
+      g.fillText(name, bx + 10, by + 13.5);
+      g.font = `500 12px ${FONT_UI}`;
+      g.fillStyle = PAL.muted;
+      g.fillText(hint, bx + 10 + nw, by + 13.5);
+      g.textAlign = "center";
     }
+  }
+
+  /** 말풍선 바탕: 단단한 판 + 가는 테두리 */
+  private box(x: number, y: number, w: number, h: number) {
+    const g = this.ctx;
+    g.beginPath();
+    g.roundRect(x + 0.5, y + 0.5, w, h, 5);
+    g.fillStyle = PAL.paper2;
+    g.fill();
+    g.strokeStyle = PAL.rule;
+    g.lineWidth = 1;
+    g.stroke();
   }
 
   private path(g: CanvasRenderingContext2D, pts: Float32Array) {
@@ -357,29 +391,32 @@ export class NetMap {
     }
   }
 
+  /** 출발은 원, 도착은 네모 (메뉴의 출발·도착 표시와 같게) */
   private drawPin(p: Pin) {
     const g = this.ctx;
     const [sx, sy] = this.toScreen(p.x, p.y);
     g.fillStyle = p.color;
-    g.strokeStyle = "#0b0f10";
-    g.lineWidth = 2;
+    g.strokeStyle = PAL.paper;
+    g.lineWidth = 2.5;
     g.beginPath();
-    g.arc(sx, sy - 16, 9, Math.PI * 0.8, Math.PI * 2.2);
-    g.lineTo(sx, sy);
-    g.closePath();
+    if (p.end) g.rect(sx - 6.5, sy - 6.5, 13, 13);
+    else g.arc(sx, sy, 7, 0, Math.PI * 2);
     g.fill();
     g.stroke();
-    g.fillStyle = "#0b0f10";
+    g.fillStyle = PAL.paper;
     g.beginPath();
-    g.arc(sx, sy - 16, 3.5, 0, Math.PI * 2);
+    g.arc(sx, sy, 2.5, 0, Math.PI * 2);
     g.fill();
-    g.font = "800 13px Pretendard, 'Malgun Gothic', sans-serif";
-    const tw = g.measureText(p.label).width + 14;
-    g.fillStyle = "rgba(10,14,15,0.88)";
-    g.fillRect(sx + 12, sy - 28, tw, 22);
+    g.font = `700 13px ${FONT_UI}`;
+    const tw = g.measureText(p.label).width + 22;
+    const bx = Math.round(sx + 12);
+    const by = Math.round(sy - 13);
+    this.box(bx, by, tw, 26);
     g.fillStyle = p.color;
+    g.fillRect(bx + 1, by + 1, 3, 25);
+    g.fillStyle = PAL.ink;
     g.textAlign = "left";
-    g.fillText(p.label, sx + 19, sy - 17);
+    g.fillText(p.label, bx + 12, by + 13.5);
     g.textAlign = "center";
   }
 }

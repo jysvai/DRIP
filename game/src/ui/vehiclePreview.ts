@@ -33,11 +33,11 @@ export class VehiclePreview {
     key.shadow.mapSize.set(1024, 1024);
     Object.assign(key.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, far: 40 });
     this.scene.add(key, new THREE.HemisphereLight(0xdfe8ef, 0x202424, 0.5));
-    // 받침: 둥근 무대와 그림자
+    // 받침: 무채색 회전 무대와 그림자
     const floor = new THREE.Mesh(new THREE.CircleGeometry(12, 64), new THREE.ShadowMaterial({ opacity: 0.45 }));
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
-    const disc = new THREE.Mesh(new THREE.RingGeometry(0, 1, 64), new THREE.MeshBasicMaterial({ color: 0x3ee07a, transparent: true, opacity: 0.12 }));
+    const disc = new THREE.Mesh(new THREE.RingGeometry(0, 1, 64), new THREE.MeshBasicMaterial({ color: 0x6e757e, transparent: true, opacity: 0.16 }));
     disc.rotation.x = -Math.PI / 2;
     disc.position.y = 0.005;
     disc.name = "disc";

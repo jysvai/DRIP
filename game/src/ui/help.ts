@@ -1,37 +1,44 @@
 // 조작법: 메뉴와 주행 중(F1)에 같은 그림을 보여 준다.
 
-const key = (k: string, wide = "") => `<kbd class="${wide}">${k}</kbd>`;
+import { ICON } from "./icons";
+
+const key = (k: string, label = "") => `<kbd${label ? ` aria-label="${label}"` : ""}>${k}</kbd>`;
+
+/** [키들, 설명, 덧붙임] */
+const DRIVE: [string, string, string][] = [
+  [`${key("↑", "위쪽 화살표")}${key("W")}`, "가속 페달", "누르는 동안 서서히 깊게 밟힙니다"],
+  [`${key("↓", "아래쪽 화살표")}${key("S")}`, "브레이크", ""],
+  [`${key("←", "왼쪽 화살표")}${key("→", "오른쪽 화살표")}${key("A")}${key("D")}`, "핸들", "놓으면 차가 차로 방향으로 곧게 돌아옵니다"],
+];
+
+const MORE: [string, string][] = [
+  [`${key("Q")}${key("E")}`, "왼쪽 · 오른쪽 방향지시등 <small>차로를 옮기면 저절로 꺼짐</small>"],
+  [key("X"), "비상등"],
+  [key("H"), "경적"],
+  [key("R"), "후진 기어 켜기·끄기"],
+  [key("C"), "시점 바꾸기 <small>운전석 · 보닛 · 차 뒤</small>"],
+  [key("V"), "거울 크게 보기 <small>화면 가장자리 창</small>"],
+  [key("M"), "마우스 조향 켜기·끄기 <small>마우스를 좌우로</small>"],
+  [key("Tab"), "계기판·내비 크게·작게"],
+  [key("F1"), "조작법 보기"],
+  [key("Esc"), "일시정지 · 주행 끝내기"],
+];
 
 export function controlsHtml(): string {
+  const row = ([k, text, sub]: [string, string, string?]) => `<div><dt>${k}</dt><dd><b>${text}</b>${sub ? `<small>${sub}</small>` : ""}</dd></div>`;
   return `
   <div class="controls">
-    <div class="ctl-group">
-      <div class="arrows">
-        <div></div>${key("↑")}<div></div>
+    <div class="ctl-drive">
+      <div class="arrows" aria-hidden="true">
+        <span></span>${key("↑")}<span></span>
         ${key("←")}${key("↓")}${key("→")}
       </div>
-      <div class="ctl-text">
-        <b>운전</b>
-        <span>${key("↑")} ${key("W")} 가속 페달 — 누르는 동안 서서히 깊게 밟힙니다</span>
-        <span>${key("↓")} ${key("S")} 브레이크</span>
-        <span>${key("←")}${key("→")} ${key("A")}${key("D")} 핸들 — 놓으면 차가 차로 방향으로 곧게 돌아옵니다</span>
-      </div>
+      <dl class="ctl-list">${DRIVE.map(row).join("")}</dl>
     </div>
-    <div class="ctl-grid">
-      <span>${key("Q")} ${key("E")}</span><span>왼쪽 · 오른쪽 방향지시등 (차로를 옮기면 저절로 꺼짐)</span>
-      <span>${key("X")}</span><span>비상등</span>
-      <span>${key("H")}</span><span>경적</span>
-      <span>${key("R")}</span><span>후진 기어 켜기/끄기</span>
-      <span>${key("C")}</span><span>시점 바꾸기 (운전석 · 보닛 · 차 뒤)</span>
-      <span>${key("V")}</span><span>거울 크게 보기 (화면 가장자리 창) 켜기/끄기</span>
-      <span>${key("M")}</span><span>마우스 조향 켜기/끄기 (마우스를 좌우로)</span>
-      <span>${key("Tab")}</span><span>계기판·내비 크게/작게</span>
-      <span>${key("F1")}</span><span>조작법 보기</span>
-      <span>${key("Esc")}</span><span>일시정지 · 주행 끝내기</span>
-    </div>
+    <dl class="ctl-list ctl-cols">${MORE.map(([k, t]) => `<div><dt>${k}</dt><dd>${t}</dd></div>`).join("")}</dl>
     <div class="ctl-pad">
-      <b>게임패드 · 레이싱 휠</b> 연결하면 자동으로 씁니다.
-      왼쪽 스틱/휠 조향 · RT 가속 · LT 브레이크 · LB/RB 방향지시등 · B 비상등 · Y 시점 · Start 일시정지
+      ${ICON.gamepad}
+      <p><b>게임패드 · 레이싱 휠</b>은 연결하면 바로 씁니다. 왼쪽 스틱·휠 조향, RT 가속, LT 브레이크, LB·RB 방향지시등, B 비상등, Y 시점, Start 일시정지.</p>
     </div>
   </div>`;
 }
@@ -40,11 +47,13 @@ export function controlsHtml(): string {
 export function showControls(onClose?: () => void) {
   const ov = document.createElement("div");
   ov.className = "overlay help-overlay";
-  ov.innerHTML = `<div class="card help-card"><div class="help-head"><h2>조작법</h2><button class="btn" data-close>닫기 (Esc)</button></div>${controlsHtml()}</div>`;
+  ov.innerHTML = `<div class="card help-card" role="dialog" aria-modal="true" aria-labelledby="help-title"><div class="help-head"><h2 id="help-title">조작법</h2><button class="btn ghost" data-close>닫기 <kbd>Esc</kbd></button></div>${controlsHtml()}</div>`;
   document.body.appendChild(ov);
+  const prev = document.activeElement as HTMLElement | null;
   const close = () => {
     ov.remove();
     window.removeEventListener("keydown", onKey, true);
+    prev?.focus?.();
     onClose?.();
   };
   const onKey = (e: KeyboardEvent) => {
@@ -55,7 +64,9 @@ export function showControls(onClose?: () => void) {
     }
   };
   window.addEventListener("keydown", onKey, true);
-  ov.querySelector("[data-close]")!.addEventListener("click", close);
+  const btn = ov.querySelector<HTMLButtonElement>("[data-close]")!;
+  btn.addEventListener("click", close);
+  btn.focus({ preventScroll: true });
   ov.addEventListener("click", (e) => {
     if (e.target === ov) close();
   });
