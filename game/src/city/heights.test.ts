@@ -41,6 +41,21 @@ function crossings(g: CityGraph): { e: CityEdge; f: CityEdge; ze: number; zf: nu
   return out;
 }
 
+/** 토막 위 u 자리 */
+function pointOn(e: CityEdge, u: number): [number, number] {
+  const p = e.pts;
+  let acc = 0;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const len = Math.hypot(p[i + 2] - p[i], p[i + 3] - p[i + 1]);
+    if (acc + len >= u || i + 5 >= p.length) {
+      const t = len > 0 ? Math.min(1, (u - acc) / len) : 0;
+      return [p[i] + (p[i + 2] - p[i]) * t, p[i + 1] + (p[i + 3] - p[i + 1]) * t];
+    }
+    acc += len;
+  }
+  return [p[0], p[1]];
+}
+
 for (const region of ["seoul", "gyeonggi_east"]) {
   describe(`${region} 도로 높이`, () => {
     const graph = new CityGraph(load(region));
@@ -67,6 +82,24 @@ for (const region of ["seoul", "gyeonggi_east"]) {
       }
       expect(structural).toBeGreaterThan(region === "seoul" ? 1500 : 400);
       expect(clash / structural).toBeLessThan(0.01);
+    }, 60_000);
+
+    it("나란히 가는 고가·지하도로가 밑·윗길과 같은 높이로 겹치지 않는다", () => {
+      // 국회대로 밑 신월여의지하도로, 정릉로 위 내부순환로: 다리·터널 안은 양 끝 사이를 이어 땅 위 길 높이와 같아진다
+      const half = (e: CityEdge) => e.lanes * (e.oneway ? 1.6 : 3.2);
+      let total = 0;
+      let clash = 0;
+      for (const e of graph.edges) {
+        if (!e.bridge && !e.tunnel) continue;
+        for (let u = 5; u < e.length; u += 10) {
+          const p = graph.edgeZ(e, u);
+          const [x, y] = pointOn(e, u);
+          total += 10;
+          const r = graph.nearestEdge(x, y, 40, (f) => !f.bridge && !f.tunnel && f.a !== e.a && f.a !== e.b && f.b !== e.a && f.b !== e.b);
+          if (r && r.dist < half(e) + half(r.edge) - 1 && Math.abs(graph.edgeZ(r.edge, r.u) - p) < 4.5) clash += 10;
+        }
+      }
+      expect(clash / total).toBeLessThan(region === "seoul" ? 0.015 : 0.008); // 이전: 서울 4.3%, 국도 0.9%
     }, 60_000);
 
     it("30m 지형에 섞인 건물 높이로 길이 가파르게 솟지 않는다", () => {

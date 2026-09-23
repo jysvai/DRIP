@@ -580,7 +580,7 @@ def build(region: str, refresh: bool):
     z, profiles, st = settle(node_xy, z, edges, profiles, PROFILE_STEP, [deg[i] for i in range(len(node_xy))], 1.5 if R["dem"] else 1.0)
     print(
         f"높이 다듬기: 점 {st['samples']}개 (다리·터널 안 {st['free']}), 1m 넘게 옮긴 점 {st['moved_1m']} (최대 {st['moved_max']:.1f}m),"
-        f" 겹쳐 지나는 곳 {st['crossings']} 중 위·아래가 정해진 {st['separated']}, 올리고 내린 점 {st['lifted']} ({st['rounds']}번), 덜 벌어진 곳 {st['short_left']}"
+        f" 겹쳐 지나는 곳 {st['crossings']}·나란히 겹친 점 {st['overlaps']} 중 위·아래가 정해진 {st['separated']}, 올리고 내린 점 {st['lifted']} ({st['rounds']}번), 덜 벌어진 곳 {st['short_left']}"
     )
 
     # 국도: 지형 격자와 물 덮임
