@@ -59,20 +59,30 @@ export interface CityInfo {
   /** 교차로 곡선 구간 [s0, s1, 교차로 번호, 갈라지기·합치기만 하는 곳이면 1] */
   boxes: [number, number, number, number][];
   stops: CityStop[];
+  /**
+   * 경로가 모든 차로로 이어지지 않는 교차로·갈림길 [교차로 곡선 시작 s, 경로로 가는 차로 lo, hi].
+   * 도는 곳뿐 아니라 직진인데 오른쪽 차로가 다른 길로 갈라지는 곳도 (예: 3차로 중 1차로만 이어지는 갈림길)
+   */
+  keep?: [number, number, number][];
   /** 경로 위 링크 자리 [s0, s1, 링크, u0, u1]: s0~s1이 그 링크의 u0~u1 */
   links: [number, number, number, number, number][];
 }
 
-/** 길 찾기에 쓰지 않는 도로: 도시고속도로와 그 연결로 */
-const FORBIDDEN = new Set<RoadClass>(["m", "ml", "tl"]);
-/** 자동차전용도로(올림픽대로 등)는 시내 운전 연습에 맞지 않아 되도록 피한다 */
-const CLASS_TIME: Partial<Record<RoadClass, number>> = { t: 2.5 };
+/** 길 찾기에 쓰지 않는 도로: 도시고속도로와 그 연결로 (시내는 자동차전용도로 연결로도) */
+const FORBIDDEN = new Set<RoadClass>(["m", "ml"]);
+/**
+ * 시내: 자동차전용도로(올림픽대로 등)는 시내 운전 연습에 맞지 않아 되도록 피한다.
+ * 국도 지역에서는 그 길(6번 국도 등)이 바로 달려 볼 국도라 그대로 쓴다
+ */
+const CITY_CLASS_TIME: Partial<Record<RoadClass, number>> = { t: 2.5 };
 const TURN_SEC: Record<Turn, number> = { S: 2, R: 8, L: 20 };
 const SIGNAL_SEC = 15;
 const SNAP_RADIUS = 450;
+/** 가까이 큰길이 없을 때 찾는 거리 */
+const SNAP_FAR = 1500;
 
-export function routable(cls: RoadClass): boolean {
-  return !FORBIDDEN.has(cls);
+export function routable(cls: RoadClass, rural = false): boolean {
+  return !FORBIDDEN.has(cls) && (rural || cls !== "tl");
 }
 
 interface Snap {
@@ -82,16 +92,16 @@ interface Snap {
 }
 
 /** 장소에서 가까운 링크 자리 몇 곳 (양방향·중앙분리 도로 양쪽) */
-function snaps(net: CityNet, x: number, y: number): Snap[] {
+function snaps(net: CityNet, x: number, y: number, radius = SNAP_RADIUS): Snap[] {
   const g = net.graph;
   const out: Snap[] = [];
-  const cand = g.edgesIn(x - SNAP_RADIUS, y - SNAP_RADIUS, x + SNAP_RADIUS, y + SNAP_RADIUS);
+  const cand = g.edgesIn(x - radius, y - radius, x + radius, y + radius);
   let best = Infinity;
   const found: { edge: number; u: number; dist: number }[] = [];
   for (const id of cand) {
     const e = g.edges[id];
-    if (!routable(e.cls) || e.cls === "t" || e.cls.endsWith("l")) continue;
-    const r = g.nearestEdge(x, y, SNAP_RADIUS, (f) => f.id === id);
+    if (!routable(e.cls, g.kind === "rural") || e.cls === "t" || e.cls.endsWith("l")) continue;
+    const r = g.nearestEdge(x, y, radius, (f) => f.id === id);
     if (!r) continue;
     found.push({ edge: id, u: r.u, dist: r.dist });
     best = Math.min(best, r.dist);
@@ -109,13 +119,15 @@ function snaps(net: CityNet, x: number, y: number): Snap[] {
       if (!out.some((o) => o.link === lid)) out.push({ link: lid, u, dist: f.dist });
     }
   }
+  // 국도 지역의 명소는 큰길에서 멀 수 있다 (예: 두물머리는 좁은 마을길 끝)
+  if (!out.length && radius < SNAP_FAR) return snaps(net, x, y, SNAP_FAR);
   return out;
 }
 
 function linkSpeed(net: CityNet, id: number): number {
   const l = net.links[id];
   const kmh = Math.max(20, l.speed) * 0.8;
-  return kmh / 3.6 / (CLASS_TIME[l.cls] ?? 1);
+  return kmh / 3.6 / ((net.graph.kind === "rural" ? 1 : CITY_CLASS_TIME[l.cls]) ?? 1);
 }
 
 /** 두 곳 사이 가장 빠른 길 (시내 도로만). 못 찾으면 null */
@@ -124,6 +136,7 @@ export function findCityRoute(net: CityNet, from: CityPlace | { name: string; x:
   const goals = snaps(net, to.x, to.y);
   if (!starts.length || !goals.length) return null;
   const L = net.links.length;
+  const rural = net.graph.kind === "rural";
   // 상태: 링크에 들어선 순간 (u=0). 출발 링크는 출발 자리에서
   const dist = new Float64Array(L).fill(Infinity);
   const prev = new Int32Array(L).fill(-1);
@@ -132,7 +145,8 @@ export function findCityRoute(net: CityNet, from: CityPlace | { name: string; x:
   const startOf = new Map<number, Snap>();
   const goalOf = new Map<number, Snap>();
   for (const g of goals) goalOf.set(g.link, g);
-  const vmax = 80 / 3.6;
+  // 남은 거리를 가장 빠른 속도로 간다고 본 시간 (국도 90km/h 구간보다 빠르게 잡아야 가장 빠른 길을 놓치지 않는다)
+  const vmax = 100 / 3.6;
   const h = (id: number) => {
     const l = net.links[id];
     const p = net.graph.nodes[l.toNode];
@@ -169,7 +183,7 @@ export function findCityRoute(net: CityNet, from: CityPlace | { name: string; x:
     return top;
   };
   for (const s of starts) {
-    if (!routable(net.links[s.link].cls)) continue;
+    if (!routable(net.links[s.link].cls, rural)) continue;
     const g0 = s.dist / 5; // 출발점에서 먼 도로는 조금 덜 좋게
     if (g0 < dist[s.link]) {
       dist[s.link] = g0;
@@ -203,7 +217,7 @@ export function findCityRoute(net: CityNet, from: CityPlace | { name: string; x:
     const through = g0 + Math.max(0, l.length - u0) / v;
     for (const mv of net.movementsFrom(i)) {
       const next = mv.to;
-      if (!routable(net.links[next].cls)) continue;
+      if (!routable(net.links[next].cls, rural)) continue;
       const j = net.junctions[mv.junction];
       const pen = j.minor ? 0 : TURN_SEC[mv.turn] + (j.signal ? SIGNAL_SEC : 3);
       const tun = net.links[next].spans.some((s) => s.tunnel) ? 20 : 0;
@@ -377,6 +391,7 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
   const legs: LegInfo[] = [];
   const boxes: [number, number, number, number][] = [];
   const stops: CityStop[] = [];
+  const keep: [number, number, number][] = [];
   const linkMap: [number, number, number, number, number][] = [];
   plan.links.forEach((id, k) => {
     const l = net.links[id];
@@ -442,6 +457,7 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
       median.push([bs0, 0]);
       medianKind.push([bs0, 0]);
       boxes.push([bs0, bs1, jNext.id, jNext.minor ? 1 : 0]);
+      if (next.fromLanes[0] > 1 || next.fromLanes[1] < l.lanes) keep.push([bs0, next.fromLanes[0], next.fromLanes[1]]);
       if (!jNext.minor) {
         stops.push({
           s: bs0,
@@ -482,7 +498,8 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
     unit: 0.01,
     dx,
     dy,
-    z: out.map((p) => Math.round(p.z * 10)),
+    zUnit: 0.001,
+    z: out.map((p) => Math.round(p.z * 1000)),
     lanes: dedupe(lanes),
     speed: dedupe(speed),
     speedHgv: dedupe(speed),
@@ -502,6 +519,7 @@ export function cityRoadFile(net: CityNet, plan: CityRoutePlan): { file: RoadFil
       medianKind: dedupe(medianKind),
       boxes,
       stops,
+      keep,
       links: linkMap,
     },
   };

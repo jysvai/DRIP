@@ -56,6 +56,8 @@ export interface RoadFile {
   origin: [number, number];
   /** dx·dy 한 칸의 길이 (m). 없으면 0.1 (고속도로). 시내는 점 간격이 2m라 0.01 */
   unit?: number;
+  /** z 한 칸의 높이 (m). 없으면 0.1. 시내는 그린 차도 높이와 맞게 0.001 */
+  zUnit?: number;
   dx: number[];
   dy: number[];
   z: number[];
@@ -220,9 +222,13 @@ export class Road {
       this.e[i] = qx / per;
       this.nn[i] = qy / per;
     }
-    for (let i = 0; i < n; i++) this.z[i] = (f.z[i] ?? f.z[f.z.length - 1] ?? 0) / 10;
-    const zw = Math.max(1, Math.round(Z_SMOOTH / f.step));
-    for (let pass = 0; pass < 2; pass++) boxSmooth(this.z, zw);
+    const zUnit = f.zUnit ?? 0.1;
+    for (let i = 0; i < n; i++) this.z[i] = (f.z[i] ?? f.z[f.z.length - 1] ?? 0) * zUnit;
+    // 0.1m로 자른 높이만 고른다 (시내처럼 곱게 적힌 높이는 화면에 그린 차도 높이 그대로 둔다)
+    if (zUnit >= 0.05) {
+      const zw = Math.max(1, Math.round(Z_SMOOTH / f.step));
+      for (let pass = 0; pass < 2; pass++) boxSmooth(this.z, zw);
+    }
     this.gradeAt = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       const a = Math.max(0, i - 1);

@@ -2,10 +2,13 @@
 // 칸 하나에: 땅, 차도(한 방향 차도마다 띠), 차선·정지선·횡단보도, 보도·연석·분리대, 교차로 바닥·모서리 보도,
 // 건물(길을 따라 늘어선 상자, 고층 지역일수록 높게), 가로수·가로등, 신호등(가로형 4색, 신호 계획에 따라 켜진다).
 // 칸 안 좌표: x = 동쪽 - 칸 기준점, y = 높이, z = -(북쪽 - 칸 기준점). 경로(플레이어가 달리는 한 줄 도로)와 상관없이 그린다.
+// 국도 지역(지형 격자가 있는 곳): 땅이 지형을 따라 산·골짜기가 되고, 도로 옆은 둑·깎기로 이어진다. 비탈은 숲(나무), 평평한 골짜기는 논밭·비닐하우스,
+// 강·호수는 물. 시가지(OSM 주거·상업·공업 땅)와 이름 있는 곳이 모인 읍내만 건물·보도가 있고 밖은 포장 갓길. 가까운 칸 너머는 먼 산 한 장(100m 격자)으로 그린다.
 
 import * as THREE from "three";
 import type { World } from "./world";
-import { asphaltTexture, disposeGroup, grayTexture, makeBroadleafGeometry, tiledNoise, xorshift } from "./roadChunks";
+import { asphaltTexture, disposeGroup, grayTexture, makeBroadleafGeometry, makePineGeometry, tiledNoise, xorshift } from "./roadChunks";
+import type { CityEdge, Dem } from "../city/graph";
 import type { CityNet, Link, LinkGeom } from "../city/net";
 import { CENTER_GAP, CITY_LANE, CROSSWALK, STOP_GAP } from "../city/net";
 import type { Signals } from "../city/signals";
@@ -17,6 +20,30 @@ const GROUND_CELL = 20;
 const MAX_RADIUS = 900;
 /** 신호등을 켜고 끄는 거리 */
 const LAMP_RADIUS = 450;
+/** 국도: 먼 산 (가까운 칸이 없는 곳까지, 100m 격자). 가까운 칸 안쪽은 비운다 */
+const FAR_RADIUS = 2800;
+const FAR_CELL = 100;
+const FAR_HOLE = 780;
+/** 국도: 보도 없는 곳의 포장 갓길 폭 (m) */
+const SHOULDER = 1.2;
+
+/** 국도 땅 색 */
+const LAND = {
+  forest: new THREE.Color(0.19, 0.29, 0.15),
+  forestLight: new THREE.Color(0.27, 0.36, 0.19),
+  paddy: new THREE.Color(0.4, 0.5, 0.25),
+  field: new THREE.Color(0.52, 0.5, 0.33),
+  fallow: new THREE.Color(0.47, 0.41, 0.31),
+  verge: new THREE.Color(0.4, 0.47, 0.27),
+  town: new THREE.Color(0.6, 0.58, 0.55),
+  water: new THREE.Color(0.33, 0.45, 0.5),
+};
+const enum Land {
+  Water,
+  Town,
+  Forest,
+  Field,
+}
 
 /** 등급별 보도 폭 (m) */
 function sidewalkWidth(cls: string): number {
@@ -30,6 +57,22 @@ function hash(n: number): number {
   x = Math.imul(x, 0xc2b2ae35);
   x ^= x >>> 16;
   return (x >>> 0) / 4294967296;
+}
+
+/** 값 노이즈: cell m 격자 점마다 난수를 부드럽게 이은 0~1 */
+function vnoise(x: number, y: number, cell: number, seed: number): number {
+  const fx = x / cell;
+  const fy = y / cell;
+  const ix = Math.floor(fx);
+  const iy = Math.floor(fy);
+  const h = (a: number, b: number) => hash((a * 73856093) ^ (b * 19349663) ^ seed);
+  const tx = fx - ix;
+  const ty = fy - iy;
+  const sx = tx * tx * (3 - 2 * tx);
+  const sy = ty * ty * (3 - 2 * ty);
+  const a = h(ix, iy) + (h(ix + 1, iy) - h(ix, iy)) * sx;
+  const b = h(ix, iy + 1) + (h(ix + 1, iy + 1) - h(ix, iy + 1)) * sx;
+  return a + (b - a) * sy;
 }
 
 /** 꼭짓점 모음 → 메시 */
@@ -83,6 +126,11 @@ function paverTexture(): THREE.CanvasTexture {
     const joint = x % 32 < 2 || (y + (Math.floor(x / 32) % 2) * 16) % 32 < 2;
     return (joint ? 120 : 196) + (blotch[i] - 0.5) * 30 + (rand() - 0.5) * 18;
   });
+}
+
+/** 국도 차도 가운데에서 갓길 바깥(+1.3m)까지 */
+function roadHalf(e: CityEdge): number {
+  return (e.oneway ? (e.lanes * CITY_LANE) / 2 : e.lanes * CITY_LANE + CENTER_GAP / 2) + SHOULDER + 1.3;
 }
 
 /** 건물 벽: 창 8열 × 8층. glass면 유리벽(가는 창틀), 아니면 콘크리트 벽에 창. lit이면 밤에 불 켜진 창만 */
@@ -178,6 +226,14 @@ export class CityScene {
   private tiles = new Map<string, Tile>();
   private mats: Record<string, THREE.Material>;
   private treeGeo = makeBroadleafGeometry();
+  private pineGeo = makePineGeometry();
+  /** 국도 지역이면 지형 격자 */
+  private readonly dem: Dem | null;
+  private readonly rural: boolean;
+  private townCache = new Map<number, boolean>();
+  private cityCache = new Map<number, boolean>();
+  private zq: PolyPoint = { x: 0, y: 0, tx: 1, ty: 0 };
+  private far: { mesh: THREE.Mesh; x0: number; y0: number } | null = null;
   private lampGeo = new THREE.CircleGeometry(0.14, 14);
   private arrowGeo = arrowGeometry();
   /** 건물은 링크마다 한 번 만들어 두고, 겹치지 않게 차지한 칸(4m)을 적어 둔다 */
@@ -203,6 +259,8 @@ export class CityScene {
     const [ox, oy] = net.graph.origin;
     this.ox = ox;
     this.oy = oy;
+    this.dem = net.graph.dem;
+    this.rural = net.graph.kind === "rural" && !!this.dem;
     const asphalt = asphaltTexture();
     const paver = paverTexture();
     const noise = grayTexture(128, (() => {
@@ -224,6 +282,7 @@ export class CityScene {
       lightHead: new THREE.MeshBasicMaterial({ color: 0x9a9a92 }),
       tree: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
       lamp: new THREE.MeshBasicMaterial({ toneMapped: false }),
+      water: new THREE.MeshStandardMaterial({ color: 0x5d7a86, roughness: 0.16, metalness: 0.15 }),
     };
     // 찾기 칸: 교차점 (땅 높이), 고층 지역
     net.graph.nodes.forEach((n, i) => {
@@ -330,6 +389,10 @@ export class CityScene {
     }
     const o = this.world.origin;
     for (const t of this.tiles.values()) t.group.position.set(t.x0 + this.ox - o.e, 0, -(t.y0 + this.oy - o.n));
+    if (this.rural) {
+      this.updateFar(px, py);
+      if (this.far) this.far.mesh.position.set(this.far.x0 + this.ox - o.e, 0, -(this.far.y0 + this.oy - o.n));
+    }
     this.updateLamps(px, py);
     // 밤: 창에 불, 가로등 머리
     const n = Math.round(this.world.night * 20) / 20;
@@ -392,6 +455,7 @@ export class CityScene {
       roof: new G(),
       metal: new G(),
       head: new G(),
+      water: new G(),
     };
     const inTile = (x: number, y: number) => x >= x0 && x < x0 + TILE && y >= y0 && y < y0 + TILE;
     // 이 칸에 걸친 링크
@@ -421,7 +485,11 @@ export class CityScene {
     for (const id of [...near].sort((a, c) => a - c)) {
       for (const bd of this.buildingsOf(id)) if (inTile(bd.x, bd.y)) this.drawBuilding(bd, x0, y0, b);
     }
-    this.drawGround(x0, y0, b.ground);
+    const pines: THREE.Matrix4[] = [];
+    if (this.rural) {
+      this.drawRuralGround(x0, y0, b, trees, pines);
+      this.greenhouses(x0, y0, inTile, b.concrete);
+    } else this.drawGround(x0, y0, b.ground);
 
     const add = (g: G, mat: THREE.Material, cast: boolean, receive = true) => {
       if (g.empty) return;
@@ -440,9 +508,14 @@ export class CityScene {
     add(b.roof, this.mats.roof, false);
     add(b.metal, this.mats.metal, true);
     add(b.head, this.mats.lightHead, false, false);
-    if (trees.length) {
-      const inst = new THREE.InstancedMesh(this.treeGeo, this.mats.tree, trees.length);
-      trees.forEach((m, i) => inst.setMatrixAt(i, m));
+    add(b.water, this.mats.water, false);
+    for (const [list, geo] of [
+      [trees, this.treeGeo],
+      [pines, this.pineGeo],
+    ] as const) {
+      if (!list.length) continue;
+      const inst = new THREE.InstancedMesh(geo, this.mats.tree, list.length);
+      list.forEach((m, i) => inst.setMatrixAt(i, m));
       inst.castShadow = true;
       inst.receiveShadow = true;
       group.add(inst);
@@ -527,7 +600,7 @@ export class CityScene {
         kind[k] = 2;
         leftX[k] = 0.3;
       }
-      sw[k] = sidewalkWidth(sp.cls);
+      sw[k] = this.rural && !this.town(geo.pts[2 * k], geo.pts[2 * k + 1]) ? 0 : sidewalkWidth(sp.cls);
     }
     const P = geo.pts;
     const q: PolyPoint & { z?: number } = { x: 0, y: 0, tx: 1, ty: 0 };
@@ -625,9 +698,27 @@ export class CityScene {
       // 보도·연석 (오른쪽)
       const walkC = new THREE.Color(0.8, 0.77, 0.73);
       const curbC = new THREE.Color(0.72, 0.72, 0.7);
-      strip(b.walk, k0, k1, curbD, (k) => curbD(k) + sw[k], 0.15, walkC, true, wA, wB);
-      wall(b.concrete, k0, k1, curbD, 0.0, 0.15, -1, curbC, wA, wB);
-      wall(b.concrete, k0, k1, (k) => curbD(k) + sw[k], -2.5, 0.15, 1, curbC, wA, wB);
+      if (!this.rural) {
+        strip(b.walk, k0, k1, curbD, (k) => curbD(k) + sw[k], 0.15, walkC, true, wA, wB);
+        wall(b.concrete, k0, k1, curbD, 0.0, 0.15, -1, curbC, wA, wB);
+        wall(b.concrete, k0, k1, (k) => curbD(k) + sw[k], -2.5, 0.15, 1, curbC, wA, wB);
+      } else {
+        // 국도: 읍내는 보도, 밖은 연석 없는 포장 갓길
+        const shoulderC = new THREE.Color(0.5, 0.5, 0.49);
+        const skirtC = new THREE.Color(0.58, 0.58, 0.56);
+        for (let k = k0; k < k1; k++) {
+          if (sw[k] > 0) {
+            strip(b.walk, k, k + 1, curbD, (kk) => curbD(kk) + sw[kk], 0.15, walkC, true, wA, wB);
+            wall(b.concrete, k, k + 1, curbD, 0.0, 0.15, -1, curbC, wA, wB);
+            wall(b.concrete, k, k + 1, (kk) => curbD(kk) + sw[kk], -2.5, 0.15, 1, curbC, wA, wB);
+          } else {
+            strip(road, k, k + 1, curbD, (kk) => curbD(kk) + SHOULDER, 0.02, shoulderC, true);
+            // 땅이 차도보다 낮은 곳(둑·높이가 다른 상·하행 사이)은 옹벽으로 보인다. 땅이 높으면 묻힌다
+            wall(b.concrete, k, k + 1, (kk) => curbD(kk) + SHOULDER, -4, 0.02, 1, skirtC);
+          }
+          if (kind[k] !== 0) wall(b.concrete, k, k + 1, (kk) => -width[kk] / 2 - leftX[kk], -4, 0.02, -1, skirtC);
+        }
+      }
       // 분리대 (짝 있는 넓은 곳): 연석으로 쌓고 넓으면 풀
       for (let k = k0; k < k1; k++) {
         if (kind[k] !== 1 || median[k] < 0.45) continue;
@@ -656,7 +747,7 @@ export class CityScene {
         }
         const lamp = 31;
         const phase = hash(l.id) * lamp;
-        if (Math.floor((s + phase) / lamp) !== Math.floor((geo.cum[k + 1] + phase) / lamp) && l.cls[0] !== "t") {
+        if (Math.floor((s + phase) / lamp) !== Math.floor((geo.cum[k + 1] + phase) / lamp) && l.cls[0] !== "t" && sw[k] > 0) {
           this.at(geo, geo.cum[k + 1], q);
           this.streetLight(q, curbD(k) + 0.5, x0, y0, b.metal, b.head);
         }
@@ -953,11 +1044,17 @@ export class CityScene {
       const cx = q.x + q.ty * (back + depth / 2);
       const cy = q.y - q.tx * (back + depth / 2);
       const bd: Building = { x: cx, y: cy, ux: q.tx, uy: q.ty, a: front / 2, b: depth / 2, base: 0, h: 0, glass: false, tint: rand(), tower: false };
-      if (this.fits(bd)) {
+      if ((!this.rural || this.town(cx, cy)) && this.fits(bd)) {
         const dens = this.density.get(this.cell(cx, cy, 250)) ?? 0;
         const tall = Math.min(1, dens / 8);
         const cls = sp.cls[0];
-        const floors = cls === "p" ? 5 + rand() * 12 + tall * 22 * rand() : cls === "s" ? 4 + rand() * 9 + tall * 18 * rand() : 3 + rand() * 5 + tall * 8 * rand();
+        const floors = this.rural && !this.bigTown(cx, cy)
+          ? 1 + rand() * 3 + tall * 6 * rand()
+          : cls === "p"
+            ? 5 + rand() * 12 + tall * 22 * rand()
+            : cls === "s"
+              ? 4 + rand() * 9 + tall * 18 * rand()
+              : 3 + rand() * 5 + tall * 8 * rand();
         bd.h = Math.max(7, floors * 3.4);
         bd.glass = bd.h > 42 || (tall > 0.5 && rand() < 0.5);
         bd.tower = bd.h > 50 && rand() < 0.6;
@@ -1034,14 +1131,265 @@ export class CityScene {
    * 도로는 교차점 사이를 곧게 가서, 긴 토막 가운데에서는 옆 골목 교차점으로 섞은 땅이 도로보다 높을 수 있다
    */
   private groundAt(x: number, y: number): number {
+    if (this.dem) return this.ruralGround(x, y).z;
     const z = this.groundZ(x, y) - 0.8;
     const g = this.net.graph;
     const near = g.nearestEdge(x, y, 45, (e) => !e.bridge);
     if (!near) return z;
-    const e = near.edge;
-    const t = e.length > 0 ? Math.max(0, Math.min(1, near.u / e.length)) : 0;
-    const rz = g.nodes[e.a].z + (g.nodes[e.b].z - g.nodes[e.a].z) * t;
-    return Math.min(z, rz - 0.6);
+    return Math.min(z, g.edgeZ(near.edge, near.u) - 0.6);
+  }
+
+  // ---------------- 국도 땅 ----------------
+
+  /**
+   * 국도 땅 높이: 지형 격자. 도로(다리 빼고) 가까이는 도로보다 조금 낮게 깔고, 도로 가장자리에서 40m에 걸쳐 지형으로 이어
+   * 둑(도로가 높을 때)·깎기(도로가 낮을 때)가 된다. road: 도로 가장자리에서 떨어진 거리 (도로 위면 0 이하)
+   */
+  private ruralGround(x: number, y: number): { z: number; road: number } {
+    const zd = this.dem!.height(x, y);
+    const g = this.net.graph;
+    let best: { edge: CityEdge; u: number; dist: number } | null = null;
+    // 땅 한 칸(20m) 안에 걸친 도로 가운데 가장 낮은 것보다 땅이 높으면 그 도로를 덮는다
+    // (예: 9m 떨어진 상·하행 차도의 높이가 1m 넘게 다르면). 그 아래로 맞추고, 높은 쪽 차도 가장자리는 옹벽으로 보인다
+    let cap = Infinity;
+    for (const id of g.edgesIn(x - 60, y - 60, x + 60, y + 60)) {
+      const e = g.edges[id];
+      if (e.bridge) continue;
+      const r = g.nearestEdge(x, y, 60, (f) => f.id === id);
+      if (!r) continue;
+      if (!best || r.dist < best.dist) best = r;
+      if (r.dist - roadHalf(e) < GROUND_CELL) cap = Math.min(cap, this.drawnZ(e, r.u) - 0.35);
+    }
+    if (!best) return { z: zd, road: Infinity };
+    const d = best.dist - roadHalf(best.edge);
+    const rz = this.drawnZ(best.edge, best.u) - 0.35;
+    if (d <= 0) return { z: Math.min(rz, cap), road: d };
+    const t = Math.min(1, d / 40);
+    return { z: Math.min(rz + (zd - rz) * t * t * (3 - 2 * t), cap), road: d };
+  }
+
+  /** 그린 차도 높이: 링크 모양의 높이(앞뒤 20m 평균)라 토막 높이 굴곡보다 둥글다. 땅이 차도 위로 솟지 않게 이것에 맞춘다 */
+  private drawnZ(e: CityEdge, u: number): number {
+    const net = this.net;
+    for (const fwd of [true, false]) {
+      const lid = net.dirLink[e.id * 2 + (fwd ? 0 : 1)];
+      if (lid < 0) continue;
+      const sp = net.links[lid].spans.find((x) => x.edge === e.id);
+      if (sp) return net.pointOnLink(lid, sp.u0 + (fwd ? u : e.length - u), this.zq).z;
+    }
+    return net.graph.edgeZ(e, u);
+  }
+
+  /** 읍내·마을: 시가지(주거·상업·공업 용도 땅)거나 이름 있는 건물이 모인 곳 */
+  private town(x: number, y: number): boolean {
+    const k = this.cell(x, y, 75);
+    let v = this.townCache.get(k);
+    if (v === undefined) {
+      let d = 0;
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) d += this.density.get(this.cell(x + dx * 250, y + dy * 250, 250)) ?? 0;
+      v = d >= 4 || this.dem!.urban(x, y) >= 0.5;
+      this.townCache.set(k, v);
+    }
+    return v;
+  }
+
+  /** 도시 (서울 강동구, 미사·구리 같은 신도시): 둘레 800m가 거의 다 시가지면 시내처럼 높은 건물 */
+  private bigTown(x: number, y: number): boolean {
+    const k = this.cell(x, y, 250);
+    let v = this.cityCache.get(k);
+    if (v === undefined) {
+      const dem = this.dem!;
+      let u = 0;
+      for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) u += dem.urban(x + i * 200, y + j * 200);
+      v = u / 25 >= 0.7;
+      this.cityCache.set(k, v);
+    }
+    return v;
+  }
+
+  /** 땅 종류: 물, 읍내, 숲(비탈), 논밭(평평한 골짜기) */
+  private land(x: number, y: number): Land {
+    const dem = this.dem!;
+    if (dem.water(x, y) >= 0.5) return Land.Water;
+    if (this.town(x, y)) return Land.Town;
+    const sl = dem.slope(x, y);
+    if (sl > 0.16 || sl > 0.06 + 0.12 * vnoise(x, y, 170, 11)) return Land.Forest;
+    return Land.Field;
+  }
+
+  private landColor(kind: Land, x: number, y: number, out: THREE.Color): THREE.Color {
+    if (kind === Land.Water) return out.copy(LAND.water);
+    if (kind === Land.Town) return out.copy(LAND.town);
+    if (kind === Land.Forest) return out.copy(LAND.forest).lerp(LAND.forestLight, vnoise(x, y, 60, 5));
+    // 논밭: 80m 조각마다 논·밭·묵은 땅
+    const r = hash((Math.floor(x / 80) * 92821) ^ (Math.floor(y / 80) * 68917));
+    return out.copy(r < 0.5 ? LAND.paddy : r < 0.85 ? LAND.field : LAND.fallow).lerp(LAND.verge, 0.3 * vnoise(x, y, 30, 9));
+  }
+
+  /** 국도 칸의 땅(20m 격자, 비탈 그늘), 물, 숲 나무 */
+  private drawRuralGround(x0: number, y0: number, b: Record<string, G>, broad: THREE.Matrix4[], pines: THREE.Matrix4[]) {
+    const n = TILE / GROUND_CELL;
+    const z: number[][] = [];
+    const kind: Land[][] = [];
+    const road: number[][] = [];
+    for (let i = 0; i <= n; i++) {
+      z.push([]);
+      kind.push([]);
+      road.push([]);
+      for (let j = 0; j <= n; j++) {
+        const X = x0 + i * GROUND_CELL;
+        const Y = y0 + j * GROUND_CELL;
+        const gr = this.ruralGround(X, Y);
+        z[i].push(gr.z);
+        road[i].push(gr.road);
+        kind[i].push(this.land(X, Y));
+      }
+    }
+    const c = new THREE.Color();
+    const nrm = (i: number, j: number): [number, number, number] => {
+      const gx = (z[Math.min(n, i + 1)][j] - z[Math.max(0, i - 1)][j]) / ((Math.min(n, i + 1) - Math.max(0, i - 1)) * GROUND_CELL);
+      const gy = (z[i][Math.min(n, j + 1)] - z[i][Math.max(0, j - 1)]) / ((Math.min(n, j + 1) - Math.max(0, j - 1)) * GROUND_CELL);
+      const L = Math.hypot(gx, 1, gy);
+      return [-gx / L, 1 / L, gy / L];
+    };
+    const g = b.ground;
+    const idx: number[][] = [];
+    for (let i = 0; i <= n; i++) {
+      idx.push([]);
+      for (let j = 0; j <= n; j++) {
+        const X = x0 + i * GROUND_CELL;
+        const Y = y0 + j * GROUND_CELL;
+        const k = kind[i][j];
+        // 도로 옆 둑·깎기는 풀
+        if (road[i][j] < 12 && k !== Land.Water && k !== Land.Town) c.copy(LAND.verge);
+        else this.landColor(k === Land.Water ? Land.Field : k, X, Y, c);
+        const [nx, ny, nz] = nrm(i, j);
+        idx[i].push(g.v(X - x0, z[i][j], -(Y - y0), nx, ny, nz, c, (X + this.ox) / 16, (Y + this.oy) / 16));
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const wet = [kind[i][j], kind[i + 1][j], kind[i + 1][j + 1], kind[i][j + 1]].filter((k) => k === Land.Water).length;
+        if (wet >= 3) {
+          // 물: 네 모서리 중 가장 낮은 높이로 평평하게
+          const zw = Math.min(z[i][j], z[i + 1][j], z[i + 1][j + 1], z[i][j + 1]) + 0.05;
+          const w = b.water;
+          const q = [
+            [i, j],
+            [i + 1, j],
+            [i + 1, j + 1],
+            [i, j + 1],
+          ].map(([a, cc]) => w.v(a * GROUND_CELL, zw, -cc * GROUND_CELL, 0, 1, 0, LAND.water));
+          w.quad(q[0], q[1], q[2], q[3]);
+        } else g.quad(idx[i][j], idx[i + 1][j], idx[i + 1][j + 1], idx[i][j + 1]);
+      }
+    }
+    // 숲: 20m 칸마다 한 그루 (도로 옆 12m·물·읍내는 비운다). 조림지(노이즈)는 침엽수, 나머지는 활엽수
+    const m = new THREE.Matrix4();
+    const qt = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const r = hash(((Math.floor(x0 / GROUND_CELL) + i) * 7331) ^ ((Math.floor(y0 / GROUND_CELL) + j) * 30637));
+        const X = x0 + (i + 0.2 + 0.6 * r) * GROUND_CELL;
+        const Y = y0 + (j + 0.2 + 0.6 * hash(r * 1e9)) * GROUND_CELL;
+        if (this.land(X, Y) !== Land.Forest) continue;
+        const gr = this.ruralGround(X, Y);
+        if (gr.road < 12) continue;
+        const pine = vnoise(X, Y, 140, 3) > 0.58;
+        const s = (pine ? 1.2 : 1.35) + 0.5 * r;
+        m.compose(new THREE.Vector3(X - x0, gr.z - 0.2, -(Y - y0)), qt.setFromAxisAngle(up, r * 40), new THREE.Vector3(s, s * (0.9 + 0.3 * r), s));
+        (pine ? pines : broad).push(m.clone());
+      }
+    }
+  }
+
+  /** 비닐하우스: 평평한 논밭 조각 일부에 가까운 도로와 나란히 몇 동 */
+  private greenhouses(x0: number, y0: number, inTile: (x: number, y: number) => boolean, g: G) {
+    const P = 90;
+    const white = new THREE.Color(0.86, 0.88, 0.87);
+    const top = new THREE.Color(0.93, 0.94, 0.93);
+    for (let px = Math.floor(x0 / P); px <= Math.floor((x0 + TILE) / P); px++) {
+      for (let py = Math.floor(y0 / P); py <= Math.floor((y0 + TILE) / P); py++) {
+        const r = hash((px * 48611) ^ (py * 96769) ^ 77);
+        if (r > 0.1) continue;
+        const cx = (px + 0.5) * P;
+        const cy = (py + 0.5) * P;
+        if (!inTile(cx, cy) || this.land(cx, cy) !== Land.Field || this.dem!.slope(cx, cy) > 0.04) continue;
+        const near = this.net.graph.nearestEdge(cx, cy, 200);
+        if (!near || near.dist < 28) continue;
+        // 가까운 도로 방향
+        const e = near.edge;
+        const p = e.pts;
+        let best = 0;
+        let bd = Infinity;
+        for (let i = 0; i + 3 < p.length; i += 2) {
+          const d = Math.hypot((p[i] + p[i + 2]) / 2 - cx, (p[i + 1] + p[i + 3]) / 2 - cy);
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        }
+        const yaw = Math.atan2(p[best + 3] - p[best + 1], p[best + 2] - p[best]);
+        const ux = Math.cos(yaw);
+        const uy = Math.sin(yaw);
+        const count = 3 + Math.floor(r * 30);
+        for (let k = 0; k < count; k++) {
+          const off = (k - (count - 1) / 2) * 9;
+          const hx = cx - uy * off;
+          const hy = cy + ux * off;
+          if (this.land(hx, hy) !== Land.Field || this.ruralGround(hx, hy).road < 18) continue;
+          const zb = this.ruralGround(hx, hy).z;
+          // 몸통 + 둥근 지붕을 낮은 상자 둘로
+          box(g, hx - x0, zb + 0.8, -(hy - y0), 40, 1.6, 7, yaw, white);
+          box(g, hx - x0, zb + 2.0, -(hy - y0), 40, 0.8, 4.6, yaw, top);
+        }
+      }
+    }
+  }
+
+  /** 먼 산: 플레이어 둘레 FAR_RADIUS를 100m 격자 한 장으로 (가까운 칸 안쪽은 비우고, 가까운 칸과 겹치는 곳은 낮춘다) */
+  private updateFar(px: number, py: number) {
+    if (this.far && Math.hypot(px - this.far.x0, py - this.far.y0) < 300) return;
+    if (this.far) {
+      this.group.remove(this.far.mesh);
+      this.far.mesh.geometry.dispose();
+    }
+    const dem = this.dem!;
+    const cx = Math.round(px / FAR_CELL) * FAR_CELL;
+    const cy = Math.round(py / FAR_CELL) * FAR_CELL;
+    const n = Math.ceil(FAR_RADIUS / FAR_CELL);
+    const g = new G();
+    const c = new THREE.Color();
+    const ids: number[][] = [];
+    for (let i = -n; i <= n; i++) {
+      const row: number[] = [];
+      for (let j = -n; j <= n; j++) {
+        const X = cx + i * FAR_CELL;
+        const Y = cy + j * FAR_CELL;
+        const d = Math.hypot(X - cx, Y - cy);
+        const z = dem.height(X, Y) - 3 - 12 * Math.max(0, Math.min(1, (MAX_RADIUS + 100 - d) / 250));
+        const h = FAR_CELL;
+        const gx = (dem.height(X + h, Y) - dem.height(X - h, Y)) / (2 * h);
+        const gy = (dem.height(X, Y + h) - dem.height(X, Y - h)) / (2 * h);
+        const L = Math.hypot(gx, 1, gy);
+        this.landColor(this.land(X, Y), X, Y, c);
+        row.push(g.v(X - cx, z, -(Y - cy), -gx / L, 1 / L, gy / L, c, (X + this.ox) / 16, (Y + this.oy) / 16));
+      }
+      ids.push(row);
+    }
+    for (let i = 0; i < 2 * n; i++) {
+      for (let j = 0; j < 2 * n; j++) {
+        const d = Math.hypot((i - n + 0.5) * FAR_CELL, (j - n + 0.5) * FAR_CELL);
+        if (d < FAR_HOLE || d > FAR_RADIUS) continue;
+        g.quad(ids[i][j], ids[i + 1][j], ids[i + 1][j + 1], ids[i][j + 1]);
+      }
+    }
+    const mesh = g.mesh(this.mats.ground);
+    mesh.receiveShadow = false;
+    mesh.frustumCulled = false;
+    this.group.add(mesh);
+    this.far = { mesh, x0: cx, y0: cy };
   }
 
   /** 땅 높이: 가까운 교차점 높이의 거리 가중 평균 */

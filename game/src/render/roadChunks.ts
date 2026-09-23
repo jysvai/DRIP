@@ -1380,7 +1380,7 @@ function lumpy(g: THREE.BufferGeometry, amount: number, seed: number): THREE.Buf
   return g;
 }
 
-function makePineGeometry(far = false): THREE.BufferGeometry {
+export function makePineGeometry(far = false): THREE.BufferGeometry {
   // 잣나무·낙엽송 조림지 같은 원뿔형 침엽수: 줄기 + 세 층. far: 먼 나무용 (면을 줄이고 밑면 없이)
   const trunk = new THREE.CylinderGeometry(0.16, 0.3, 4, far ? 3 : 5, 1, far);
   trunk.translate(0, 2, 0);

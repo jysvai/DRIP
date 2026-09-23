@@ -164,7 +164,7 @@ async function main() {
   sound.enabled = settings.sound;
   sound.start();
 
-  const ld2 = loading(settings.city ? `${settings.route.from} → ${settings.route.to} 시내 길을 찾는 중…` : `${settings.route.from} → ${settings.route.to} 경로의 도로 데이터를 불러오는 중…`);
+  const ld2 = loading(settings.city ? `${settings.route.from} → ${settings.route.to} ${settings.city.region === "seoul" ? "시내" : "국도"} 길을 찾는 중…` : `${settings.route.from} → ${settings.route.to} 경로의 도로 데이터를 불러오는 중…`);
   const [setup] = await Promise.all([buildDrive(settings, net, cfg), loadSignFonts()]);
   ld2.set("도로와 주변 지형을 만드는 중…");
   await new Promise((r) => setTimeout(r, 30));

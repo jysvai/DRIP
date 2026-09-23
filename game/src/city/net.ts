@@ -482,13 +482,11 @@ export class CityNet {
       const u = (L * k) / Math.max(1, n - 1);
       const sp = l.spans.find((x) => u <= x.u1 + 1e-6) ?? l.spans[l.spans.length - 1];
       off[k] = sp.twoWay ? twoWayOffset(sp.lanes) : 0;
-      // 높이: 토막 양 끝 교차점 높이 사이를 곧게
+      // 높이: 토막의 높이 굴곡 (없으면 양 끝 교차점 높이 사이를 곧게)
       const e = g.edges[sp.edge];
       const d = l.edges.find((x) => x.edge === sp.edge)!;
-      const za = g.nodes[d.fwd ? e.a : e.b].z;
-      const zb = g.nodes[d.fwd ? e.b : e.a].z;
-      const t = sp.u1 > sp.u0 ? (u - sp.u0) / (sp.u1 - sp.u0) : 0;
-      z[k] = za + (zb - za) * Math.max(0, Math.min(1, t));
+      const t = Math.max(0, Math.min(1, sp.u1 > sp.u0 ? (u - sp.u0) / (sp.u1 - sp.u0) : 0));
+      z[k] = g.edgeZ(e, (d.fwd ? t : 1 - t) * e.length);
     }
     const w = Math.round(12 / GEOM_STEP);
     const smooth = (src: Float64Array, win: number) => {

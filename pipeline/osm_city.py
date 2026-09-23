@@ -1,4 +1,6 @@
-"""시내 도로망: 서울의 간선도로(도시고속도로·대로·로)를 교차로에서 끊은 그래프로 만든다. 게임이 두 곳 사이 길을 찾아 달린다.
+"""시내·국도 도로망: 지역의 간선도로를 교차로에서 끊은 그래프로 만든다. 게임이 두 곳 사이 길을 찾아 달린다.
+  seoul          서울 시내 (도시고속도로·대로·로)
+  gyeonggi_east  경기 동부 국도 (강동구·하남·남양주·양평·구리의 국도·지방도·시군도, 고속도로 빼고). 지형 격자·물·도로 높이 굴곡을 함께 넣는다
 
 입력: OpenStreetMap (Overpass API)
       - 도로: highway=motorway·trunk·primary·secondary·tertiary와 그 연결로(_link)
@@ -7,8 +9,9 @@
       지형 고도: AWS Terrain Tiles (osm_roads.py와 같은 것)
 출력: game/public/city/<region>.json
 
-  python pipeline/osm_city.py              서울 (받은 OSM은 data/raw/osm/city_seoul.json에 두고 다시 쓴다)
-  python pipeline/osm_city.py --refresh    OSM을 새로 받는다
+  python pipeline/osm_city.py                          서울 (받은 OSM은 data/raw/osm/city_seoul.json에 두고 다시 쓴다)
+  python pipeline/osm_city.py --region gyeonggi_east   경기 동부 국도
+  python pipeline/osm_city.py --refresh                OSM을 새로 받는다
 
 그래프
   node: 교차로(도로 두 개 이상이 만나는 점)나 막다른 끝. [x, y, z(m), 신호(0/1), 이어진 도로 수]
@@ -21,6 +24,8 @@
 마주 보는 짝(sep): 중앙분리대로 나뉜 왕복 도로는 OSM에 한 방향 도로 두 줄로 그려진다. 같은 이름·반대 방향 한 방향 도로가 50m 안에 나란히 있으면
       두 중심선 사이 거리(m)를 sep에 넣는다. 0은 한 줄로 그린 왕복 도로(가운데 중앙선), -1은 짝이 없는 일방통행.
 차로 수: 한 방향 도로에 왕복 차로 수를 적은 경우가 있어 등급별 상한으로 자른다.
+국도 지역(dem): 도로 토막 높이는 40m마다 지형을 따라가고(등급별 기울기 상한, 다리·터널은 양 끝 사이를 곧게), 지역 전체에 지형 격자(dem m 간격, 0.1m 정수를
+      행마다 앞 값과의 차로)와 물(강·호수) 덮임(0~8)을 같은 격자로 넣는다. 게임이 산·들·강을 그린다.
 좌표는 UTM-K(EPSG:5179) 미터. 도로 데이터 © OpenStreetMap contributors (ODbL).
 """
 
@@ -35,6 +40,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 from pyproj import Transformer
 
 from osm_roads import OVERPASS_URLS, USER_AGENT, Terrain, parse_lanes, parse_speed
@@ -43,14 +49,32 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "osm"
 OUT_DIR = ROOT / "game" / "public" / "city"
 
+def _areas(names: tuple[str, ...], level: int = 6) -> str:
+    return "(" + "".join(f'area["name"="{n}"]["admin_level"="{level}"];' for n in names) + ")"
+
+
+# kind: city(시내) · rural(국도). signals: all(대로·로끼리 만나면 신호로 봄) · primary(대로끼리만) · osm(OSM 신호등만)
+# speeds: 제한속도가 없는 도로의 기본값 (city: 등급별 CLASS_INFO, rural: 편도 차로 수로). dem: 지형 격자 간격(m, 0이면 없음)
 REGIONS = {
-    "seoul": {"name": "서울", "area": '["name"="서울특별시"]["admin_level"="4"]'},
+    "seoul": {"name": "서울", "area": 'area["name"="서울특별시"]["admin_level"="4"]', "kind": "city", "classes": "motorway|trunk|primary|secondary|tertiary", "signals": "all", "speeds": "city", "dem": 0},
+    "gyeonggi_east": {
+        "name": "경기 동부",
+        "area": _areas(("강동구", "하남시", "남양주시", "양평군", "구리시")),
+        "kind": "rural",
+        # 고속도로는 고속도로 주행으로 달리므로 뺀다
+        "classes": "trunk|primary|secondary|tertiary",
+        "signals": "primary",
+        # 도시부 밖 일반도로 (도로교통법 시행규칙 제19조: 편도 2차로 이상 80, 그 밖 60)
+        "speeds": "rural",
+        # 통째로 도시부로 보는 구 (서울: 안전속도 5030). 나머지는 OSM 시가지 땅으로 가린다
+        "cities": ("강동구",),
+        "dem": 75,
+    },
 }
 
-CLASSES = "motorway|trunk|primary|secondary|tertiary"
 QUERY = """
 [out:json][timeout:900];
-area{area}->.a;
+{area}->.a;
 way["highway"~"^({classes})(_link)?$"](area.a);
 out body geom;
 node["highway"~"^(traffic_signals|crossing)$"](area.a);
@@ -58,11 +82,37 @@ out body;
 (
   nwr["railway"="station"](area.a);
   nwr["amenity"~"^(university|hospital|townhall|library)$"]["name"](area.a);
-  nwr["tourism"~"^(attraction|museum)$"]["name"](area.a);
+  nwr["tourism"~"^(attraction|museum|viewpoint)$"]["name"](area.a);
   nwr["leisure"="park"]["name"](area.a);
   nwr["building"]["name"~"(타워|빌딩|센터|플라자|스퀘어|몰|호텔|병원|청사)"](area.a);
 );
 out center tags;
+"""
+# 물은 따로 받는다 (한강 같은 큰 면이 무거워서 지역 경계 대신 도로 범위 사각형과 겹치는 것만. 고리가 끊기지 않게 모양은 자르지 않는다)
+WATER_QUERY = """
+[out:json][timeout:900];
+(
+  way["natural"="water"]({bbox});
+  relation["natural"="water"]({bbox});
+  way["waterway"="riverbank"]({bbox});
+  relation["waterway"="riverbank"]({bbox});
+);
+out geom;
+"""
+# 시가지: 주거·상업·공업 용도 땅. 제한속도가 적히지 않은 도로의 기본값(도로교통법 시행규칙 제19조)과 읍내 풍경에 쓴다
+URBAN = ("residential", "commercial", "industrial", "retail")
+URBAN_QUERY = """
+[out:json][timeout:900];
+(
+  way["landuse"~"^(residential|commercial|industrial|retail)$"]({bbox});
+  relation["landuse"~"^(residential|commercial|industrial|retail)$"]({bbox});
+);
+out geom;
+"""
+CITY_AREA_QUERY = """
+[out:json][timeout:300];
+relation["boundary"="administrative"]["admin_level"="6"]["name"~"^({names})$"]({bbox});
+out geom;
 """
 
 # 등급: 코드, 한 방향 기본 차로 수, 기본 제한속도(km/h)
@@ -81,17 +131,24 @@ MAX_LANES = {"motorway": 6, "trunk": 5, "primary": 5, "secondary": 4, "tertiary"
 # 마주 보는 짝을 찾는 거리 (m)
 PAIR_RADIUS = 50.0
 # OSM에서 찾을 수 없는 곳 (이름, 종류, 경도, 위도): 주소 검색(Nominatim)으로 확인한 좌표
-EXTRA_PLACES = [
-    ("삼원타워", "건물", 127.0317054, 37.4987814),  # 서울 강남구 테헤란로 124
-]
+EXTRA_PLACES = {
+    "seoul": [
+        ("삼원타워", "건물", 127.0317054, 37.4987814),  # 서울 강남구 테헤란로 124
+    ],
+}
+# 도로 토막 높이 굴곡: 20m마다 지형을 재서 ±80m로 고르고 기울기를 자른 뒤 40m마다 남긴다
+PROFILE_STEP = 40.0
+# 등급별 기울기 상한 (도로의 구조·시설 기준에 관한 규칙의 최대 종단경사 언저리: 국도 6~8%, 지방도 8~10%, 산지 시군도는 더 가파르다)
+MAX_GRADE = {"t": 0.08, "p": 0.08, "s": 0.1, "r": 0.13}
 
 
-def download(region: str, refresh: bool) -> dict:
-    path = RAW / f"city_{region}.json"
+def download(region: str, refresh: bool, query: str | None = None, suffix: str = "") -> dict:
+    path = RAW / f"city_{region}{suffix}.json"
     if path.exists() and not refresh:
         return json.loads(path.read_text(encoding="utf-8"))
     path.parent.mkdir(parents=True, exist_ok=True)
-    q = QUERY.format(area=REGIONS[region]["area"], classes=CLASSES)
+    r = REGIONS[region]
+    q = query or QUERY.replace("{area}", r["area"]).replace("{classes}", r["classes"])
     body = urllib.parse.urlencode({"data": q}).encode()
     err = None
     for url in OVERPASS_URLS:
@@ -140,6 +197,58 @@ def way_class(tags: dict) -> tuple[str, bool]:
     return hw[:-5] if link else hw, link
 
 
+def rings(parts: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
+    """끝이 맞닿은 꺾은선들을 이어 닫힌 고리로 (멀티폴리곤 바깥·안 고리는 여러 way로 나뉘어 있다)."""
+    todo = [list(p) for p in parts if len(p) >= 2]
+    out = []
+    while todo:
+        ring = todo.pop()
+        changed = True
+        while ring[0] != ring[-1] and changed:
+            changed = False
+            for i, p in enumerate(todo):
+                if p[0] == ring[-1]:
+                    ring += p[1:]
+                elif p[-1] == ring[-1]:
+                    ring += p[::-1][1:]
+                elif p[-1] == ring[0]:
+                    ring = p[:-1] + ring
+                elif p[0] == ring[0]:
+                    ring = p[::-1][:-1] + ring
+                else:
+                    continue
+                todo.pop(i)
+                changed = True
+                break
+        if len(ring) >= 4:
+            out.append(ring)
+    return out
+
+
+def is_water(t: dict) -> bool:
+    return t.get("natural") == "water" or t.get("waterway") == "riverbank"
+
+
+def is_urban(t: dict) -> bool:
+    return t.get("landuse") in URBAN
+
+
+def area_polygons(osm: dict, keep) -> list[tuple[list, list]]:
+    """면(물·시가지 등): (바깥 고리들, 안 고리들) 경위도."""
+    out = []
+    for e in osm["elements"]:
+        t = e.get("tags", {})
+        if not keep(t):
+            continue
+        if e["type"] == "way" and "geometry" in e:
+            out.append(([[(p["lon"], p["lat"]) for p in e["geometry"] if p]], []))
+        elif e["type"] == "relation":
+            outer = [[(p["lon"], p["lat"]) for p in m["geometry"] if p] for m in e.get("members", []) if m.get("type") == "way" and m.get("role") != "inner" and m.get("geometry")]
+            inner = [[(p["lon"], p["lat"]) for p in m["geometry"] if p] for m in e.get("members", []) if m.get("type") == "way" and m.get("role") == "inner" and m.get("geometry")]
+            out.append((rings(outer), rings(inner)))
+    return out
+
+
 def lanes_per_direction(tags: dict, cls: str, oneway: bool) -> int:
     default = CLASS_INFO[cls][1]
     fwd = parse_lanes(tags.get("lanes:forward"))
@@ -153,12 +262,14 @@ def lanes_per_direction(tags: dict, cls: str, oneway: bool) -> int:
 
 def build(region: str, refresh: bool):
     osm = download(region, refresh)
+    R = REGIONS[region]
     to_utm = Transformer.from_crs("EPSG:4326", "EPSG:5179", always_xy=True)
+    to_ll = Transformer.from_crs("EPSG:5179", "EPSG:4326", always_xy=True)
     ways = []
     signals = []
     named_signals = []
     crossings = []
-    places = list(EXTRA_PLACES)
+    places = list(EXTRA_PLACES.get(region, []))
     for e in osm["elements"]:
         t = e.get("tags", {})
         if e["type"] == "way" and "geometry" in e and t.get("highway", "").split("_link")[0] in CLASS_INFO and "nodes" in e:
@@ -191,6 +302,22 @@ def build(region: str, refresh: bool):
         ends.add(w["nodes"][-1])
     split = {nid for nid, c in use.items() if c >= 2} | ends
 
+    # 읍내: 250m 칸 3x3에 이름 있는 건물·역(역은 2)이 4 넘게 (게임 그림의 CityScene.town과 같은 셈).
+    # 제한속도가 적히지 않은 읍내 도로는 주거·상업지역 일반도로로 본다 (도로교통법 시행규칙 제19조: 50km/h)
+    dens: dict[tuple[int, int], int] = defaultdict(int)
+    if R["speeds"] == "rural":
+        by_place = defaultdict(list)
+        for name, kind, lon, lat in places:
+            if kind in ("건물", "역"):
+                by_place[(name, kind)].append((lon, lat))
+        for (name, kind), pts_ll in by_place.items():
+            px, py = to_utm.transform(float(np.mean([p[0] for p in pts_ll])), float(np.mean([p[1] for p in pts_ll])))
+            dens[(int(px // 250), int(py // 250))] += 2 if kind == "역" else 1
+
+    def in_town(x: float, y: float) -> bool:
+        cx, cy = int(x // 250), int(y // 250)
+        return sum(dens.get((cx + dx, cy + dy), 0) for dx in (-1, 0, 1) for dy in (-1, 0, 1)) >= 4
+
     node_index: dict[int, int] = {}
     node_xy: list[tuple[float, float]] = []
     node_ll: list[tuple[float, float]] = []
@@ -219,9 +346,11 @@ def build(region: str, refresh: bool):
             nodes = nodes[::-1]
             geom = geom[::-1]
         lanes = lanes_per_direction(t, cls, oneway)
-        speed = parse_speed(t.get("maxspeed")) or CLASS_INFO[cls][2]
+        tagged = parse_speed(t.get("maxspeed"))
+        speed = tagged or ((80 if lanes >= 2 else 60) if R["speeds"] == "rural" else CLASS_INFO[cls][2])
         if link:
             speed = min(speed, 50 if cls in ("motorway", "trunk") else 40)
+        town_speed = min(speed, 50) if not tagged and R["speeds"] == "rural" and cls != "trunk" else speed
         start = 0
         for k in range(1, len(nodes)):
             if nodes[k] in split or k == len(nodes) - 1:
@@ -241,6 +370,7 @@ def build(region: str, refresh: bool):
                             "cls": CLASS_INFO[cls][0] + ("l" if link else ""),
                             "lanes": lanes,
                             "speed": speed,
+                            "town_speed": town_speed,
                             "oneway": oneway,
                             "name": t.get("name", ""),
                             "ref": t.get("ref", ""),
@@ -269,8 +399,9 @@ def build(region: str, refresh: bool):
                         if (px - x) ** 2 + (py - y) ** 2 < SIGNAL_RADIUS**2:
                             sig[i] = True
     arterial = defaultdict(set)
+    infer = {"all": ("p", "s"), "primary": ("p",), "osm": ()}[R["signals"]]
     for ed in edges:
-        if ed["cls"] in ("p", "s") and ed["name"]:
+        if ed["cls"] in infer and ed["name"]:
             arterial[ed["a"]].add(ed["name"])
             arterial[ed["b"]].add(ed["name"])
     for i, names in arterial.items():
@@ -352,6 +483,128 @@ def build(region: str, refresh: bool):
     def q(v: float) -> int:
         return int(round(v * 10))
 
+    # 국도: 도로 토막 높이가 지형을 따라간다 (다리·터널은 양 끝 사이를 곧게)
+    profiles: dict[int, list[int]] = {}
+    if R["dem"]:
+        todo = []
+        for k, ed in enumerate(edges):
+            if ed["bridge"] or ed["tunnel"] or ed["len"] < 2 * PROFILE_STEP:
+                continue
+            pts = ed["pts"]
+            seg = np.diff(pts, axis=0)
+            L = np.hypot(seg[:, 0], seg[:, 1])
+            cum = np.concatenate([[0.0], np.cumsum(L)])
+            u = np.linspace(0.0, cum[-1], max(3, int(cum[-1] // 20) + 1))
+            px = np.interp(u, cum, pts[:, 0])
+            py = np.interp(u, cum, pts[:, 1])
+            todo.append((k, u, px, py))
+        if todo:
+            allx = np.concatenate([t[2] for t in todo])
+            ally = np.concatenate([t[3] for t in todo])
+            lon, lat = to_ll.transform(allx, ally)
+            zall = terrain.sample(np.asarray(lat), np.asarray(lon))
+            at = 0
+            for k, u, px, _ in todo:
+                zr = zall[at : at + len(u)]
+                at += len(u)
+                win = 4
+                pad = np.pad(zr, win, mode="edge")
+                zs = np.convolve(pad, np.ones(2 * win + 1) / (2 * win + 1), mode="valid")
+                ed = edges[k]
+                t = u / u[-1]
+                zs = zs + (z[ed["a"]] - zs[0]) * (1 - t) + (z[ed["b"]] - zs[-1]) * t
+                # 기울기 상한 (30m 지형은 비탈을 깎아 낸 도로에서 옆 산비탈이 섞인다): 앞·뒤로 자른 것의 평균, 양 끝은 다시 교차로 높이로
+                g = MAX_GRADE.get(ed["cls"][0], 0.1) if not ed["cls"].endswith("l") else 0.08
+                du = np.diff(u)
+                zf = zs.copy()
+                for i in range(1, len(zf)):
+                    zf[i] = min(max(zf[i], zf[i - 1] - g * du[i - 1]), zf[i - 1] + g * du[i - 1])
+                zb = zs.copy()
+                for i in range(len(zb) - 2, -1, -1):
+                    zb[i] = min(max(zb[i], zb[i + 1] - g * du[i]), zb[i + 1] + g * du[i])
+                zs = (zf + zb) / 2
+                zs = zs + (z[ed["a"]] - zs[0]) * (1 - t) + (z[ed["b"]] - zs[-1]) * t
+                n = max(2, int(round(u[-1] / PROFILE_STEP)) + 1)
+                profiles[k] = [q(v) for v in np.interp(np.linspace(0.0, u[-1], n), u, zs)]
+
+    # 국도: 지형 격자와 물 덮임
+    dem = None
+    if R["dem"]:
+        step = float(R["dem"])
+        lo = np.floor((xy.min(axis=0) - 1500) / step) * step
+        hi = np.ceil((xy.max(axis=0) + 1500) / step) * step
+        nx = int((hi[0] - lo[0]) / step) + 1
+        ny = int((hi[1] - lo[1]) / step) + 1
+        gx, gy = np.meshgrid(lo[0] + np.arange(nx) * step, lo[1] + np.arange(ny) * step)
+        glon, glat = to_ll.transform(gx.ravel(), gy.ravel())
+        gz = terrain.sample(np.asarray(glat), np.asarray(glon)).reshape(ny, nx)
+        zq = np.round(gz * 10).astype(np.int64)
+        rows = []
+        for j in range(ny):
+            r = zq[j]
+            rows.append([int(r[0])] + [int(v) for v in np.diff(r)])
+        # 물·시가지: 한 칸을 3×3으로 잘게 칠한 뒤 덮인 비율
+        fine = step / 3
+
+        def pix(ring):
+            xs_, ys_ = to_utm.transform([p[0] for p in ring], [p[1] for p in ring])
+            return [((x - lo[0]) / fine + 1, (y - lo[1]) / fine + 1) for x, y in zip(xs_, ys_)]
+
+        # 물: 격자 범위(경위도)로 잘라 받는다
+        blon, blat = to_ll.transform([lo[0], hi[0]], [lo[1], hi[1]])
+        bbox = f"{min(blat):.5f},{min(blon):.5f},{max(blat):.5f},{max(blon):.5f}"
+
+        def coverage(polys) -> np.ndarray:
+            """칸마다 면이 덮은 비율 (0~8)"""
+            img = Image.new("L", (nx * 3, ny * 3), 0)
+            draw = ImageDraw.Draw(img)
+            for outer, inner in polys:
+                for ring in outer:
+                    draw.polygon(pix(ring), fill=255)
+                for ring in inner:
+                    draw.polygon(pix(ring), fill=0)
+            m = (np.asarray(img, dtype=np.float64) / 255.0).reshape(ny, 3, nx, 3).mean(axis=(1, 3))
+            return np.round(m * 8).astype(int)
+
+        def runs_of(cover: np.ndarray) -> list[list[int]]:
+            """줄마다 (값, 개수) 반복"""
+            out_rows = []
+            for j in range(ny):
+                r = cover[j]
+                runs = []
+                i = 0
+                while i < nx:
+                    k2 = i
+                    while k2 < nx and r[k2] == r[i]:
+                        k2 += 1
+                    runs += [int(r[i]), k2 - i]
+                    i = k2
+                out_rows.append(runs)
+            return out_rows
+
+        polys = area_polygons(download(region, refresh, WATER_QUERY.replace("{bbox}", bbox), "_water"), is_water)
+        cover = coverage(polys)
+        upolys = area_polygons(download(region, refresh, URBAN_QUERY.replace("{bbox}", bbox), "_urban"), is_urban)
+        if R.get("cities"):
+            q_city = CITY_AREA_QUERY.replace("{names}", "|".join(R["cities"])).replace("{bbox}", bbox)
+            upolys += area_polygons(download(region, refresh, q_city, "_cities"), lambda t: t.get("boundary") == "administrative")
+        ucover = coverage(upolys)
+        # 제한속도가 적히지 않은 도로: 시가지(또는 이름 있는 건물이 모인 읍내)면 50km/h
+        slowed = 0.0
+        for ed in edges:
+            if ed["town_speed"] == ed["speed"]:
+                continue
+            mx, my = ed["pts"][len(ed["pts"]) // 2]
+            ci = int(round((mx - lo[0]) / step))
+            cj = int(round((my - lo[1]) / step))
+            # 넓은 길은 시가지 땅 사이로 지나서 바로 옆 칸까지 본다
+            near = ucover[max(0, cj - 1) : cj + 2, max(0, ci - 1) : ci + 2]
+            if (near.size and (ucover[min(cj, ny - 1), min(ci, nx - 1)] >= 4 or near.mean() >= 3)) or in_town(mx, my):
+                ed["speed"] = ed["town_speed"]
+                slowed += ed["len"]
+        dem = {"x0": float(lo[0] - origin[0]), "y0": float(lo[1] - origin[1]), "step": step, "nx": nx, "ny": ny, "z": rows, "water": runs_of(cover), "urban": runs_of(ucover)}
+        print(f"지형 격자 {nx}×{ny} ({step:.0f}m), 물 면 {len(polys)}개, 물 칸 {int((cover >= 4).sum())}, 시가지 면 {len(upolys)}개, 시가지 칸 {int((ucover >= 4).sum())}, 50km/h로 둔 도로 {slowed / 1000:.0f}km")
+
     out_nodes = [[q(x - origin[0]), q(y - origin[1]), round(float(z[i]), 1), int(sig[i]), deg[i]] for i, (x, y) in enumerate(node_xy)]
     out_edges = []
     for ed in edges:
@@ -359,7 +612,10 @@ def build(region: str, refresh: bool):
         flat = []
         for x, y in pts[1:-1]:
             flat += [q(x), q(y)]
-        out_edges.append([ed["a"], ed["b"], flat, round(ed["len"], 1), ed["cls"], ed["lanes"], ed["speed"], int(ed["oneway"]), ed["name"], ed["ref"], int(ed["bridge"]), int(ed["tunnel"]), ed["sep"]])
+        row = [ed["a"], ed["b"], flat, round(ed["len"], 1), ed["cls"], ed["lanes"], ed["speed"], int(ed["oneway"]), ed["name"], ed["ref"], int(ed["bridge"]), int(ed["tunnel"]), ed["sep"]]
+        if R["dem"]:
+            row.append(profiles.get(len(out_edges), 0))
+        out_edges.append(row)
 
     # 찾을 곳: 이름이 같으면 하나만 (역은 출입구·승강장이 여러 점이라 가운데로)
     by_name = defaultdict(list)
@@ -374,19 +630,22 @@ def build(region: str, refresh: bool):
 
     out = {
         "region": region,
-        "name": REGIONS[region]["name"],
+        "name": R["name"],
+        "kind": R["kind"],
         "source": "OpenStreetMap contributors (ODbL), Overpass API",
         "osmTimestamp": osm.get("osm3s", {}).get("timestamp_osm_base", ""),
         "origin": [float(origin[0]), float(origin[1])],
         "scale": 0.1,
         "nodeFields": ["x", "y", "z", "signal", "degree"],
-        "edgeFields": ["a", "b", "pts", "length", "cls", "lanes", "speed", "oneway", "name", "ref", "bridge", "tunnel", "sep"],
+        "edgeFields": ["a", "b", "pts", "length", "cls", "lanes", "speed", "oneway", "name", "ref", "bridge", "tunnel", "sep"] + (["zs"] if R["dem"] else []),
         "classes": {"m": "도시고속도로", "t": "자동차전용·간선", "p": "대로", "s": "로", "r": "길", "ml": "연결로", "tl": "연결로", "pl": "연결로", "sl": "연결로", "rl": "연결로"},
         "nodes": out_nodes,
         "nodeNames": [[i, name] for i, name in sorted(node_names.items())],
         "edges": out_edges,
         "places": out_places,
     }
+    if dem:
+        out["dem"] = dem
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{region}.json"
     path.write_bytes(json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))

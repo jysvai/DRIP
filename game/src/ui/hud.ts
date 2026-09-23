@@ -767,8 +767,14 @@ export class Hud {
       // 차로 안내: 분기점 2km 앞부터 꺾는 쪽 두 차로 (왼쪽은 1차로(앞지르기 차로)를 빼고)
       const lanes = road.lanesAt(s);
       const bus = this.busZones.filter((z) => s >= z.s0 && s <= z.s1).map((z) => z.lane);
-      const guide = near && dist < (m.cityLanes ? 500 : 2000) && m.lanes !== "all" ? m.lanes : "";
-      const cl = m.cityLanes;
+      let guide: string = near && dist < (m.cityLanes ? 500 : 2000) && m.lanes !== "all" ? m.lanes : "";
+      let cl = m.cityLanes;
+      // 시내·국도: 도는 곳보다 먼저 경로가 일부 차로로만 이어지는 곳 (갈림길, 오른쪽 차로가 우회전 전용이 되는 곳)은 곧게 가는 차로를 켠다
+      const keep = road.city?.keep?.find((x) => x[0] > s);
+      if (keep && keep[0] - s < 500 && (!guide || keep[0] < m.s - 1)) {
+        guide = "straight";
+        cl = [keep[1], keep[2]];
+      }
       // 공사로 막힌 차로 (1.5km 앞부터)
       const work = (this.opts.workZones ?? []).find((z) => s > z.s0 - 1500 && s < z.s1);
       // 선 차가 막은 차로 (1km 앞부터)
@@ -781,7 +787,7 @@ export class Hud {
         for (let l = 1; l <= lanes; l++) {
           const rec = !guide ? false : cl ? l >= cl[0] && l <= cl[1] : guide === "right" ? l > lanes - 2 : l >= Math.min(2, lanes) && l <= Math.min(3, lanes);
           const closed = shut.includes(l);
-          const icon = closed ? LANE_ARROW.closed : rec ? LANE_ARROW[guide as "left" | "right"] : LANE_ARROW.up;
+          const icon = closed ? LANE_ARROW.closed : rec && guide !== "straight" ? LANE_ARROW[guide as "left" | "right"] : LANE_ARROW.up;
           html += `<i class="${l === f.lane ? "me" : ""}${rec && !closed ? " rec" : ""}${bus.includes(l) ? " bus" : ""}${closed ? " closed" : ""}">${icon}</i>`;
         }
         this.navLanes.innerHTML = html;

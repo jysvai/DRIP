@@ -47,6 +47,8 @@ import { showControls } from "./ui/help";
 
 const PHYS_DT = 1 / 120;
 const SERIOUS_KMH = 15;
+/** 국도 교통량: 시내 대비 (메뉴 교통 설정·시간대는 같이 따른다) */
+const RURAL_TRAFFIC = 0.5;
 
 /** 한 번의 주행에 필요한 도로·경로 정보 */
 export interface DriveSetup {
@@ -89,6 +91,8 @@ export class Game {
   readonly city: { net: CityNet; signals: Signals } | null;
   /** 시내: 경로의 교차로 (정지선 순) */
   private stops: CityStop[] = [];
+  /** 시내: 경로가 모든 차로로 이어지지 않는 교차로·갈림길 (s: 교차로 곡선 시작, lanes: 경로로 가는 차로) */
+  private laneTargets: { s: number; lanes: [number, number] }[] = [];
   /** 시내: 경로를 벗어나는 차와 교차로를 건너는 차 */
   readonly cityTraffic: CityTraffic | null = null;
   private tmpW = { e: 0, n: 0, z: 0, heading: 0 };
@@ -215,11 +219,12 @@ export class Game {
     const city = setup.city ?? null;
     this.city = city;
     this.stops = road.city?.stops ?? [];
+    this.laneTargets = (road.city?.keep ?? []).map(([s, lo, hi]) => ({ s, lanes: [lo, hi] as [number, number] }));
     this.busZones = city ? [] : routeBusZones(road, setup.sources ?? new Map(), cfg.rules, settings.weekend, settings.hour);
     if (city) {
-      // 시내는 건물이 가려 멀리 볼 일이 적어서 900m까지만 만든다
+      // 시내는 건물이 가려 멀리 볼 일이 적어서 900m까지만 만든다. 국도는 먼 산까지 보인다
       this.chunks = new CityScene(city.net, city.signals, this.world, () => this.signalClock);
-      this.world.setViewCap(900);
+      this.world.setViewCap(this.rural ? 2600 : 900);
     } else {
       const chunks = new RoadChunks(road, this.world);
       chunks.overrides = this.busZones.map<LaneOverride>((z) => ({ s0: z.s0, s1: z.s1, boundary: z.lane, color: 0x2463d8 }));
@@ -245,8 +250,10 @@ export class Game {
       return road.structureAt(s) === Structure.Tunnel ? 1 : gripAt(weather, kmh, heavyGrip);
     };
     const lanes = road.lanesAt(s0);
-    // 화물·대형승합은 지정차로(오른쪽)에서 출발
-    const startLane = city || this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
+    // 화물·대형승합은 지정차로(오른쪽)에서 출발. 시내는 맨 오른쪽에서 나서되, 바로 앞에서 돌아야 하면 100m에 한 차로씩 옮길 수 있는 만큼 그쪽 차로에서
+    const first = city ? this.laneTargets.find((x) => x.s > s0) : undefined;
+    const cityLane = first ? Math.max(1, Math.min(lanes, first.lanes[1] + Math.floor((first.s - s0) / 100))) : lanes;
+    const startLane = city ? cityLane : this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
     const startKmh = city ? 0 : Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
@@ -411,13 +418,19 @@ export class Game {
     return trafficFor({ road: { id: src.road }, startKm: src.s / 1000, preset: this.settings.preset, hour: this.settings.hour }, this.cfg);
   }
 
-  /** 시내 교통량: 메뉴의 교통 설정 (자동·실제는 시간대 배율), 차종은 시내 구성 */
+  /** 국도 주행 (경기 동부 같은 국도 지역) */
+  private get rural(): boolean {
+    return this.city?.net.graph.kind === "rural";
+  }
+
+  /** 시내·국도 교통량: 메뉴의 교통 설정 (자동·실제는 시간대 배율), 차종은 시내 구성. 국도는 시내의 절반쯤 */
   private cityTrafficLevel() {
     const t = this.cfg.traffic;
     const auto = this.settings.preset === "자동" || this.settings.preset === "실제";
     const base = t.presets[auto ? "보통" : this.settings.preset]?.vehPerKmPerLane ?? 15;
-    const density = base * (auto ? t.hourlyFactor[this.settings.hour] : 1);
-    return { density, composition: CITY_COMPOSITION, source: auto ? "시내·시간대" : "시내", flowKmh: undefined as number | undefined };
+    const density = base * (auto ? t.hourlyFactor[this.settings.hour] : 1) * (this.rural ? RURAL_TRAFFIC : 1);
+    const kind = this.rural ? "국도" : "시내";
+    return { density, composition: CITY_COMPOSITION, source: auto ? `${kind}·시간대` : kind, flowKmh: undefined as number | undefined };
   }
 
   /** 시내: 플레이어 차의 자리·방향 (도로망 좌표) */
@@ -488,7 +501,7 @@ export class Game {
     const body = this.city
       ? `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로 길가에 서 있습니다. 목적지까지 <b>${remain.toFixed(1)}km</b>, 신호 교차로 ${signals}곳을 지나고 ${turns}번 돕니다.` +
         (notes.length ? `<br>${notes.join(" ")}` : "") +
-        "<br><span class='muted'>시내 주행입니다. 신호를 지키고, 좌회전·우회전은 미리 그쪽 차로로 옮겨 방향지시등을 켜세요. 우회전은 적색 신호여도 정지선에서 멈췄다가 천천히 돌 수 있습니다. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>"
+        `<br><span class='muted'>${this.rural ? "국도 주행입니다. 제한속도가 구간마다 다르고(60~80km/h, 읍내는 더 낮게) 굽은 길·오르내리막이 많습니다. 읍내 교차로는 신호를 지키고," : "시내 주행입니다. 신호를 지키고,"} 좌회전·우회전은 미리 그쪽 차로로 옮겨 방향지시등을 켜세요. 우회전은 적색 신호여도 정지선에서 멈췄다가 천천히 돌 수 있습니다. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>`
       : `<b>${road.sectionNameAt(s)}</b> 편도 ${lanes}차로에서 ${Math.round(this.player.speed * 3.6)}km/h로 출발합니다. 목적지까지 <b>${remain.toFixed(0)}km</b>.` +
         (notes.length ? `<br>${notes.join(" ")}` : "") +
         "<br><span class='muted'>위쪽 안내를 따라 분기점에서 갈아타세요. 주행 중에는 법규 판정을 보여 주지 않고, 끝난 뒤 결과 화면에서 보여 줍니다. 조작법은 F1.</span>";
@@ -1346,15 +1359,15 @@ export class Game {
     const lanes = road.lanesAt(p.s);
     if (!this.autoLane) this.autoLane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
     if (this.autoLane > lanes) this.autoLane = lanes;
-    // 시내: 450m 앞 교차로에서 도는 쪽 차로로, 신호가 빨간불이면(노란불에 설 수 있으면) 정지선 앞에 선다
+    // 시내: 450m 앞 교차로·갈림길에서 경로로 가는 차로로, 신호가 빨간불이면(노란불에 설 수 있으면) 정지선 앞에 선다
     let stopGap = Infinity;
     const st = this.city ? this.stopAhead(p.s) : null;
-    if (st && this.city) {
-      const mv = this.city.net.movements[st.movement];
+    const tgt = this.city ? this.laneTargets.find((x) => x.s > p.s) : undefined;
+    if (this.city) {
       // 한 번에 한 차로씩: 방향지시등을 켜고 30m 넘게 간 뒤 옆 차로가 비었을 때 옮긴다
       const cur = road.laneOf(p.d, p.s);
-      if (st.s > p.s && st.s - p.s < 450 && cur === this.autoLane) {
-        const want = Math.max(mv.fromLanes[0], Math.min(mv.fromLanes[1], cur));
+      if (tgt && tgt.s - p.s < 450 && cur === this.autoLane) {
+        const want = Math.max(tgt.lanes[0], Math.min(tgt.lanes[1], cur));
         const next = cur + Math.sign(want - cur);
         if (next === cur) this.autoLcTo = 0;
         else if (this.autoLcTo !== next) {
@@ -1362,8 +1375,8 @@ export class Game {
           this.autoLcS = p.s;
         } else if (p.s - this.autoLcS > 32 && this.laneClear(next, p.s)) this.autoLane = next;
       } else if (cur === this.autoLane) this.autoLcTo = 0;
-      const gap = st.s - 1 - (p.s + p.spec.length / 2);
-      if (st.signal && gap > -1) {
+      const gap = st ? st.s - 1 - (p.s + p.spec.length / 2) : Infinity;
+      if (st?.signal && gap > -1) {
         const go = this.city.signals.go(st.junction, st.link, st.turn, this.signalClock);
         const canStop = (p.speed * p.speed) / (2 * 3) < gap;
         if (go === "stop" || (go === "yellow" && canStop)) stopGap = Math.max(0.1, gap);
@@ -1373,7 +1386,7 @@ export class Game {
           if (this.autoHoldAt >= 0 && this.t - this.autoHoldAt > 2) stopGap = Infinity;
         }
       }
-      if (gap < -1) this.autoHoldAt = -1;
+      if (gap < -1 || !st) this.autoHoldAt = -1;
       // 앞을 막은 경로 밖 차 (교차로를 건너는 차, 방금 빠져나간 차)
       if (this.cityTraffic) {
         const pb = this.playerBody();
@@ -1382,7 +1395,7 @@ export class Game {
       }
       // 방향지시등: 차로를 옮길 때, 돌기 60m 앞부터
       const to = this.autoLane !== cur ? this.autoLane : this.autoLcTo;
-      const want = to && to !== cur && cur >= 1 && cur <= lanes ? Math.sign(to - cur) : st.turn !== "S" && st.s - p.s < 60 ? (st.turn === "L" ? -1 : 1) : 0;
+      const want = to && to !== cur && cur >= 1 && cur <= lanes ? Math.sign(to - cur) : st && st.turn !== "S" && st.s - p.s < 60 ? (st.turn === "L" ? -1 : 1) : 0;
       if (want && this.signal !== want) this.setSignal(want as -1 | 1);
     }
     const v = Math.max(p.vx, 1);
