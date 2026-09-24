@@ -36,6 +36,7 @@ export type EventType =
   | "skip"
   | "lka_assist"
   | "lka_toggle"
+  | "input_switch"
   | "cut_in"
   | "red_light"
   | "right_on_red"
@@ -83,6 +84,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   skip: "구간 건너뜀 (요약 주행)",
   lka_assist: "차로 유지 보조 작동",
   lka_toggle: "차로 유지 보조 켜기·끄기",
+  input_switch: "조작 장치 바꿈 (키보드·게임패드·휠)",
   cut_in: "옆 차가 앞으로 끼어듦",
   red_light: "신호 위반 (적색 신호에 정지선 통과)",
   right_on_red: "적색 신호 우회전 전 일시정지 안 함",
@@ -666,6 +668,11 @@ export class RuleEngine {
   /** 주행 중 차로 유지 보조를 켜거나 껐다 (기록용) */
   lkaToggle(f: PlayerFrame, on: boolean) {
     this.emit(f, "lka_toggle", { on });
+  }
+
+  /** 주행 중 조작 장치를 바꿨다 (키보드·마우스·패드·휠, 기록용) */
+  inputSwitch(f: PlayerFrame, from: string, to: string) {
+    this.emit(f, "input_switch", { from, to });
   }
 
   /** 차로 유지 보조가 작동했다 (판정이 아니라 기록용) */

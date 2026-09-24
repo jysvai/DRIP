@@ -11,7 +11,8 @@ import { VehiclePreview } from "./vehiclePreview";
 import { controlsHtml, showControls } from "./help";
 import { ICON, WORDMARK } from "./icons";
 import { COLLECTING } from "../log/recorder";
-import type { PedalMode } from "../sim/input";
+import type { PedalMode, SteerSens, WheelCalibration } from "../sim/input";
+import { calibratePedals, connectedPad, padLabel, pedalLabel } from "./padSetup";
 import { digestForLegs, playDistance } from "../sim/pacing";
 import { searchCityPlaces, type CityGraph, type CityPlace } from "../city/graph";
 import type { CityNet } from "../city/net";
@@ -59,6 +60,14 @@ export interface DriveSettings {
   lka?: boolean;
   /** 키보드 가속 페달 (없으면 누른 만큼 유지) */
   pedal?: PedalMode;
+  /** 키보드·패드 조향 감도 (없으면 보통) */
+  steerSens?: SteerSens;
+  /** 키보드 핸들을 놓으면 길 방향·굽이를 따라 잡아 주기 (없으면 켬) */
+  steerHold?: boolean;
+  /** 레이싱 휠이 끝에서 끝까지 도는 각도 (없으면 900°) */
+  wheelRange?: number;
+  /** 휠 페달 맞추기 (없으면 기본 배치) */
+  wheelCal?: WheelCalibration | null;
   /** 시내·국도 주행: 지역(public/city/{region}.json)과 출발지·도착지 이름 (없으면 고속도로) */
   city?: { region: string; from: string; to: string } | null;
   seed: number;
@@ -206,6 +215,10 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
     let pace: Pace = saved.pace ?? "digest";
     let lka = saved.lka ?? true;
     let pedal: PedalMode = saved.pedal ?? "hold";
+    let steerSens: SteerSens = saved.steerSens ?? "normal";
+    let steerHold = saved.steerHold ?? true;
+    let wheelRange = saved.wheelRange ?? 900;
+    let wheelCal: WheelCalibration | null = saved.wheelCal ?? null;
     let consent = saved.consent ?? true;
     let tab: "route" | "car" | "env" = "route";
     // 시내(서울)·국도(경기 동부) 주행: 도로망은 그 모드를 고를 때 불러온다
@@ -859,6 +872,76 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
           "누른 만큼 유지: ↑를 누르는 동안 페달이 깊어지고, 떼면 그 깊이로 계속 밟고 달립니다 (속도·rpm이 그 자리에서 유지). ↓는 먼저 발을 떼고, 더 누르면 브레이크입니다.",
         ),
       );
+      body.appendChild(
+        field(
+          "조향 감도",
+          seg<SteerSens>(
+            [
+              ["slow", "느리게"],
+              ["normal", "보통"],
+              ["fast", "빠르게"],
+            ],
+            steerSens,
+            (v) => (steerSens = v),
+            "조향 감도",
+          ),
+          "키보드·게임패드 핸들이 돌아가는 빠르기와 끝까지 꺾었을 때 얼마나 도는지. 핸들은 톡 치면 살짝, 누르고 있으면 점점 크게 돌고, 느릴 때(교차로)는 빠르게 크게, 고속에서는 천천히 조금씩 돕니다. 레이싱 휠은 돌린 만큼 그대로입니다.",
+        ),
+      );
+      body.appendChild(
+        field(
+          "곡선에서 핸들 유지",
+          seg<string>(
+            [
+              ["on", "켜기"],
+              ["off", "끄기"],
+            ],
+            steerHold ? "on" : "off",
+            (v) => (steerHold = v === "on"),
+            "곡선에서 핸들 유지",
+          ),
+          "키보드: 켜면 ←→를 놓았을 때 차가 길 방향으로 곧게 서고, 굽은 길에서는 그 굽이만큼 핸들을 잡고 있습니다 (차로 안 위치는 직접 맞춥니다). 시내 교차로에서 도는 것은 놓아도 저절로 돌지 않으니 직접 돌리세요. 끄면 놓은 핸들이 가운데로 풀립니다.",
+        ),
+      );
+      const pad = connectedPad();
+      const wheelBox = el("div", "pad-setup");
+      wheelBox.appendChild(
+        seg<number>(
+          [
+            [900, "900°"],
+            [540, "540°"],
+            [360, "360°"],
+          ],
+          wheelRange,
+          (v) => (wheelRange = v),
+          "휠 회전각",
+        ),
+      );
+      const calBtn = el("button", "btn", wheelCal ? "다시 맞추기" : "휠·페달 맞추기");
+      calBtn.onclick = async () => {
+        const r = await calibratePedals();
+        if (r) wheelCal = r;
+        render();
+      };
+      wheelBox.appendChild(calBtn);
+      if (wheelCal) {
+        const clear = el("button", "btn ghost", "맞춘 값 지우기");
+        clear.onclick = () => {
+          wheelCal = null;
+          render();
+        };
+        wheelBox.appendChild(clear);
+      }
+      body.appendChild(
+        field(
+          "레이싱 휠·게임패드",
+          wheelBox,
+          `${pad ? `연결됨: ${esc(padLabel(pad))}. ` : "연결된 장치가 없습니다 (꽂고 버튼을 한 번 누르면 보입니다). "}` +
+            `휠 회전각은 휠 드라이버에 맞춘 각도로, 끝까지 돌리면 앞바퀴도 끝까지 꺾입니다. ` +
+            `페달: ${wheelCal ? `맞춤 (가속 ${pedalLabel(wheelCal.throttle)} · 브레이크 ${pedalLabel(wheelCal.brake)})` : "기본 배치 (패드는 RT·LT). 휠 페달이 안 먹으면 맞추기를 하세요"}. ` +
+            `키보드와 번갈아 써도 됩니다 (움직이는 쪽으로 바뀝니다).`,
+        ),
+      );
       preview.show(vehicle, color);
     }
 
@@ -968,6 +1051,10 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         pace,
         lka,
         pedal,
+        steerSens,
+        steerHold,
+        wheelRange,
+        wheelCal,
         city: cityPick,
         seed: Math.floor(Math.random() * 2 ** 31),
       };
@@ -977,6 +1064,17 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       root.remove();
       resolve(s);
     };
+
+    // 휠·패드를 꽂거나 빼면 차량 탭의 연결 표시를 고친다
+    const onPad = () => {
+      if (tab === "car") render();
+    };
+    window.addEventListener("gamepadconnected", onPad);
+    window.addEventListener("gamepaddisconnected", onPad);
+    startBtn.addEventListener("click", () => {
+      window.removeEventListener("gamepadconnected", onPad);
+      window.removeEventListener("gamepaddisconnected", onPad);
+    });
 
     map.showCity = isCity();
     if (isCity()) setMode(mode);

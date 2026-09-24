@@ -32,7 +32,7 @@ alter table public.drip_sessions add constraint drip_sessions_route_size check (
 -- 날씨 (2026-09): clear·cloudy·rain·heavy_rain·fog. 비·안개는 제한속도 판정(법정 감속)과 노면 마찰이 달라진다.
 alter table public.drip_sessions add column if not exists weather text;
 
--- 주행 방식 (2026-09): {pace: digest|full, windows: [[s0, s1], ...], lka: bool}.
+-- 주행 방식 (2026-09): {pace: digest|full, windows: [[s0, s1], ...], lka: bool, pedal, steerHold: bool, steerSens: slow|normal|fast, device: keyboard|mouse|pad|wheel, wheelRange, wheelCal: bool}.
 -- digest(요약 주행)는 windows 구간만 실제 시간으로 달리고 사이는 건너뛴다. 건너뛴 길에는 1초 기록이 없어 노출 시간에 들어가지 않는다.
 alter table public.drip_sessions add column if not exists drive jsonb;
 alter table public.drip_sessions drop constraint if exists drip_sessions_drive_size;
