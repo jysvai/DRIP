@@ -654,6 +654,9 @@ export class RuleEngine {
     this.lastLane = 0;
     this.accelWindow = [];
     this.signalDist = 0;
+    // 시내: 다가가던 교차로와 중앙선 침범 시간은 새 자리에서 다시 잰다
+    this.approach = null;
+    this.centerSince = -1;
   }
 
   /**

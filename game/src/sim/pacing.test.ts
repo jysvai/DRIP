@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DIGEST, planDigest, playDistance, windowAt } from "./pacing";
+import { DIGEST, DIGEST_CITY, planDigest, playDistance, windowAt } from "./pacing";
 
 const base = { poi: [], seed: 7, transfers: [] };
 
@@ -49,6 +49,27 @@ describe("요약 주행 구간", () => {
     const c = planDigest({ ...base, startS: 0, finishS: 120_000, poi });
     const hits = c.filter((w) => w.why === "sample" && poi.some((p) => p > w.s0 && p < w.s1));
     expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it("시내·국도: 짧은 구간으로 약 12분의 1, 교차로 안이나 정지선 바로 앞에 내려앉거나 거기서 건너뛰지 않는다", () => {
+    // 350m마다 교차로 (정지선 60m 앞부터 빠져나가고 20m 뒤까지)
+    const avoid: [number, number][] = [];
+    for (let s = 200; s < 31_000; s += 350) avoid.push([s - 60, s + 40]);
+    const wins = planDigest({ ...base, startS: 0, finishS: 31_000, profile: DIGEST_CITY, avoid });
+    expect(wins[0].s0).toBe(0);
+    expect(wins[wins.length - 1].s1).toBe(31_000);
+    const d = playDistance(wins);
+    expect(d).toBeGreaterThanOrEqual(DIGEST_CITY.minPlayM);
+    expect(d).toBeLessThan(31_000 / 12 + 2 * DIGEST_CITY.windowM);
+    expect(wins.length).toBeGreaterThanOrEqual(3);
+    const inside = (s: number) => avoid.some(([a, b]) => s > a && s < b);
+    for (let i = 0; i < wins.length; i++) {
+      if (i > 0) expect(inside(wins[i].s0)).toBe(false);
+      if (i < wins.length - 1) expect(inside(wins[i].s1)).toBe(false);
+      if (i > 0) expect(wins[i].s0 - wins[i - 1].s1).toBeGreaterThanOrEqual(DIGEST_CITY.minGapM);
+    }
+    // 2km 안쪽 시내 길은 다 달린다
+    expect(planDigest({ ...base, startS: 0, finishS: 1900, profile: DIGEST_CITY, avoid })).toHaveLength(1);
   });
 
   it("다음 달릴 구간 찾기", () => {

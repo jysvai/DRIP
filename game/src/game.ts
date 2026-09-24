@@ -34,7 +34,7 @@ import type { GameConfig } from "./sim/config";
 import { routeBusZones, sunFor, trafficFor } from "./sim/scenario";
 import { Input, type DeviceKind } from "./sim/input";
 import { LKA, laneKeep, type LkaState } from "./sim/assist";
-import { planDigest, type DriveWindow } from "./sim/pacing";
+import { DIGEST_CITY, planDigest, type DriveWindow } from "./sim/pacing";
 import { PlayerCar, type Controls } from "./sim/player";
 import { specFor, type PlayerSpec } from "./sim/vehicleSpec";
 import type { VehicleType } from "./render/vehicleModels";
@@ -255,9 +255,7 @@ export class Game {
     };
     const lanes = road.lanesAt(s0);
     // 화물·대형승합은 지정차로(오른쪽)에서 출발. 시내는 맨 오른쪽에서 나서되, 바로 앞에서 돌아야 하면 100m에 한 차로씩 옮길 수 있는 만큼 그쪽 차로에서
-    const first = city ? this.laneTargets.find((x) => x.s > s0) : undefined;
-    const cityLane = first ? Math.max(1, Math.min(lanes, first.lanes[1] + Math.floor((first.s - s0) / 100))) : lanes;
-    const startLane = city ? cityLane : this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
+    const startLane = city ? this.cityLane(s0) : this.spec.vehicleClass !== "car" ? lanes : lanes >= 3 ? 2 : lanes;
     const heavySpeed = this.spec.vehicleClass === "truck" && !!type.heavy;
     const startKmh = city ? 0 : Math.min(road.speedAt(s0, heavySpeed) * 0.8 * legalFactor(weather, cfg.rules), 90, this.spec.governor * 3.6 - 5);
     this.player.place(road, s0, startLane, startKmh / 3.6);
@@ -374,15 +372,26 @@ export class Game {
     this.steerHold = settings.steerHold ?? true;
     this.device = this.input.device;
     this.startS = s0;
-    // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다
-    if (!city && (settings.pace ?? "digest") === "digest") {
-      const wins = planDigest({
-        startS: s0,
-        finishS: setup.finishS,
-        transfers: road.isRoute ? road.legs.slice(1).map((l, i) => ({ diverge: road.legs[i].s1, merge: l.s0 })) : [],
-        poi: [...road.junctions.map((j) => j.s), ...this.workZones.map((z) => z.s0), ...this.incidents.map((i) => i.s), ...this.enforcement.sections.map((x) => x.s0)],
-        seed: settings.seed,
-      });
+    // 요약 주행: 출발·분기점·도착과 사이 몇 구간만 달린다. 사이 구간은 나들목·공사·선 차·구간단속 쪽으로 조금 당긴다.
+    // 시내·국도는 짧은 구간으로 신호 교차로 쪽으로 당기고, 교차로 안이나 정지선 60m 안으로는 건너뛰지 않는다
+    if ((settings.pace ?? "digest") === "digest") {
+      const wins = city
+        ? planDigest({
+            startS: s0,
+            finishS: setup.finishS,
+            transfers: [],
+            poi: this.stops.filter((x) => x.signal).map((x) => x.s),
+            seed: settings.seed,
+            profile: DIGEST_CITY,
+            avoid: this.stops.map((x) => [x.s - 60, x.sExit + 20] as [number, number]),
+          })
+        : planDigest({
+            startS: s0,
+            finishS: setup.finishS,
+            transfers: road.isRoute ? road.legs.slice(1).map((l, i) => ({ diverge: road.legs[i].s1, merge: l.s0 })) : [],
+            poi: [...road.junctions.map((j) => j.s), ...this.workZones.map((z) => z.s0), ...this.incidents.map((i) => i.s), ...this.enforcement.sections.map((x) => x.s0)],
+            seed: settings.seed,
+          });
       this.digest = wins.length > 1 ? wins : null;
     }
     this.recorder.start({
@@ -520,6 +529,12 @@ export class Game {
     const cut = Math.round((1 - this.rules.weatherFactor) * 100);
     const weatherNote = this.weatherNote(cut);
     if (weatherNote) notes.push(weatherNote);
+    if (this.digest) {
+      const km = this.digest.reduce((a, w) => a + w.s1 - w.s0, 0) / 1000;
+      const min = this.digest.reduce((a, w) => a + this.driveTime(w.s0, w.s1), 0) / 60;
+      const full = this.driveTime(s, this.setup.finishS) / 60;
+      notes.push(`요약 주행: ${this.digest.length}구간 ${km.toFixed(1)}km만 달리고(약 ${Math.max(1, Math.round(min))}분, 다 달리면 ${Math.round(full)}분) 사이는 건너뜁니다.`);
+    }
     const signals = this.stops.filter((x) => x.signal && x.s > s).length;
     const turns = this.stops.filter((x) => x.turn !== "S" && x.s > s).length;
     const body = this.city
@@ -790,11 +805,19 @@ export class Game {
     this.pendingJump = { to: next.s0, at: this.t + 0.38, sec };
   }
 
-  /** 건너뛴 길을 제한속도(악천후 감속 포함)로 달렸다면 걸렸을 시간 (초) */
+  /** 건너뛴 길을 제한속도(악천후 감속 포함)로 달렸다면 걸렸을 시간 (초). 시내·국도는 신호 교차로마다 평균 20초 기다린다 */
   private driveTime(a: number, b: number): number {
     let sec = 0;
     for (let s = a; s < b; s += 200) sec += Math.min(200, b - s) / (Math.max(30, this.rules.limitAt(s)) / 3.6);
+    if (this.city) sec += 20 * this.stops.filter((x) => x.signal && x.s >= a && x.s < b).length;
     return sec;
+  }
+
+  /** 시내 출발 차로: 맨 오른쪽에서 나서되, 앞에서 돌아야 하면 100m에 한 차로씩 옮길 수 있는 만큼 그쪽 차로에서 */
+  private cityLane(s: number): number {
+    const lanes = this.road.lanesAt(s);
+    const next = this.laneTargets.find((x) => x.s > s);
+    return next ? Math.max(1, Math.min(lanes, next.lanes[1] + Math.floor((next.s - s) / 100))) : lanes;
   }
 
   /** 건너뛴 뒤 달릴 곳 설명 */
@@ -809,8 +832,12 @@ export class Game {
         return `${l.via || "분기점"} ${km(road.legs[k - 1].s1 - w.s0)} 앞 · ${l.name} ${l.to} 방향으로 갈아타기`;
       }
     }
-    const j = road.junctions.find((x) => x.s > w.s0 + 300);
     const leg = road.legAt(w.s0);
+    if (this.city) {
+      const st = this.stops.find((x) => x.s > w.s0 && x.name);
+      return st && st.s - w.s0 < 1500 ? `${leg.name} · ${st.name} ${km(st.s - w.s0)} 앞` : `${leg.name}`;
+    }
+    const j = road.junctions.find((x) => x.s > w.s0 + 300);
     return j ? `${leg.name} · ${j.name} ${km(j.s - w.s0)} 앞` : `${leg.name} ${leg.to} 방향`;
   }
 
@@ -824,16 +851,19 @@ export class Game {
     this.clockOffset += j.sec;
     const s = j.to;
     const lanes = road.lanesAt(s);
-    let lane = Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
+    // 시내: 다음에 돌 차로 쪽에 내려앉고, 제한속도 넘게는 달리지 않는다 (정지선이 60m 넘게 앞이다)
+    let lane = this.city ? this.cityLane(s) : Math.max(1, Math.min(lanes, road.laneOf(p.d, p.s)));
     const zone = this.workZones.find((z) => z.lane === lane && s > z.s0 - 50 && s < z.s1 + END_TAPER_M);
     if (zone) lane = Math.max(1, Math.min(lanes, zone.side === "right" ? lane - 1 : lane + 1));
-    const kmh = Math.max(30, Math.min(p.speed * 3.6, this.rules.limitAt(s) + 5, this.spec.governor * 3.6 - 5));
+    const kmh = this.city ? Math.max(20, Math.min(p.speed * 3.6, this.rules.limitAt(s))) : Math.max(30, Math.min(p.speed * 3.6, this.rules.limitAt(s) + 5, this.spec.governor * 3.6 - 5));
     p.place(road, s, lane, kmh / 3.6);
-    // 노선이 바뀌었으면 그 노선 교통량으로 맞춘 다음 주변 차를 새로 채운다. 속도는 주변 흐름에 맞춘다
-    if (road.isRoute) this.updateLegTraffic();
+    // 노선이 바뀌었으면 그 노선 교통량으로 맞춘 다음 주변 차를 새로 채운다. 속도는 주변 흐름에 맞춘다.
+    // 시내는 경로 밖 차·교차로를 건너는 차를 비우고 새 자리 둘레로 다시 채운다
+    if (road.isRoute && !this.city) this.updateLegTraffic();
+    if (this.cityTraffic) this.cityTraffic.clearAround(0, 0, Infinity);
     this.traffic.fill(this.playerState());
     const near = this.traffic.agents.filter((a) => Math.abs(a.s - s) < 400);
-    if (near.length >= 3) {
+    if (near.length >= 3 && !this.city) {
       const flow = (near.reduce((sum, a) => sum + a.v, 0) / near.length) * 3.6;
       p.place(road, s, lane, Math.max(20, Math.min(kmh, flow * 1.05)) / 3.6);
     }

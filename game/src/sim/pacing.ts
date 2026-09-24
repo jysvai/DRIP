@@ -3,6 +3,7 @@
 // 반드시 달리는 곳: 출발, 노선을 갈아타는 분기점(2.3km 앞 안내부터 연결로를 지나 합류까지), 도착.
 // 남는 시간은 사이 구간에 고르게 나눈다. 고를 때 실제 사고 자료는 보지 않는다 (가상 핫스팟과 실제 핫스팟을 비교하는 연구라서).
 // 대신 나들목·공사·선 차·구간단속 시점처럼 이 게임이 이미 알고 있는 곳이 있으면 그쪽으로 조금 당긴다.
+// 시내·국도는 느리고 교차로가 잦아 구간을 짧게 잡고(DIGEST_CITY), 교차로 안이나 정지선 바로 앞으로는 건너뛰지 않는다(avoid).
 
 export interface DriveWindow {
   s0: number;
@@ -24,20 +25,49 @@ export interface DigestOptions {
   windowM?: number;
   /** 아무리 짧아도 이만큼은 달린다 (m) */
   minPlayM?: number;
+  /** 구간 길이·간격 묶음 (없으면 고속도로 DIGEST) */
+  profile?: DigestProfile;
+  /** 건너뛰어 내려앉거나 건너뛰기 시작하면 안 되는 곳 [s0, s1] (시내 교차로와 그 앞 정지선 둘레). 구간 끝이 걸리면 빠져나간 뒤로 늘린다 */
+  avoid?: [number, number][];
 }
 
-export const DIGEST = {
+export interface DigestProfile {
+  ratio: number;
+  windowM: number;
+  minPlayM: number;
+  /** 분기점 앞 몇 m부터 달리는지 (2km 음성 안내를 듣고 차로를 옮길 시간) */
+  transferBefore: number;
+  /** 연결로 끝(합류) 뒤 몇 m까지 */
+  transferAfter: number;
+  /** 도착 앞 몇 m */
+  finishM: number;
+  /** 이보다 짧은 틈은 건너뛰지 않고 이어서 달린다 (건너뛰는 맛이 없고 화면만 끊긴다) */
+  minGapM: number;
+  /** 사이 구간을 관심 지점 몇 m 앞에서 시작하는지 */
+  poiLeadM: number;
+}
+
+export const DIGEST: DigestProfile = {
   ratio: 12,
   windowM: 2200,
   minPlayM: 5000,
-  /** 분기점 앞 몇 m부터 달리는지 (2km 음성 안내를 듣고 차로를 옮길 시간) */
   transferBefore: 2300,
-  /** 연결로 끝(합류) 뒤 몇 m까지 */
   transferAfter: 900,
-  /** 도착 앞 몇 m */
   finishM: 1800,
-  /** 이보다 짧은 틈은 건너뛰지 않고 이어서 달린다 (건너뛰는 맛이 없고 화면만 끊긴다) */
   minGapM: 1500,
+  poiLeadM: 600,
+};
+
+/** 시내·국도: 시속 30~60km에 신호가 잦아 800m 구간이면 교차로 두세 곳을 지난다. 짧은 길도 1.5km(3~4분)는 달린다 */
+export const DIGEST_CITY: DigestProfile = {
+  ratio: 12,
+  windowM: 800,
+  minPlayM: 1500,
+  transferBefore: 0,
+  transferAfter: 0,
+  finishM: 600,
+  minGapM: 500,
+  poiLeadM: 250,
 };
 
 function hash(n: number): number {
@@ -47,20 +77,21 @@ function hash(n: number): number {
 
 /** 달릴 구간들 (s 순서, 겹치지 않음). 건너뛸 필요가 없을 만큼 짧으면 전체 한 구간 */
 export function planDigest(o: DigestOptions): DriveWindow[] {
-  const ratio = o.ratio ?? DIGEST.ratio;
-  const W = o.windowM ?? DIGEST.windowM;
+  const P = o.profile ?? DIGEST;
+  const ratio = o.ratio ?? P.ratio;
+  const W = o.windowM ?? P.windowM;
   const start = o.startS;
   const end = o.finishS;
   const total = end - start;
-  const budget = Math.max(o.minPlayM ?? DIGEST.minPlayM, total / ratio);
+  const budget = Math.max(o.minPlayM ?? P.minPlayM, total / ratio);
   if (total <= budget * 1.3) return [{ s0: start, s1: end, why: "start" }];
 
   const must: DriveWindow[] = [{ s0: start, s1: Math.min(end, start + W), why: "start" }];
   for (const t of o.transfers) {
     if (t.merge <= start || t.diverge >= end) continue;
-    must.push({ s0: Math.max(start, t.diverge - DIGEST.transferBefore), s1: Math.min(end, t.merge + DIGEST.transferAfter), why: "transfer" });
+    must.push({ s0: Math.max(start, t.diverge - P.transferBefore), s1: Math.min(end, t.merge + P.transferAfter), why: "transfer" });
   }
-  must.push({ s0: Math.max(start, end - DIGEST.finishM), s1: end, why: "finish" });
+  must.push({ s0: Math.max(start, end - P.finishM), s1: end, why: "finish" });
   let wins = merge(must);
 
   // 남는 몫을 사이 구간으로 채운다 (가장 긴 틈부터 하나씩)
@@ -75,20 +106,30 @@ export function planDigest(o: DigestOptions): DriveWindow[] {
   while (n > 0) {
     // 가장 긴 틈 가운데쯤 (시드로 조금 흔들고, 가까운 관심 지점이 있으면 그쪽으로)
     const g = gaps().sort((x, y) => y.b - y.a - (x.b - x.a))[0];
-    if (!g || g.b - g.a < W + 2 * DIGEST.minGapM) break;
-    const lo = g.a + DIGEST.minGapM;
-    const hi = g.b - DIGEST.minGapM - W;
+    if (!g || g.b - g.a < W + 2 * P.minGapM) break;
+    const lo = g.a + P.minGapM;
+    const hi = g.b - P.minGapM - W;
     let s0 = lo + (hi - lo) * (0.3 + 0.4 * hash(o.seed * 31 + k++));
-    const near = o.poi.filter((p) => p - 600 >= lo && p - 600 <= hi).sort((x, y) => Math.abs(x - 600 - s0) - Math.abs(y - 600 - s0))[0];
-    if (near !== undefined && Math.abs(near - 600 - s0) < (hi - lo) * 0.3) s0 = near - 600;
+    const lead = P.poiLeadM;
+    const near = o.poi.filter((p) => p - lead >= lo && p - lead <= hi).sort((x, y) => Math.abs(x - lead - s0) - Math.abs(y - lead - s0))[0];
+    if (near !== undefined && Math.abs(near - lead - s0) < (hi - lo) * 0.3) s0 = near - lead;
     wins = merge([...wins, { s0, s1: s0 + W, why: "sample" }]);
     n--;
+  }
+  // 교차로 안이나 정지선 바로 앞에 내려앉지 않게 빠져나간 뒤로 미루고, 교차로 안에서 건너뛰지 않게 끝을 빠져나간 뒤로 늘린다
+  if (o.avoid?.length) {
+    // 붙어 있는 교차로는 차례로 빠져나간다
+    const out = (s: number) => {
+      for (let hit = o.avoid!.find(([a, b]) => s > a && s < b); hit; hit = o.avoid!.find(([a, b]) => s > a && s < b)) s = hit[1];
+      return s;
+    };
+    wins = merge(wins.map((w, i) => ({ ...w, s0: i === 0 ? w.s0 : Math.min(out(w.s0), w.s1), s1: i === wins.length - 1 ? w.s1 : Math.min(end, out(w.s1)) })));
   }
   // 너무 짧은 틈은 이어 달린다
   const out: DriveWindow[] = [];
   for (const w of wins) {
     const last = out[out.length - 1];
-    if (last && w.s0 - last.s1 < DIGEST.minGapM) last.s1 = Math.max(last.s1, w.s1);
+    if (last && w.s0 - last.s1 < P.minGapM) last.s1 = Math.max(last.s1, w.s1);
     else out.push({ ...w });
   }
   return out;

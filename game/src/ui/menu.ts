@@ -13,7 +13,7 @@ import { ICON, WORDMARK } from "./icons";
 import { COLLECTING } from "../log/recorder";
 import type { PedalMode, SteerSens, WheelCalibration } from "../sim/input";
 import { calibratePedals, connectedPad, padLabel, pedalLabel } from "./padSetup";
-import { digestForLegs, playDistance } from "../sim/pacing";
+import { DIGEST_CITY, digestForLegs, planDigest, playDistance } from "../sim/pacing";
 import { searchCityPlaces, type CityGraph, type CityPlace } from "../city/graph";
 import type { CityNet } from "../city/net";
 import { drivable, findCityRoute, type CityRoutePlan } from "../city/route";
@@ -111,7 +111,7 @@ const CITY_REGIONS = {
     popular: CITY_POPULAR,
     placeholder: "역·건물·명소 (예: 강남역, 롯데월드타워)",
     note: "서울 시내 큰길(간선·보조간선도로)로 길을 찾습니다. 교차로마다 실제처럼 신호가 바뀌고(직진 → 좌회전 순서), 도는 곳은 내비가 300m 앞에서 알려 줍니다. 버스전용차로·보행자는 아직 없습니다.",
-    foot: "실제 서울 도로(OpenStreetMap)를 신호 교차로에서 서고 가며 처음부터 끝까지 달립니다.",
+    foot: "실제 서울 도로(OpenStreetMap)를 신호 교차로에서 서고 가며 달립니다.",
   },
   rural: {
     region: "gyeonggi_east",
@@ -121,7 +121,7 @@ const CITY_REGIONS = {
     popular: RURAL_POPULAR,
     placeholder: "역·명소 (예: 양평역, 두물머리)",
     note: "강동·하남·남양주·구리·양평의 국도·지방도로 길을 찾습니다 (고속도로는 빼고). 산·들·강을 따라 제한속도 60~80km/h로 달리고, 읍내 교차로에는 신호가 있습니다.",
-    foot: "실제 경기 동부 국도·지방도(OpenStreetMap)와 지형을 처음부터 끝까지 달립니다.",
+    foot: "실제 경기 동부 국도·지방도(OpenStreetMap)와 지형을 달립니다.",
   },
 } as const;
 const CITY_KIND: Record<string, string> = { 역: "지하철역", 건물: "건물", 명소: "명소" };
@@ -390,6 +390,14 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         if (last && last.name === name) last.m += l.length;
         else streets.push({ name, m: l.length, turn: !mv ? "출발" : mv.turn === "L" ? "좌회전" : mv.turn === "R" ? "우회전" : "직진" });
       });
+      // 요약 주행 어림 (게임은 교차로를 피해 구간 끝을 조금 옮긴다)
+      const digest = (() => {
+        if (pace !== "digest") return null;
+        const wins = planDigest({ startS: 0, finishS: cPlan.lengthM, transfers: [], poi: [], seed: 1, profile: DIGEST_CITY });
+        if (wins.length < 2) return null;
+        const m = playDistance(wins);
+        return { sec: (m / cPlan.lengthM) * cPlan.timeS, km: m / 1000, windows: wins.length };
+      })();
       const items = streets
         .filter((x) => x.m > 60 || x.turn === "출발")
         .map((x) => `<li><span class="turn">${x.turn}</span><div><b>${esc(x.name)}</b></div><span class="len">${(x.m / 1000).toFixed(1)}<small> km</small></span></li>`)
@@ -403,10 +411,12 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         <dl class="rs-stats">
           <div><dt>거리</dt><dd>${(cPlan.lengthM / 1000).toFixed(1)}<small>km</small></dd></div>
           <div><dt>예상 시간</dt><dd>${durationHtml(cPlan.timeS)}</dd></div>
-          <div><dt>신호 교차로</dt><dd>${cPlan.signals}<small>곳</small></dd></div>
+          ${digest ? `<div><dt>요약 주행</dt><dd>${durationHtml(digest.sec)}</dd></div>` : `<div><dt>신호 교차로</dt><dd>${cPlan.signals}<small>곳</small></dd></div>`}
         </dl>
         <ol class="rs-legs">${items}</ol>
-        <p class="rs-foot">${reg().foot} 좌회전·우회전 ${cPlan.turns}번. 도로 데이터 © OpenStreetMap contributors (ODbL).</p>`;
+        <p class="rs-foot">${reg().foot} 신호 교차로 ${cPlan.signals}곳, 좌회전·우회전 ${cPlan.turns}번.${
+          digest ? ` 요약 주행: ${digest.windows}구간 ${digest.km.toFixed(1)}km만 달리고 나머지는 건너뜁니다.` : ""
+        } 도로 데이터 © OpenStreetMap contributors (ODbL).</p>`;
     }
 
     function renderSummary() {
@@ -577,6 +587,25 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
       return wrap;
     }
 
+    function paceField(note: string) {
+      return field(
+        "주행 방식",
+        seg<Pace>(
+          [
+            ["digest", "요약 (1시간 → 5분)"],
+            ["full", "처음부터 끝까지"],
+          ],
+          pace,
+          (v) => {
+            pace = v;
+            renderSummary();
+          },
+          "주행 방식",
+        ),
+        note,
+      );
+    }
+
     function renderCityRoute() {
       const box = el("div", "od");
       box.appendChild(cityPlaceInput("출발", () => cFrom, (p) => (cFrom = p), "from"));
@@ -608,6 +637,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
         }
         body.appendChild(field("자주 달리는 길", chips));
       }
+      body.appendChild(paceField("요약: 출발과 도착, 사이 신호 교차로 몇 곳만 달리고 나머지는 건너뜁니다. 교차로 안이나 정지선 바로 앞으로는 건너뛰지 않습니다. 달리는 동안은 배속이 없습니다."));
       body.appendChild(el("p", "note", reg().note));
     }
 
@@ -764,24 +794,7 @@ export function showMenu(net: Network, catalog: VehicleCatalog, real: RealTraffi
           el("div", "range-scale", `<span>0</span><span>${Math.round(max / 2)}</span><span>${max} km</span>`),
         );
         body.appendChild(field("출발 위치", km, "긴 경로는 중간부터 시작할 수 있습니다. 도착지는 그대로입니다."));
-        body.appendChild(
-          field(
-            "주행 방식",
-            seg<Pace>(
-              [
-                ["digest", "요약 (1시간 → 5분)"],
-                ["full", "처음부터 끝까지"],
-              ],
-              pace,
-              (v) => {
-                pace = v;
-                renderSummary();
-              },
-              "주행 방식",
-            ),
-            "요약: 출발, 노선을 갈아타는 분기점, 도착과 사이 몇 구간만 달리고 나머지는 건너뜁니다. 달리는 동안은 배속이 없고, 게임 속 시계는 건너뛴 만큼 흐릅니다.",
-          ),
-        );
+        body.appendChild(paceField("요약: 출발, 노선을 갈아타는 분기점, 도착과 사이 몇 구간만 달리고 나머지는 건너뜁니다. 달리는 동안은 배속이 없고, 게임 속 시계는 건너뛴 만큼 흐릅니다."));
       }
       body.appendChild(el("p", "note", "지도는 끌어서 옮기고 휠로 확대합니다. 도시·나들목을 누르면 출발지, 한 번 더 누르면 도착지가 됩니다."));
     }
