@@ -99,6 +99,8 @@ interface Free {
   letGo: boolean;
   /** 교차로를 넘은 뒤 플레이어 때문에 둘 다 서 있은 시간 (s) */
   playerWait: number;
+  /** 정지선에 닿기 전 다른 차에 막혀 서 있은 시간 */
+  idle: number;
 }
 
 /** 부딪힘을 볼 몸체 (도로망 좌표) */
@@ -943,6 +945,7 @@ export class CityTraffic implements TrafficCity {
       ghost: false,
       letGo: false,
       playerWait: 0,
+      idle: 0,
     };
     this.poseOf(car);
     return car;
@@ -1095,6 +1098,7 @@ export class CityTraffic implements TrafficCity {
       let gap = Infinity;
       let vl = 0;
       let byPlayer = false;
+      let byBody = false;
       if (f.ghost && !f.letGo && f.u > f.mvEnd + a.len) f.ghost = false;
       for (const b of bodies) {
         if (
@@ -1147,6 +1151,7 @@ export class CityTraffic implements TrafficCity {
           gap = g;
           vl = Math.max(0, b.v * (b.hx * f.hx + b.hy * f.hy));
           byPlayer = b.ref === "player";
+          byBody = true;
         }
       }
       // 같은 접근로 차로의 앞차: 길이 꺾여 있어도 정지선까지 남은 거리로 본다
@@ -1167,6 +1172,7 @@ export class CityTraffic implements TrafficCity {
             gap = g;
             vl = o.a.v;
             byPlayer = false;
+            byBody = false;
           }
         }
       }
@@ -1188,6 +1194,7 @@ export class CityTraffic implements TrafficCity {
             gap = g;
             vl = o.a.v;
             byPlayer = false;
+            byBody = false;
           }
         }
       }
@@ -1198,6 +1205,7 @@ export class CityTraffic implements TrafficCity {
           gap = g;
           vl = Math.max(0, player.v * (player.hx * f.hx + player.hy * f.hy));
           byPlayer = true;
+          byBody = true;
         }
       }
       // 정지선.파란불이어도 건너편 나갈 자리가 막혀 있으면 들어가지 않는다 (교차로를 막지 않게)
@@ -1216,6 +1224,7 @@ export class CityTraffic implements TrafficCity {
             gap = g;
             vl = 0;
             byPlayer = false;
+            byBody = false;
           }
         }
       }
@@ -1246,6 +1255,11 @@ export class CityTraffic implements TrafficCity {
         f.playerWait += dt;
         if (f.playerWait > 6) f.letGo = f.ghost = true;
       } else f.playerWait = 0;
+      // 정지선에 닿기 전인데 (신호 대기 줄이 아니라) 다른 차에 막혀 20초 넘게 서 있으면 (겹쳐 그려진 옆길에서 경로 차와 서로 기다리는 교착) 비켜 간다
+      if (!f.committed && byBody && a.v < 0.3) {
+        f.idle += dt;
+        if (f.idle > 20) f.letGo = f.ghost = true;
+      } else if (a.v > 1) f.idle = 0;
       // 방향지시등: 교차로 40m 앞부터 곡선을 다 돌 때까지
       a.signal =
         f.turn !== "S" && front > f.mvStart - 40 && f.u < f.mvEnd
