@@ -128,6 +128,24 @@ function paverTexture(): THREE.CanvasTexture {
   });
 }
 
+/** 터널 단면: 벽 높이, 그 위 아치 높이 (0이면 네모) */
+interface TunnelShape {
+  wall: number;
+  rise: number;
+}
+
+/**
+ * 터널 토막을 5m마다 잰 덮임 (0 열린 길, 1 땅에 덮임, 2 흙을 덮어 굴로 그림)과 그 자리·차도 높이.
+ * 2: 국도 산속 굴인데 75m 지형 격자가 좁은 능선을 깎아 굴 꼭대기가 드러나는 곳 (굴 위로 흙 둔덕을 올린다)
+ */
+interface Cover {
+  mask: Uint8Array;
+  xs: Float64Array;
+  ys: Float64Array;
+  zs: Float64Array;
+  mound: boolean;
+}
+
 /** 국도 차도 가운데에서 갓길 바깥(+1.3m)까지 */
 function roadHalf(e: CityEdge): number {
   return (e.oneway ? (e.lanes * CITY_LANE) / 2 : e.lanes * CITY_LANE + CENTER_GAP / 2) + SHOULDER + 1.3;
@@ -232,7 +250,8 @@ export class CityScene {
   private readonly rural: boolean;
   private townCache = new Map<number, boolean>();
   private cityCache = new Map<number, boolean>();
-  private covers = new Map<number, { mask: Uint8Array; xs: Float64Array; ys: Float64Array }>();
+  private covers = new Map<number, Cover>();
+  private shapes = new Map<number, TunnelShape>();
   private zq: PolyPoint = { x: 0, y: 0, tx: 1, ty: 0 };
   private far: { mesh: THREE.Mesh; x0: number; y0: number } | null = null;
   private lampGeo = new THREE.CircleGeometry(0.14, 14);
@@ -606,7 +625,7 @@ export class CityScene {
       if (sp.tunnel) {
         const e = net.graph.edges[sp.edge];
         const t = s / sc - sp.u0;
-        onTunnel[k] = this.covered(e, l.edges.find((x) => x.edge === sp.edge)!.fwd ? t : e.length - t) ? 1 : 0;
+        onTunnel[k] = this.covered(e, l.edges.find((x) => x.edge === sp.edge)!.fwd ? t : e.length - t) ? (this.tunnelShape(e).rise > 0 ? 1 : 2) : 0;
       }
       if (sp.twoWay) {
         kind[k] = 0;
@@ -784,7 +803,8 @@ export class CityScene {
       this.tunnelOf(l, geo, k0, k1, onTunnel, (k) => {
         const dr = (sw[k] > 0 ? curbD(k) + sw[k] : curbD(k) + (this.rural ? SHOULDER : 0)) + 0.5;
         if (kind[k] === 0) return [-width[k] / 2 - leftX[k], dr, true];
-        return [-width[k] / 2 - (kind[k] === 1 && median[k] >= 0.45 ? median[k] : leftX[k]) - 0.5, dr, false];
+        // 짝 있는 차도는 굴이 따로 뚫려 있다 (가운데 분리대는 굴 밖)
+        return [-width[k] / 2 - leftX[k] - 0.5, dr, false];
       }, x0, y0, inTile, b.tunnel, b.tunnelLamp);
       // 차선
       const [ma, mb] = [mA, mB];
@@ -833,41 +853,53 @@ export class CityScene {
     }
   }
 
-  /** 터널 단면 크기: 국도(산 속)는 벽 4.6m에 아치 3.2m, 시내 지하차도는 5m 네모 (윗길이 6.5m 위를 지난다) */
-  private get tunnelWall(): number {
-    return this.rural ? 4.6 : 5;
-  }
-
-  private get tunnelRise(): number {
-    return this.rural ? 3.2 : 0;
+  /**
+   * 터널 단면: 국도 산속 굴은 벽 4.6m에 아치 3.2m. 시내와 국도의 지하차도(이름에 '지하'가 든 것, 읍내)는 5m 네모
+   * (윗길이 6.5m 위를 지난다. 아치로 그리면 윗길을 뚫는다)
+   */
+  private tunnelShape(e: CityEdge): TunnelShape {
+    let sh = this.shapes.get(e.id);
+    if (!sh) {
+      const p = e.pts;
+      const m = 2 * Math.floor(p.length / 4);
+      sh = !this.rural || e.name.includes("지하") || this.town(p[m], p[m + 1]) ? { wall: 5, rise: 0 } : { wall: 4.6, rise: 3.2 };
+      this.shapes.set(e.id, sh);
+    }
+    return sh;
   }
 
   /**
-   * 터널 토막 e의 u 자리가 땅에 덮였는지: 차도 가운데와 양쪽 가장자리 밖 땅 표면이 모두 굴 꼭대기보다 높은 곳만 굴로 그리고,
+   * 터널 토막 e의 u 자리를 굴로 그리는지: 차도 가운데와 양쪽 가장자리 밖 땅 표면이 모두 굴 꼭대기보다 높은 곳은 굴로 그리고,
    * 그 위 땅은 길에 맞춰 깎지 않는다. OSM 터널은 지하차도 입구 비탈까지 터널로 적기도 하고, 산허리를 도는 굴은 골짜기 쪽이
    * 얕아 굴이 산 밖으로 드러난다. 그런 곳은 열린 길(깎기)로 둔다. 땅 표면은 터널을 빼고 잰다
-   * (국도: 지형 격자, 시내: 교차점 높이를 섞은 면). 5m마다 재고, 15m보다 짧게 덮인 곳은 열린 길로 본다
+   * (국도: 지형 격자, 시내: 교차점 높이를 섞은 면). 5m마다 재고, 15m보다 짧게 덮인 곳은 열린 길로 본다.
+   * 국도 산속 굴은 입구에서 30m 넘게 들어간 곳이 조금이라도 땅에 묻혔으면(가운데 땅이 차도보다 1m 넘게 높으면) 굴로 그리고
+   * 위에 흙 둔덕을 올린다: 75m 지형 격자는 좁은 능선을 깎아 실제 굴 위 산이 모자란다
    */
   private covered(e: CityEdge, u: number): boolean {
     const { mask } = this.cover(e);
-    return mask[Math.max(0, Math.min(mask.length - 1, Math.round((u / Math.max(1e-6, e.length)) * (mask.length - 1))))] === 1;
+    return mask[Math.max(0, Math.min(mask.length - 1, Math.round((u / Math.max(1e-6, e.length)) * (mask.length - 1))))] !== 0;
   }
 
   /** 터널 토막을 5m마다 잰 덮임과 그 자리 */
-  private cover(e: CityEdge): { mask: Uint8Array; xs: Float64Array; ys: Float64Array } {
+  private cover(e: CityEdge): Cover {
     let c = this.covers.get(e.id);
     if (!c) {
       const STEP = 5;
       const n = Math.max(2, Math.ceil(e.length / STEP) + 1);
+      const step = e.length / (n - 1);
       const mask = new Uint8Array(n);
       const xs = new Float64Array(n);
       const ys = new Float64Array(n);
-      const top = this.tunnelWall + this.tunnelRise + 0.5;
+      const zs = new Float64Array(n);
+      const sh = this.tunnelShape(e);
+      const top = sh.wall + sh.rise + 0.5;
       const side = roadHalf(e) + 1;
       const surf = (x: number, y: number) => (this.dem ? this.dem.height(x, y) : this.groundZ(x, y) - 0.8);
+      const mid = new Float64Array(n);
       const p = e.pts;
       for (let k = 0; k < n; k++) {
-        const u = (e.length * k) / (n - 1);
+        const u = step * k;
         // 토막 위 u 자리와 방향
         let acc = 0;
         let i = 0;
@@ -882,21 +914,71 @@ export class CityScene {
         const ty = len > 0 ? (p[i + 3] - p[i + 1]) / len : 0;
         const x = p[i] + (p[i + 2] - p[i]) * t;
         const y = p[i + 1] + (p[i + 3] - p[i + 1]) * t;
-        const z = this.drawnZ(e, u) + top;
         xs[k] = x;
         ys[k] = y;
-        mask[k] = surf(x, y) > z && surf(x + ty * side, y - tx * side) > z && surf(x - ty * side, y + tx * side) > z ? 1 : 0;
+        zs[k] = this.drawnZ(e, u);
+        mid[k] = surf(x, y);
+        const z = zs[k] + top;
+        mask[k] = mid[k] > z && surf(x + ty * side, y - tx * side) > z && surf(x - ty * side, y + tx * side) > z ? 1 : 0;
       }
-      for (let a = 0; a < n; ) {
-        let b = a;
-        while (b < n && mask[b] === mask[a]) b++;
-        if (mask[a] && (b - a - 1) * (e.length / (n - 1)) < 15) mask.fill(0, a, b);
-        a = b;
+      const drop = (v: number, minM: number) => {
+        for (let a = 0; a < n; ) {
+          let b = a;
+          while (b < n && mask[b] === mask[a]) b++;
+          if (mask[a] === v && (b - a - 1) * step < minM) mask.fill(0, a, b);
+          a = b;
+        }
+      };
+      drop(1, 15);
+      let mound = false;
+      if (this.dem && sh.rise > 0) {
+        const g = this.net.graph;
+        const openAt = (node: number) => g.nodes[node].edges.some((x) => !g.edges[x].tunnel);
+        const fromA = openAt(e.a) ? 30 : -Infinity;
+        const fromB = openAt(e.b) ? 30 : -Infinity;
+        // 둔덕은 둘레 땅 위 길보다 높을 수 없다 (땅은 길 밑으로 깎는다): 둔덕 턱(굴 폭+15m) 안에 굴 꼭대기보다 낮은 땅 위 길이 있으면 열린 길로 둔다
+        const reach = roadHalf(e) + 15;
+        const blocked = (k: number) => {
+          const x = xs[k];
+          const y = ys[k];
+          const topZ = zs[k] + sh.wall + sh.rise + 1;
+          let hit = false;
+          for (const id of g.edgesIn(x - reach - 20, y - reach - 20, x + reach + 20, y + reach + 20)) {
+            const f = g.edges[id];
+            if (hit || f.bridge || f.tunnel) continue;
+            g.forEachNear(f, x, y, reach + roadHalf(f), (u) => {
+              if (this.drawnZ(f, u) < topZ) hit = true;
+            });
+          }
+          return hit;
+        };
+        for (let k = 0; k < n; k++) {
+          if (mask[k] || step * k < fromA || e.length - step * k < fromB || mid[k] < zs[k] + 1 || blocked(k)) continue;
+          mask[k] = 2;
+          mound = true;
+        }
+        drop(2, 30);
       }
-      c = { mask, xs, ys };
+      c = { mask, xs, ys, zs, mound };
       this.covers.set(e.id, c);
     }
     return c;
+  }
+
+  /** 흙 둔덕 높이: 둔덕을 올린 굴 자리 둘레 (굴 폭+15m까지 굴 꼭대기 1.2m 위, 그 밖은 1:1.5로 내려간다). 없으면 -Infinity */
+  private moundAt(e: CityEdge, x: number, y: number): number {
+    const c = this.cover(e);
+    if (!c.mound) return -Infinity;
+    const sh = this.tunnelShape(e);
+    const flat = roadHalf(e) + 15;
+    let z = -Infinity;
+    for (let k = 0; k < c.mask.length; k++) {
+      if (c.mask[k] !== 2) continue;
+      const d = Math.hypot(x - c.xs[k], y - c.ys[k]);
+      if (d > flat + 25) continue;
+      z = Math.max(z, c.zs[k] + sh.wall + sh.rise + 1.2 - Math.max(0, d - flat) / 1.5);
+    }
+    return z;
   }
 
   /**
@@ -920,12 +1002,12 @@ export class CityScene {
    */
   private tunnelOf(l: Link, geo: LinkGeom, k0: number, k1: number, onTunnel: Uint8Array, span: (k: number) => [number, number, boolean], x0: number, y0: number, inTile: (x: number, y: number) => boolean, g: G, lamps: G) {
     let any = false;
-    for (let k = k0; k <= k1 && !any; k++) any = onTunnel[k] === 1;
+    for (let k = k0; k <= k1 && !any; k++) any = onTunnel[k] !== 0;
     if (!any) return;
-    const arch = this.rural;
-    const WALL = this.tunnelWall;
-    const RISE = this.tunnelRise;
+    // onTunnel: 1 아치 굴, 2 네모 굴
+    const shapeOf = (k: number) => (onTunnel[k] === 1 ? { WALL: 4.6, RISE: 3.2, arch: true } : { WALL: 5, RISE: 0, arch: false });
     const section = (k: number): [number, number, number][] => {
+      const { WALL, RISE, arch } = shapeOf(k);
       const [dl, dr, half] = span(k);
       const pts: [number, number, number][] = [];
       if (half) {
@@ -982,6 +1064,7 @@ export class CityScene {
         continue;
       }
       const sec = section(k);
+      const { WALL, arch } = shapeOf(k);
       const [dl, dr, half] = span(k);
       // 안쪽을 보는 법선: 굴 가운데(반쪽이면 가운데 줄, 높이 WALL/2)를 향한다
       const cx = half ? dl : (dl + dr) / 2;
@@ -1394,9 +1477,12 @@ export class CityScene {
     // (한 토막의 가까운 곳을 모두 본다: 가장 가까운 곳 하나만 보면 위 굽이 높이로 깔려 아래 굽이를 덮는다).
     // 그 아래로 맞추고, 높은 쪽 차도 가장자리는 옹벽으로 보인다
     let cap = Infinity;
+    // 굴 위 흙 둔덕 (국도 산속 굴을 지형이 덮지 못하는 곳)
+    let lift = -Infinity;
     for (const id of g.edgesIn(x - 60, y - 60, x + 60, y + 60)) {
       const e = g.edges[id];
       if (e.bridge) continue;
+      if (e.tunnel) lift = Math.max(lift, this.moundAt(e, x, y));
       const r = g.nearestEdge(x, y, 60, (f) => f.id === id);
       if (!r) continue;
       // 깊은 터널 위 산은 길에서 먼 땅처럼 (나무가 자란다). 얕은 곳(입구 둘레)만 길로 본다
@@ -1408,14 +1494,16 @@ export class CityScene {
         if (dist <= capR) cap = Math.min(cap, this.drawnZ(e, u) - 0.35);
       });
     }
-    if (!best) return { z: zd, road: Infinity };
+    // 둔덕은 땅 위 길을 덮지 않는다 (cap)
+    const fin = (z: number) => Math.min(Math.max(z, lift), cap);
+    if (!best) return { z: fin(zd), road: Infinity };
     const road = best.dist - roadHalf(best.edge);
-    if (!open.edge) return { z: Math.min(zd, cap), road };
+    if (!open.edge) return { z: fin(zd), road };
     const d = open.dist - roadHalf(open.edge);
     const rz = this.drawnZ(open.edge, open.u) - 0.35;
-    if (d <= 0) return { z: Math.min(rz, cap), road };
+    if (d <= 0) return { z: fin(rz), road };
     const t = Math.min(1, d / 40);
-    return { z: Math.min(rz + (zd - rz) * t * t * (3 - 2 * t), cap), road };
+    return { z: fin(rz + (zd - rz) * t * t * (3 - 2 * t)), road };
   }
 
   /** 그린 차도 높이: 링크 모양의 높이(앞뒤 20m 평균)라 토막 높이 굴곡보다 둥글다. 땅이 차도 위로 솟지 않게 이것에 맞춘다 */
