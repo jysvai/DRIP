@@ -625,10 +625,12 @@ export class CityTraffic implements TrafficCity {
     const road = this.road;
     for (const a of this.traffic.agents) {
       if (a.parked || a.opposite) continue;
-      if (a.v < 0.3 && road.inJunction(Math.max(0, Math.min(road.length - 1, a.s)))) {
+      const inBox = road.inJunction(Math.max(0, Math.min(road.length - 1, a.s)));
+      // 차로 끝(교차로 안만 좁게 그려진 곳 등)에서 옆 차로로 끼어들지 못하고 서 있는 차도 20초 뒤 뺀다
+      if (a.v < 0.3 && (inBox || this.laneEnd(a.lane, a.s) < 20)) {
         const t = (this.boxStuck.get(a) ?? 0) + dt;
         this.boxStuck.set(a, t);
-        if (t > 25) a.gone = true;
+        if (t > (inBox ? 25 : 20)) a.gone = true;
       } else if (this.boxStuck.size) this.boxStuck.delete(a);
     }
     if (this.boxStuck.size > 200) {
@@ -1236,8 +1238,11 @@ export class CityTraffic implements TrafficCity {
         // 그래도 못 빠져나가면 (정지선의 플레이어와 서로 기다리는 교착) 플레이어도 보지 않고, 끝내 서 있으면 지운다
         if (f.stuck > GRIDLOCK_SEC * 2) f.letGo = true;
       } else if (a.v > 1) f.stuck = 0;
-      // 교차로에 들어간 뒤 서 있는 플레이어와 코를 맞댄 채 서로 기다리면 6초 뒤 먼저 비켜 간다
-      if (f.committed && byPlayer && a.v < 0.3 && player.v < 0.5) {
+      // 서 있는 플레이어와 코를 맞댄 채 서로 기다리면 (교차로 안, 또는 플레이어 바로 앞에 나타난 차) 6초 뒤 먼저 비켜 간다
+      const inFront =
+        !f.committed &&
+        coneGap(player.x, player.y, player.hx, player.hy, player.len, player.w, f.x, f.y, f.hx, f.hy, a.len, a.width, 10) < 8;
+      if ((byPlayer || inFront) && a.v < 0.3 && player.v < 0.5) {
         f.playerWait += dt;
         if (f.playerWait > 6) f.letGo = f.ghost = true;
       } else f.playerWait = 0;
