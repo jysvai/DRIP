@@ -328,8 +328,11 @@ function cumulative(f: RoadFile) {
   return c;
 }
 
-/** 두 점을 잇는 부드러운 곡선 (허밋). 곡률이 가장 작게 되는 접선 길이를 고른다 */
-export function connector(p0: Pt & { te: number; tn: number }, p1: Pt & { te: number; tn: number }, step: number): Pt[] {
+/**
+ * 두 점을 잇는 부드러운 곡선 (허밋). 곡률이 가장 작게 되는 접선 길이를 고른다.
+ * 높이는 grades(양 끝 기울기 dz/ds)가 있으면 그 기울기로 들고 나는 허밋, 없으면 양 끝이 평평한 S자
+ */
+export function connector(p0: Pt & { te: number; tn: number }, p1: Pt & { te: number; tn: number }, step: number, grades?: [number, number]): Pt[] {
   const chord = Math.hypot(p1.e - p0.e, p1.n - p0.n);
   if (chord < step * 1.5) return [];
   let best: Pt[] = [];
@@ -362,10 +365,16 @@ export function connector(p0: Pt & { te: number; tn: number }, p1: Pt & { te: nu
       const target = (arc * k) / parts;
       while (j < dense.length - 1 && cum[j] < target) j++;
       const t = (target - cum[j - 1]) / Math.max(1e-9, cum[j] - cum[j - 1]);
+      let z = dense[j - 1].z + (dense[j].z - dense[j - 1].z) * t;
+      if (grades) {
+        // 곡선 길이로 잰 허밋: 들어오는 길·나가는 길 기울기를 그대로 이어 꺾이지 않게
+        const u = target / arc;
+        z = (2 * u ** 3 - 3 * u ** 2 + 1) * p0.z + (u ** 3 - 2 * u ** 2 + u) * arc * grades[0] + (-2 * u ** 3 + 3 * u ** 2) * p1.z + (u ** 3 - u ** 2) * arc * grades[1];
+      }
       out.push({
         e: dense[j - 1].e + (dense[j].e - dense[j - 1].e) * t,
         n: dense[j - 1].n + (dense[j].n - dense[j - 1].n) * t,
-        z: dense[j - 1].z + (dense[j].z - dense[j - 1].z) * t,
+        z,
       });
     }
     const kmax = maxCurvature([p0, ...out, p1]);

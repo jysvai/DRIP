@@ -666,13 +666,18 @@ export class CityNet {
     const pb = this.pointOnLink(b.id, b.startDist);
     const p0 = { e: pa.x + pa.ty * dFrom, n: pa.y - pa.tx * dFrom, z: pa.z, te: pa.tx, tn: pa.ty };
     const p1 = { e: pb.x + pb.ty * dTo, n: pb.y - pb.tx * dTo, z: pb.z, te: pb.tx, tn: pb.ty };
-    const mid = connector(p0, p1, 1);
+    // 큰 교차로는 그린 바닥 높이를 따라간다. 갈라지기·합치기만 하는 곳은 두 링크 끝 기울기를 이어 (양 끝을 평평하게 두면 비탈에서 꺾인다)
+    const sf = this.junctions[mv.junction].minor ? null : this.junctionSurface(mv.junction);
+    const ua = a.length - a.stopDist;
+    const ub = b.startDist;
+    const grades: [number, number] | undefined = sf
+      ? undefined
+      : [(pa.z - this.pointOnLink(a.id, Math.max(0, ua - 3)).z) / Math.max(0.5, Math.min(3, ua)), (this.pointOnLink(b.id, Math.min(b.length, ub + 3)).z - pb.z) / Math.max(0.5, Math.min(3, b.length - ub))];
+    const mid = connector(p0, p1, 1, grades);
     const n = mid.length + 2;
     const pts = new Float64Array(n * 2);
     const z = new Float64Array(n);
     const all = [p0, ...mid, p1];
-    // 큰 교차로는 그린 바닥 높이를 따라간다 (갈라지기·합치기만 하는 곳은 두 끝 사이를 곧게)
-    const sf = this.junctions[mv.junction].minor ? null : this.junctionSurface(mv.junction);
     all.forEach((p, i) => {
       pts[2 * i] = p.e;
       pts[2 * i + 1] = p.n;
