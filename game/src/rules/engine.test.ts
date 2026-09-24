@@ -73,6 +73,32 @@ describe("RuleEngine", () => {
     expect(e.summary.headwayUnder2Sec).toBeGreaterThan(5);
   });
 
+  it("차선을 물고 달리는 옆 차가 붙어 온 아차사고는 cause: line_ride, 그냥 붙은 차는 cause 없음", () => {
+    const road = makeRoad({ lanes: 3 });
+    const d2 = road.laneCenter(2, 1000);
+    const d3 = road.laneCenter(3, 1000);
+    const toward = Math.sign(d2 - d3);
+    // 3.6m 차로에서 물고 달리는 차(1.3m 치우침)만으로는 옆 간격이 0.47m, 플레이어가 20cm 흔들리면 0.4m 안쪽
+    const run = (lineBias: number, lineNow: number) => {
+      const e = new RuleEngine(road, cfg.rules, []);
+      const side = { opposite: false, lane: 3, targetLane: 3, len: 4.8, width: 1.8, v: 25, d: d3 + toward * 1.3, s: 0, brakedByPlayer: 0, lineBias, lineNow, type: { id: "sedan_mid" } } as unknown as Agent;
+      for (let t = 0; t < 2; t += DT) {
+        side.s = 1000 + t * 25;
+        e.update({ t, dt: DT, s: side.s, d: d2 - toward * 0.2, speed: 25, ax: 0, width: 1.86, len: 4.9, signal: 0, hazard: false }, [side]);
+      }
+      return e.events.filter((x) => x.type === "near_miss");
+    };
+    const riding = run(toward * 1.3, toward * 1.3);
+    expect(riding.length).toBeGreaterThan(0);
+    expect(riding[0].detail).toMatchObject({ kind: "side", cause: "line_ride" });
+    const plain = run(0, 0);
+    expect(plain.length).toBeGreaterThan(0);
+    expect(plain[0].detail?.cause).toBeUndefined();
+    // 차선을 물지만 반대쪽으로 치우쳤다면 플레이어 쪽으로 붙은 게 아니다
+    const away = run(-toward * 1.3, -toward * 0.6);
+    expect(away[0]?.detail?.cause).toBeUndefined();
+  });
+
   it("1차로를 오래 달리면 한 번 기록된다", () => {
     const road = makeRoad({ lanes: 3, length: 20000 });
     const e = new RuleEngine(road, cfg.rules, []);

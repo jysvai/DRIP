@@ -52,9 +52,9 @@ describe("연구 데이터 품질 검사", () => {
     expect(q.metrics.distanceM).toBeGreaterThan(16000);
   });
 
-  it("게임이 일으킨 끼어들기 뒤의 아차사고는 세지 않는다", () => {
+  it("게임이 일으킨 끼어들기 뒤·차선을 물고 붙어 온 차의 아차사고는 세지 않는다", () => {
     const nm = (cause?: string) => ({ type: "near_miss", detail: cause ? { kind: "ttc", cause } : { kind: "ttc" } });
-    const q = check(drive(600, { kmh: 100 }), [nm(), nm("cut_in"), nm("cut_in"), nm()]);
+    const q = check(drive(600, { kmh: 100 }), [nm(), nm("cut_in"), nm("line_ride"), nm("cut_in"), nm()]);
     expect(q.metrics.nearMisses).toBe(2);
   });
 

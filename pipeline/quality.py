@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = ROOT / "game" / "public" / "data" / "data_quality.json"
+OTHERS_FAULT = {"cut_in", "line_ride"}  # quality.ts의 OTHERS_FAULT와 같다
 
 
 def load_rules() -> dict:
@@ -56,8 +57,8 @@ def assess_session(columns: list[str], samples: list[list], events: list[dict], 
             m["crashes"] += 1
             if float((e.get("detail") or {}).get("relSpeedKmh") or 0) >= r["crashes"]["seriousKmh"]:
                 m["seriousCrashes"] += 1
-        elif e["type"] == "near_miss" and (e.get("detail") or {}).get("cause") != "cut_in":
-            # 게임이 일으킨 끼어들기 뒤 5초 안의 아차사고는 플레이어 잘못이 아니라서 세지 않는다
+        elif e["type"] == "near_miss" and (e.get("detail") or {}).get("cause") not in OTHERS_FAULT:
+            # 게임이 일으킨 끼어들기 뒤 5초 안, 차선을 물고 달리는 차가 붙어 온 아차사고는 플레이어 잘못이 아니라서 세지 않는다
             m["nearMisses"] += 1
 
     def per10km(n):

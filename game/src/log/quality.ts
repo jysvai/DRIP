@@ -18,6 +18,10 @@ export interface QualityRules {
   participant: { window: number; maxRejected: number; clearAfterAccepted: number };
 }
 
+// 아차사고 cause가 이것이면 남의 잘못이라 세지 않는다: 게임이 일으킨 끼어들기 뒤 5초 안(cut_in),
+// 차선을 물고 달리는 차가 플레이어 쪽으로 붙어 온 옆 스침(line_ride)
+export const OTHERS_FAULT = new Set(["cut_in", "line_ride"]);
+
 export type RejectReason = "too_short" | "jam_speeding" | "extreme_speed" | "crashes" | "contacts" | "shoulder" | "idle" | "no_input" | "near_miss" | "autopilot" | "participant";
 
 export const REJECT_LABELS: Record<RejectReason, string> = {
@@ -109,7 +113,7 @@ export function assessSession(columns: readonly string[], samples: readonly (rea
       m.crashes++;
       const rel = Number(e.detail?.relSpeedKmh ?? 0);
       if (rel >= r.crashes.seriousKmh) m.seriousCrashes++;
-    } else if (e.type === "near_miss" && e.detail?.cause !== "cut_in") m.nearMisses++;
+    } else if (e.type === "near_miss" && !OTHERS_FAULT.has(String(e.detail?.cause ?? ""))) m.nearMisses++;
   }
 
   const per10km = (n: number) => n / Math.max(1, m.distanceM / 10000);
