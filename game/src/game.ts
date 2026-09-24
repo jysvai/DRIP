@@ -1492,7 +1492,11 @@ export class Game {
       // 앞을 막은 경로 밖 차 (교차로를 건너는 차, 방금 빠져나간 차)
       if (this.cityTraffic) {
         const pb = this.playerBody();
-        const g = this.cityTraffic.gapAhead(pb.x, pb.y, pb.hx, pb.hy, pb.len, pb.w, 50);
+        const g = Math.min(
+          this.cityTraffic.gapAhead(pb.x, pb.y, pb.hx, pb.hy, pb.len, pb.w, 50),
+          // 교차로를 아직 건너고 있는 차와 길이 엇갈리면 기다린다
+          this.cityTraffic.yieldGap(pb.x, pb.y, pb.hx, pb.hy, pb.len, pb.w, pb.v, road.inJunction(p.s)),
+        );
         if (g < stopGap) stopGap = Math.max(0.1, g);
       }
     }

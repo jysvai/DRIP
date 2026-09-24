@@ -307,6 +307,19 @@ describe("시내 교통 (강동역 → 삼원타워)", () => {
       expect(r.redRuns).toBeLessThanOrEqual(Math.ceil(r.crossings * 0.03));
     }, 60_000);
 
+  it("자동 운전은 교차로를 아직 건너는 차를 기다리고, 닿기 전에 빠져나갈 차는 보지 않는다", () => {
+    const ct = new CityTraffic(net, signals, road, new Traffic(road, makeConfig(), 11), () => 0, new Rng(1));
+    const cars = (ct as unknown as { cars: unknown[] }).cars;
+    // 나는 (0,0)에서 +x로, 화물차는 20m 앞을 +y로 건너는 중 (가운데가 만나는 곳 3m 전)
+    const truck = { committed: true, x: 20, y: -3, hx: 0, hy: 1, a: { len: 10, width: 2.5, v: 3 } };
+    cars.push(truck);
+    expect(ct.yieldGap(0, 0, 1, 0, 4.8, 1.9, 10, false)).toBeLessThan(17);
+    expect(ct.yieldGap(-60, 0, 1, 0, 4.8, 1.9, 5, false, 100)).toBe(Infinity);
+    // 아직 교차로에 들어가지 않은 차는 신호를 지키므로 보지 않는다
+    truck.committed = false;
+    expect(ct.yieldGap(0, 0, 1, 0, 4.8, 1.9, 10, false)).toBe(Infinity);
+  });
+
   it("고가·지하차도로 위아래를 지나는 차와는 (평면으로 겹쳐도) 부딪히지 않는다", () => {
     let time = 0;
     const traffic = new Traffic(road, makeConfig(), 11);

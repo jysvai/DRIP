@@ -529,6 +529,47 @@ export class CityTraffic implements TrafficCity {
     return best;
   }
 
+  /**
+   * 자동 운전: 교차로에 이미 들어간 차(늦게 건너는 화물차 등)와 길이 엇갈리면 만나는 곳 앞까지 간격.
+   * 내가 닿기 전에 상대가 다 지나가면 보지 않는다. 나도 들어갔으면 만나는 곳에 먼저 닿는 쪽이 간다 (자유 차와 같은 규칙).
+   * 아직 들어가지 않은 차는 신호를 지키므로 보지 않는다
+   */
+  yieldGap(
+    x: number,
+    y: number,
+    hx: number,
+    hy: number,
+    len: number,
+    width: number,
+    v: number,
+    entered: boolean,
+    range = 40,
+  ): number {
+    let best = Infinity;
+    for (const f of this.cars) {
+      if (!f.committed) continue;
+      const det = hx * f.hy - hy * f.hx;
+      const sn = Math.abs(det);
+      if (sn < 0.26) continue;
+      const rx = f.x - x;
+      const ry = f.y - y;
+      const t = (rx * f.hy - ry * f.hx) / det;
+      const s = (rx * hy - ry * hx) / det;
+      const mine = len / 2 + f.a.width / (2 * sn);
+      const theirs = f.a.len / 2 + width / (2 * sn);
+      if (t < mine || t > range || s < -theirs) continue;
+      const tm = arrive(t - mine, v);
+      // 상대 꽁무니가 만나는 곳을 빠져나가는 때 (지금 속도, 적어도 2m/s로 본다)
+      if (tm > (s + theirs) / Math.max(2, f.a.v) + 0.5) continue;
+      if (entered && Math.abs(s) >= theirs) {
+        const tb = arrive(s - theirs, f.a.v);
+        if (f.a.v < 0.5 || !(tb < tm - 0.3 || (Math.abs(tb - tm) <= 0.3 && x > f.x))) continue;
+      }
+      best = Math.min(best, Math.max(0.1, t - mine - 0.5));
+    }
+    return best;
+  }
+
   // ---------------- 한 걸음 ----------------
 
   update(dt: number, time: number, player: PlayerBody) {
