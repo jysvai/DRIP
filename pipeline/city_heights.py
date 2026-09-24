@@ -15,6 +15,8 @@
    나란히 가며 차도가 겹치는 다리·터널과 땅 위 길(국회대로 밑 신월여의지하도로, 정릉로 위 내부순환로)도 같다.
    다리·터널 안 높이는 1)에서 양 끝 사이를 이어 땅 위 길 높이와 같아진다. 갈라져 내려가는 비탈처럼 길 따라 이어진 두 점은
    그 길의 기울기 상한으로 벌어질 수 있는 높이(교차로 앞 눕힌 곳은 작다)가 OVERLAP_DZ m 안이면 뺀다 (벌리려고 내리면 이어진 길도 끌려 내려간다)
+4) 고르기: 기울기 상한만으로는 기울기가 갑자기 바뀌는 곳(교차점만 푹 꺼진 곳, 터널 입구, 교차로 바닥 안의 꺾임)이 남는다.
+   제한속도로 달릴 때의 위아래 가속도와 교차로 바닥이 한 평면에서 벗어난 정도를 함께 줄이는 최소제곱으로 고른다 (fair)
 """
 
 from __future__ import annotations
@@ -36,6 +38,17 @@ CLUSTER_EDGE = 42.0  # net.ts와 같게: 이보다 짧은 토막으로 이어진
 CLUSTER_SPAN = 95.0  # 묶음 경계 상자 대각선 한도
 OVERLAP_DZ = 2 * CLEAR  # 나란한 겹침에서 길 따라 이만큼 높이 차밖에 못 벌어지는 두 점은 벌리지 않는다 (m)
 OUT_STEP = 40.0  # 높이 굴곡을 적는 간격 (m). 이 간격으로 줄여 0.3m 넘게 어긋나는 토막(고가 봉우리 등)은 SAMPLE 간격으로
+FAIR_ACCEL = 1.0  # 고르기: 제한속도로 달릴 때 위아래 가속도의 기준 (m/s²)
+FAIR_SIGMA = 1.0  # 고르기: 다듬은 높이에서 벗어나도 되는 정도 (m)
+FAIR_SIGMA_FREE = 3.0  # 다리·터널 안 (양 끝 사이를 이은 높이라 느슨하게)
+FAIR_SIGMA_PIN = 0.05  # 입체 교차로 벌려 둔 위·아래 점
+FAIR_SIGMA_PLATE = 0.1  # 교차로 바닥 평면에서 벗어나도 되는 정도 (m)
+PLATE_R = 25.0  # 교차점에서 이 거리 안의 토막 점을 교차로 바닥 평면에 놓는다: 들어오는 가장 넓은 도로 폭 절반 + PLATE_PAD (정지선 자리), 이것을 넘지 않게
+PLATE_PAD = 8.0
+PLATE_R_MIN = 12.0
+THROUGH_COS = math.cos(math.radians(30))  # 교차점을 곧게 지나는 두 토막으로 보는 방향 차
+FAIR_GRADE_ROUNDS = 3  # 고른 뒤 기울기 상한을 넘는 이웃 점을 묶어 다시 푸는 횟수
+FAIR_GRADE_W = 1e4  # 그 묶음의 무게
 
 
 def grade_of(cls: str) -> float:
@@ -329,6 +342,208 @@ def overlaps(edges, S: Samples) -> list[tuple[int, int, float, float, float, flo
     return out
 
 
+def fair(S: Samples, z: list[float], edges: list[dict], degree, free: list[bool], pinned: set[int], plates: list[list[int]]) -> tuple[list[float], dict]:
+    """4) 고르기: 제한속도로 달릴 때 위아래로 쏠리는 가속도(v²·z'')를 줄이고, 교차로 바닥은 한 평면에 놓는다 (최소제곱).
+    ∑ 점이 맡은 길이/σ²·(z − 다듬은 높이)² + ∑ 길 따라 이웃 세 점의 기울기 변화 (v⁴/(A²·h))·Δg² + ∑ 교차로 둘레 점 (길이/σ_p²)·(z − 평면)².
+    σ=FAIR_SIGMA m면 제한속도 60km/h에서 파장 100m쯤보다 짧은 굴곡(30m 지형의 잡음·교차로 점만 푹 꺼진 곳·터널 입구 꺾임)이 사라진다.
+    입체 교차의 위·아래 점(pinned)은 거의 그대로 두어 벌려 둔 높이가 줄지 않게 하고, 다리·터널 안 점은 느슨하게 (양 끝 사이를 이은 값이라)"""
+    n = len(S)
+    rows_r: list[np.ndarray] = []  # 줄 번호
+    rows_c: list[np.ndarray] = []  # 열(미지수) 번호
+    rows_v: list[np.ndarray] = []  # 계수
+    w_all: list[np.ndarray] = []
+    t_all: list[np.ndarray] = []
+    R = 0
+
+    def add(cols: np.ndarray, coefs: np.ndarray, w: np.ndarray, t: np.ndarray):
+        """cols·coefs: (줄 수, 항 수)"""
+        nonlocal R
+        m, k = cols.shape
+        rows_r.append(np.repeat(np.arange(R, R + m), k))
+        rows_c.append(cols.ravel())
+        rows_v.append(coefs.ravel())
+        w_all.append(w)
+        t_all.append(t)
+        R += m
+
+    # 점이 맡은 길이 (길 따라 이웃 점까지 반씩)
+    span = np.zeros(n)
+    for ids, u in S.of_edge:
+        du = np.diff(u)
+        ia = np.asarray(ids)
+        np.add.at(span, ia[:-1], du / 2)
+        np.add.at(span, ia[1:], du / 2)
+    span = np.maximum(span, 1.0)
+    # 1) 다듬은 높이
+    sig = np.full(n, FAIR_SIGMA)
+    sig[np.asarray(free, bool)] = FAIR_SIGMA_FREE
+    if pinned:
+        sig[np.fromiter(pinned, int)] = FAIR_SIGMA_PIN
+    add(np.arange(n)[:, None], np.ones((n, 1)), span / sig**2, np.asarray(z, float))
+    # 2) 기울기 변화: 토막 안 이웃 세 점, 그리고 두 토막만 만나는 교차점을 건너는 세 점
+    tri_c, tri_h1, tri_h2, tri_v = [], [], [], []
+    for k, (ids, u) in enumerate(S.of_edge):
+        if len(ids) < 3:
+            continue
+        v = edges[k]["speed"] / 3.6
+        du = np.diff(u)
+        ia = np.asarray(ids)
+        tri_c.append(np.stack([ia[:-2], ia[1:-1], ia[2:]], axis=1))
+        tri_h1.append(du[:-1])
+        tri_h2.append(du[1:])
+        tri_v.append(np.full(len(ids) - 2, v))
+    ends = defaultdict(list)  # 교차점 → (이웃 점, 거리, 속도)
+    for k, (ids, u) in enumerate(S.of_edge):
+        ed = edges[k]
+        if ed["a"] == ed["b"]:
+            continue
+        ends[ed["a"]].append((ids[1], u[1] - u[0], ed["speed"] / 3.6))
+        ends[ed["b"]].append((ids[-2], u[-1] - u[-2], ed["speed"] / 3.6))
+    # 교차점을 곧게 지나는 두 토막 (둘만 만나는 점, 그리고 갈라지기·합치기처럼 셋 넘게 만나도 방향이 30° 안으로 이어지는 짝):
+    # 터널 안 갈림목처럼 교차로 바닥이 없는 곳에서도 기울기가 꺾이지 않게
+    for v_node, lst in ends.items():
+        if len(lst) < 2:
+            continue
+        dirs = []
+        for i1, _, _ in lst:
+            dx, dy = S.x[i1] - S.x[v_node], S.y[i1] - S.y[v_node]
+            dl = math.hypot(dx, dy) or 1.0
+            dirs.append((dx / dl, dy / dl))
+        for p1 in range(len(lst)):
+            for p2 in range(p1 + 1, len(lst)):
+                if len(lst) > 2 and dirs[p1][0] * dirs[p2][0] + dirs[p1][1] * dirs[p2][1] > -THROUGH_COS:
+                    continue
+                (i0, h1, v1), (i2, h2, v2) = lst[p1], lst[p2]
+                tri_c.append(np.array([[i0, v_node, i2]]))
+                tri_h1.append(np.array([h1]))
+                tri_h2.append(np.array([h2]))
+                tri_v.append(np.array([min(v1, v2)]))
+    if tri_c:
+        C = np.concatenate(tri_c)
+        h1 = np.maximum(np.concatenate(tri_h1), 0.5)
+        h2 = np.maximum(np.concatenate(tri_h2), 0.5)
+        v = np.concatenate(tri_v)
+        # Δg = (z2 − z1)/h2 − (z1 − z0)/h1
+        coef = np.stack([1 / h1, -1 / h1 - 1 / h2, 1 / h2], axis=1)
+        h = (h1 + h2) / 2
+        add(C, coef, v**4 / (FAIR_ACCEL**2 * h), np.zeros(len(C)))
+    # 3) 교차로 바닥: 평면 z = a + gx·(x − cx)/10 + gy·(y − cy)/10 (평면마다 미지수 셋)
+    P = len(plates)
+    pc, pv, pw = [], [], []
+    for q, pts in enumerate(plates):
+        xs = np.array([S.x[i] for i in pts])
+        ys = np.array([S.y[i] for i in pts])
+        cx, cy = xs.mean(), ys.mean()
+        base = n + 3 * q
+        m = len(pts)
+        pc.append(np.stack([np.asarray(pts), np.full(m, base), np.full(m, base + 1), np.full(m, base + 2)], axis=1))
+        pv.append(np.stack([np.ones(m), -np.ones(m), -(xs - cx) / 10, -(ys - cy) / 10], axis=1))
+        pw.append(span[np.asarray(pts)] / FAIR_SIGMA_PLATE**2)
+    if P:
+        add(np.concatenate(pc), np.concatenate(pv), np.concatenate(pw), np.zeros(sum(len(p) for p in plates)))
+        # 기울기 미지수가 정해지지 않는 평면(점이 한 줄)을 위해 아주 약하게 평평한 쪽으로
+        g_ids = np.array([[n + 3 * q + 1] for q in range(P)] + [[n + 3 * q + 2] for q in range(P)])
+        add(g_ids, np.ones((2 * P, 1)), np.full(2 * P, 1e-3), np.zeros(2 * P))
+    M = n + 3 * P
+    # 이웃 점 사이 높이 차 상한 (기울기 상한·교차로 앞 눕힌 곳): 고르고 나서 넘는 곳만 묶어 다시 푼다.
+    # 교차로 바닥 안의 점끼리는 빼고 (바닥 평면이 정한다: 바닥에서 바로 내려가는 연결로의 상한에 묶이면 교차점만 꺼진 채 남는다)
+    inplate = np.zeros(n, bool)
+    for pts in plates:
+        inplate[pts] = True
+    gi, gj, gc = [], [], []
+    for i in range(n):
+        for j, _, c in S.adj[i]:
+            if i < j and not (inplate[i] and inplate[j]):
+                gi.append(i)
+                gj.append(j)
+                gc.append(c)
+    GI = np.array(gi, int)
+    GJ = np.array(gj, int)
+    GC = np.array(gc)
+    x = np.concatenate([np.asarray(z, float), np.zeros(3 * P)])
+    for q, pts in enumerate(plates):
+        x[n + 3 * q] = float(np.mean([z[i] for i in pts]))
+    bound = np.zeros(len(GI), bool)
+    iters = 0
+    for rnd in range(FAIR_GRADE_ROUNDS + 1):
+        if rnd:
+            over = (np.abs(x[GJ] - x[GI]) > GC + 0.05) & ~bound
+            if not over.any():
+                break
+            bound |= over
+            k = np.flatnonzero(over)
+            sign = np.sign(x[GJ[k]] - x[GI[k]])
+            add(np.stack([GI[k], GJ[k]], axis=1), np.stack([-np.ones(len(k)), np.ones(len(k))], axis=1), np.full(len(k), FAIR_GRADE_W), sign * GC[k])
+        x, it = _cg(np.concatenate(rows_r), np.concatenate(rows_c), np.concatenate(rows_v), np.concatenate(w_all), np.concatenate(t_all), R, M, x)
+        iters += it
+    out = [float(v) for v in x[:n]]
+    dz = np.abs(x[:n] - np.asarray(z, float))
+    steep = int((np.abs(x[GJ] - x[GI]) > GC + 0.05).sum())
+    return out, {"fair_iters": iters, "fair_moved_max": float(dz.max()) if n else 0.0, "fair_moved_1m": int((dz > 1).sum()), "fair_plates": P, "fair_bound": int(bound.sum()), "fair_steep": steep}
+
+
+def _cg(rr, cc, vv, W, T, R: int, M: int, x: np.ndarray, max_iter: int = 1500, tol: float = 1e-7) -> tuple[np.ndarray, int]:
+    """∑ W·(C x − T)² 최소: 켤레 기울기 (대각 선조건). 줄 rr·열 cc·계수 vv로 적은 성긴 C"""
+
+    def Ax(v):
+        y = np.bincount(rr, vv * v[cc], minlength=R)
+        return np.bincount(cc, vv * (W * y)[rr], minlength=M)
+
+    b = np.bincount(cc, vv * (W * T)[rr], minlength=M)
+    diag = np.bincount(cc, W[rr] * vv**2, minlength=M)
+    x = x.copy()
+    r = b - Ax(x)
+    zr = r / diag
+    p = zr.copy()
+    rz = float(r @ zr)
+    b_norm = float(np.linalg.norm(b)) or 1.0
+    it = 0
+    for it in range(1, max_iter + 1):
+        Ap = Ax(p)
+        alpha = rz / float(p @ Ap)
+        x += alpha * p
+        r -= alpha * Ap
+        if float(np.linalg.norm(r)) < tol * b_norm:
+            break
+        zr = r / diag
+        rz_new = float(r @ zr)
+        p = zr + (rz_new / rz) * p
+        rz = rz_new
+    return x, it
+
+
+def plate_points(S: Samples, edges: list[dict], degree, node_xy, touch) -> list[list[int]]:
+    """교차로(도로 셋 이상 만나는 점, 게임이 한 교차로로 묶는 점들은 함께)마다 바닥에 놓일 점: 교차점과 거기서 PLATE_R m 안의 토막 점.
+    다리·터널 토막 점은 빼고, 여러 교차점 묶음에서는 다리·터널에 닿은 교차점도 뺀다 (고가 위 점과 그 밑 길이 묶이기도 한다)"""
+    groups = [g for g in clusters(node_xy, edges, degree)]
+    grouped = set(v for g in groups for v in g)
+    bt = lambda v: any(edges[k]["bridge"] or edges[k]["tunnel"] for k in touch[v])
+    groups = [[v for v in g if not bt(v)] for g in groups]
+    groups += [[v] for v in range(S.N) if degree[v] >= 3 and v not in grouped]
+    out = []
+    for g in groups:
+        if not g:
+            continue
+        gs = set(g)
+        pts = set(g)
+        # 정지선 자리: 가장 넓은 도로 폭 절반 + 횡단보도·정지선 앞 간격 (좁은 길 교차로는 작게: 비탈 골목에서 바닥이 링크를 다 차지하지 않게)
+        R = max(PLATE_R_MIN, min(PLATE_R, max(half_width(edges[k]) for v in g for k in touch[v]) + PLATE_PAD))
+        for v in g:
+            for k in touch[v]:
+                ed = edges[k]
+                if ed["bridge"] or ed["tunnel"]:
+                    continue
+                ids, u = S.of_edge[k]
+                L = ed["len"]
+                inner = ed["a"] in gs and ed["b"] in gs
+                for i in range(1, len(ids) - 1):
+                    if inner or (ed["a"] == v and u[i] <= R) or (ed["b"] == v and L - u[i] <= R):
+                        pts.add(ids[i])
+        if len(pts) >= 3:
+            out.append(sorted(pts))
+    return out
+
+
 def settle(node_xy, z_node: np.ndarray, edges: list[dict], profiles: dict[int, list[int]], profile_step: float, degree, grade_scale: float = 1.0):
     """교차점 높이(z_node)와 토막 높이 굴곡(profiles, 0.1m 정수)을 고쳐 돌려준다.
     grade_scale: 기울기 상한 배수. 국도는 지형이 산·골짜기 그대로라(빌딩이 섞이지 않는다) 1.5로 두어 지형 잡음(터널 입구 비탈 등)만 깎는다"""
@@ -458,6 +673,12 @@ def settle(node_xy, z_node: np.ndarray, edges: list[dict], profiles: dict[int, l
             up, lo, uu, ul, _, _ = pairs[q]
             if at(up, uu) - at(lo, ul) < gap + (CLEAR - gap) / 2:
                 dragged.add(q)
+    # 4) 고르기 (입체 교차로 벌린 위·아래 점은 거의 그대로)
+    pinned: set[int] = set()
+    for up, lo, uu, ul, _, _ in pairs:
+        pinned.update(near(up, uu, half_width(edges[lo]) + 3))
+        pinned.update(near(lo, ul, half_width(edges[up]) + 3))
+    z, fstats = fair(S, z, edges, degree, free, pinned, plate_points(S, edges, degree, node_xy, touch))
     left = 0
     for up, lo, uu, ul, _, _ in pairs:
         if at(up, uu) - at(lo, ul) < CLEAR - 0.5:
@@ -494,5 +715,6 @@ def settle(node_xy, z_node: np.ndarray, edges: list[dict], profiles: dict[int, l
         "lifted": moved,
         "rounds": rounds,
         "short_left": left,
+        **fstats,
     }
     return z_out, new_prof, stats
