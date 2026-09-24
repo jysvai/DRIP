@@ -545,7 +545,7 @@ export class RuleEngine {
             kind = "side";
             other = a.type.id;
             // 차선을 물고 달리는 차가 플레이어 쪽으로 붙어 있었다 (자기 차로 가운데보다 플레이어에 가깝다)
-            lineRide = !!a.lineBias && Math.abs(a.lineNow) > 0.5 && Math.abs(f.d - a.d) < Math.abs(f.d - (a.d - a.lineNow));
+            lineRide = !!a.lineBias && Math.abs(a.lineNow) > 0.3 && Math.abs(f.d - a.d) < Math.abs(f.d - (a.d - a.lineNow));
             break;
           }
           if (a.brakedByPlayer > 0 && f.t - a.brakedByPlayer < 0.2) {

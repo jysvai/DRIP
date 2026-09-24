@@ -156,6 +156,8 @@ export class Game {
   private signalCancelAt = -1;
   private laneForSignal = 0;
   private contactCooldown = 0;
+  /** 시내: 지금 맞닿아 있는 경로 밖 차와 닿기 시작한 때 */
+  private cityTouch: { a: Agent; since: number } | null = null;
   private baseDaylight = 1;
   private fpsFrames = 0;
   private fpsTime = 0;
@@ -1201,10 +1203,21 @@ export class Game {
     const p = this.player;
     const pb = this.playerBody();
     const a = ct.hit(pb);
-    if (!a) return;
+    if (!a) {
+      this.cityTouch = null;
+      return;
+    }
     const [vx, vy] = ct.velocityOf(a);
     const kmh = Math.hypot(pb.hx * pb.v - vx, pb.hy * pb.v - vy) * 3.6;
-    if (this.contactCooldown <= 0) {
+    // 같은 차와 계속 맞닿아 있는 것은 한 번의 접촉이다. 둘 다 선 채 3초가 지나면 (서로 비켜 주기를 기다리는 교착) 그 차를 먼저 보낸다
+    const again = this.cityTouch?.a === a;
+    if (!again) this.cityTouch = { a, since: this.t };
+    else if (kmh < 3 && this.t - this.cityTouch!.since > 3) {
+      ct.letGo(a);
+      this.cityTouch = null;
+      return;
+    }
+    if (this.contactCooldown <= 0 && !again) {
       this.rules.crash(this.frameInfo(0), `${a.type.id}:crossing`, kmh);
       this.contactCooldown = 1;
     }
@@ -1433,18 +1446,35 @@ export class Game {
     let stopGap = Infinity;
     const st = this.city ? this.stopAhead(p.s) : null;
     const tgt = this.city ? this.laneTargets.find((x) => x.s > p.s) : undefined;
+    // 차로 옮기기: 앞에서 차로가 줄면 그 전에, 시내는 450m 앞 교차로·갈림길에서 경로로 가는 차로로.
+    // 한 번에 한 차로씩, 방향지시등을 켜고 (시내 30m, 고속도로 100m) 넘게 간 뒤 옆 차로가 비었을 때 옮긴다
+    const cur = road.laneOf(p.d, p.s);
+    let squeeze = false; // 꼭 옮겨야 하는데 옆 차로가 막혔다: 속도를 줄여 틈을 만든다
+    if (cur === this.autoLane && cur >= 1 && cur <= lanes) {
+      let fit = lanes;
+      let drop = Infinity; // 지금 차로가 없어지는 곳까지
+      for (let x = 20; x <= (this.city ? 200 : 600); x += 20) {
+        const s = p.s + x;
+        if (s >= road.length || (this.city && road.inJunction(s))) break;
+        fit = Math.min(fit, road.lanesAt(s));
+        if (fit < cur && drop === Infinity) drop = x;
+      }
+      const want = Math.min(fit, tgt && tgt.s - p.s < 450 ? Math.max(tgt.lanes[0], Math.min(tgt.lanes[1], cur)) : cur);
+      const next = cur + Math.sign(want - cur);
+      if (next === cur) this.autoLcTo = 0;
+      else if (this.autoLcTo !== next) {
+        this.autoLcTo = next;
+        this.autoLcS = p.s;
+      } else if (p.s - this.autoLcS > (this.city ? 32 : 110)) {
+        if (this.laneClear(next, p.s)) this.autoLane = next;
+        else squeeze = drop < (this.city ? 120 : 250) || (!!tgt && tgt.s - p.s < 300);
+      }
+    }
+    // 방향지시등: 차로를 옮길 때 (차로가 갑자기 줄어 차도 밖에 남았으면 차도 쪽으로), (시내) 돌기 60m 앞부터
+    const to = cur < 1 || cur > lanes ? Math.max(1, Math.min(lanes, cur)) : this.autoLane !== cur ? this.autoLane : this.autoLcTo;
+    const want = to && to !== cur ? Math.sign(to - cur) : st && st.turn !== "S" && st.s - p.s < 60 ? (st.turn === "L" ? -1 : 1) : 0;
+    if (want && this.signal !== want) this.setSignal(want as -1 | 1);
     if (this.city) {
-      // 한 번에 한 차로씩: 방향지시등을 켜고 30m 넘게 간 뒤 옆 차로가 비었을 때 옮긴다
-      const cur = road.laneOf(p.d, p.s);
-      if (tgt && tgt.s - p.s < 450 && cur === this.autoLane) {
-        const want = Math.max(tgt.lanes[0], Math.min(tgt.lanes[1], cur));
-        const next = cur + Math.sign(want - cur);
-        if (next === cur) this.autoLcTo = 0;
-        else if (this.autoLcTo !== next) {
-          this.autoLcTo = next;
-          this.autoLcS = p.s;
-        } else if (p.s - this.autoLcS > 32 && this.laneClear(next, p.s)) this.autoLane = next;
-      } else if (cur === this.autoLane) this.autoLcTo = 0;
       const gap = st ? st.s - 1 - (p.s + p.spec.length / 2) : Infinity;
       if (st?.signal && gap > -1) {
         const go = this.city.signals.go(st.junction, st.link, st.turn, this.signalClock);
@@ -1463,10 +1493,6 @@ export class Game {
         const g = this.cityTraffic.gapAhead(pb.x, pb.y, pb.hx, pb.hy, pb.len, pb.w, 50);
         if (g < stopGap) stopGap = Math.max(0.1, g);
       }
-      // 방향지시등: 차로를 옮길 때, 돌기 60m 앞부터
-      const to = this.autoLane !== cur ? this.autoLane : this.autoLcTo;
-      const want = to && to !== cur && cur >= 1 && cur <= lanes ? Math.sign(to - cur) : st && st.turn !== "S" && st.s - p.s < 60 ? (st.turn === "L" ? -1 : 1) : 0;
-      if (want && this.signal !== want) this.setSignal(want as -1 | 1);
     }
     const v = Math.max(p.vx, 1);
     const Ld = this.city ? Math.max(6, v * 1.1) : Math.max(12, v * 1.1);
@@ -1479,7 +1505,8 @@ export class Game {
     let lead: Agent | null = null;
     let gap = Infinity;
     for (const a of this.traffic.agents) {
-      if (a.lane !== this.autoLane && a.targetLane !== this.autoLane) continue;
+      // 가려는 차로의 차, 그리고 차로를 옮기는 중에도 아직 내 앞을 막고 있는 차
+      if (a.lane !== this.autoLane && a.targetLane !== this.autoLane && Math.abs(a.d - p.d) > (a.width + p.spec.width) / 2 + 0.3) continue;
       const g = a.s - a.len / 2 - (p.s + p.spec.length / 2);
       if (g > -1 && g < gap) {
         gap = g;
@@ -1487,7 +1514,13 @@ export class Game {
       }
     }
     // 제한속도(공사 구간·악천후 감속 포함)보다 조금 낮게, 미끄러우면 굽은 길에서 더 천천히
-    const v0 = (this.rules.limitAt(p.s) - 5) / 3.6;
+    let v0 = (this.rules.limitAt(p.s) - 5) / 3.6;
+    // 제한속도가 낮아지는 곳은 미리 1m/s²로 줄여 표지판에서 맞춘다
+    for (let x = 25; x <= 250; x += 25) {
+      const lim = (this.rules.limitAt(Math.min(road.length - 1, p.s + x)) - 5) / 3.6;
+      if (lim < v0) v0 = Math.min(v0, Math.sqrt(lim * lim + 2 * x));
+    }
+    if (squeeze) v0 *= 0.6;
     const grip = p.grip(p.speed * 3.6);
     let vc = v0;
     if (this.city) {
@@ -1509,7 +1542,17 @@ export class Game {
     }
     const has = Number.isFinite(leadGap);
     const sStar = (this.city ? 1.5 : 3) + Math.max(0, v * (this.city ? 1.2 : 1.6) + (has ? (v * (v - leadV)) / (2 * Math.sqrt(2 * 3)) : 0));
-    const accel = 2 * (1 - (v / Math.max(0.5, vc)) ** 4 - (has ? (sStar / Math.max(0.5, leadGap)) ** 2 : 0));
+    const free = 2 * (1 - (v / Math.max(0.5, vc)) ** 4);
+    let accel = free - (has ? 2 * (sStar / Math.max(0.5, leadGap)) ** 2 : 0);
+    // ACC (Kesting·Treiber 2010): 앞으로 끼어든 차가 더 빠르거나 조금만 느리면 IDM처럼 급히 밟지 않고,
+    // 앞차가 지금 가속도를 이어 간다고 보고(CAH) 필요한 만큼에 1m/s²쯤만 더 줄인다 (공기저항까지 2m/s² 안쪽). 선 차·정지선은 IDM 그대로
+    if (lead && leadGap === gap && leadV > 0.5) {
+      const aL = Math.min(lead.acc, 2);
+      const sL = Math.max(0.5, leadGap);
+      const cah = leadV * (v - leadV) <= -2 * sL * aL ? (v * v * aL) / Math.max(1e-6, leadV * leadV - 2 * sL * aL) : aL - Math.max(0, v - leadV) ** 2 / (2 * sL);
+      // 앞차 때문에 덜 줄일 뿐, 제한속도·굽은 길에 맞춘 속도(free)를 넘겨 밟지는 않는다
+      if (accel < cah) accel = Math.min(free, 0.01 * accel + 0.99 * (cah + Math.tanh(accel - cah)));
+    }
     return {
       throttle: accel > 0 ? Math.min(1, accel / 2 + 0.15) : 0,
       // 내리막에서 발을 떼도 빨라지면 살짝 밟는다
@@ -1520,10 +1563,14 @@ export class Game {
   }
 
   /** 자동 운전: 옆 차로 앞뒤가 비었는지 (뒤 15m, 앞 10m) */
+  /** 옆 차로가 비었는지: 차 앞뒤 끝이 내 차 앞 8m ~ 뒤 12m(뒤에서 더 빨리 오는 차는 1.5초 거리, 12m까지 더) 안에 걸치면 막혔다. 긴 화물차도 끝으로 본다 */
   private laneClear(lane: number, s: number): boolean {
+    const half = this.player.spec.length / 2;
+    const v = this.player.speed;
     for (const a of this.traffic.agents) {
       if (a.lane !== lane && a.targetLane !== lane) continue;
-      if (a.s > s - 15 && a.s < s + 10) return false;
+      const back = 12 + (a.s < s ? Math.min(12, Math.max(0, a.v - v) * 1.5) : 0);
+      if (a.s - a.len / 2 < s + half + 8 && a.s + a.len / 2 > s - half - back) return false;
     }
     return true;
   }

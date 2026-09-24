@@ -95,6 +95,8 @@ interface Free {
   stuck: number;
   /** 교착을 풀려고 다른 차를 무시하고 지나가는 중 */
   ghost: boolean;
+  /** 플레이어와 맞닿은 채 둘 다 서 버려서, 플레이어도 무시하고 먼저 빠져나간다 */
+  letGo: boolean;
 }
 
 /** 부딪힘을 볼 몸체 (도로망 좌표) */
@@ -812,6 +814,7 @@ export class CityTraffic implements TrafficCity {
       hy: 0,
       stuck: 0,
       ghost: false,
+      letGo: false,
     };
     this.poseOf(car);
     return car;
@@ -919,7 +922,12 @@ export class CityTraffic implements TrafficCity {
       let vl = 0;
       if (f.ghost && f.u > f.mvEnd + a.len) f.ghost = false;
       for (const b of bodies) {
-        if (b.ref === a || (f.ghost && b.ref !== "player")) continue;
+        if (
+          b.ref === a ||
+          (f.ghost && b.ref !== "player") ||
+          (f.letGo && b.ref === "player")
+        )
+          continue;
         if (b.waiting && Math.abs(b.hx * f.hx + b.hy * f.hy) < 0.7) continue;
         // 정지선을 넘은 차는 같은 쪽으로 가는 차(와 플레이어)만 앞차로 본다. 길이 엇갈리는 차는 교차로에 먼저 들어간 차, 만나는 곳에 먼저 닿는 차가 먼저
         let g = coneGap(
@@ -1151,6 +1159,7 @@ export class CityTraffic implements TrafficCity {
     const phx = p.hx;
     const phy = p.hy;
     for (const f of this.cars) {
+      if (f.letGo) continue;
       const dx = f.x - p.x;
       const dy = f.y - p.y;
       if (dx * dx + dy * dy > 100) continue;
@@ -1161,6 +1170,12 @@ export class CityTraffic implements TrafficCity {
         return f.a;
     }
     return null;
+  }
+
+  /** 플레이어와 맞닿아 둘 다 선 차를 먼저 보낸다 (다른 차도 플레이어도 보지 않고 제 길을 간다) */
+  letGo(a: Agent) {
+    const f = this.cars.find((c) => c.a === a);
+    if (f) f.letGo = f.ghost = true;
   }
 
   /** 자유 차의 속도 벡터 (도로망 좌표) */

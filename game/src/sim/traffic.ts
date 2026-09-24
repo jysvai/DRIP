@@ -67,7 +67,7 @@ export interface Agent {
   surgeRate: number;
   surgeT: number;
   surgeK: number;
-  /** 차선 물기: 차로 가운데에서 치우치는 양 (m, 오른쪽 +, 0이면 안 문다)과 지금 치우친 양 */
+  /** 차선 물기: 옆면이 차선을 넘는 양 (m, 오른쪽 +, 0이면 안 문다)과 지금 가운데에서 치우친 양 */
   lineBias: number;
   lineNow: number;
   /** 플레이어 때문에 급제동했는지 (아차사고 판정용) */
@@ -246,7 +246,7 @@ export class Traffic {
       surgeRate: opposite ? 0 : (pr.surge ?? 0),
       surgeT: 0,
       surgeK: 0,
-      lineBias: !opposite && this.rng.next() < (pr.lineRide ?? 0) ? (this.rng.next() < 0.5 ? -1 : 1) * (1.05 + this.rng.next() * 0.3) : 0,
+      lineBias: !opposite && this.rng.next() < (pr.lineRide ?? 0) ? (this.rng.next() < 0.5 ? -1 : 1) * (0.1 + this.rng.next() * 0.3) : 0,
       lineNow: 0,
       brakedByPlayer: 0,
     };
@@ -521,7 +521,9 @@ export class Traffic {
       let line = 0;
       if (a.lineBias && a.targetLane === a.lane) {
         const outward = (a.lineBias < 0 && a.lane === 1) || (a.lineBias > 0 && a.lane >= road.lanesAt(sr));
-        line = a.lineBias * (outward ? 0.3 : 1) * (0.925 + 0.075 * Math.sin(time * 0.07 + a.wander));
+        // 옆면이 차선을 lineBias(10~40cm)만큼 넘도록: 차로 폭·차 폭에 맞춘다 (시내 3.25m 차로의 화물차는 덜 치우친다)
+        const lean = Math.max(0, road.laneWidth / 2 - a.width / 2) + Math.abs(a.lineBias);
+        line = Math.sign(a.lineBias) * lean * (outward ? 0.3 : 1) * (0.925 + 0.075 * Math.sin(time * 0.07 + a.wander));
       }
       a.lineNow += (line - a.lineNow) * Math.min(1, dt * 0.6);
       let d: number;

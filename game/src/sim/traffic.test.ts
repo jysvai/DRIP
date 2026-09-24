@@ -248,7 +248,7 @@ describe("한국 운전 버릇", () => {
     t.fill(player);
     const riders = t.agents.filter((a) => a.s > player.s && !a.parked).slice(0, 16);
     for (const a of t.agents) a.lineBias = 0;
-    riders.forEach((a, i) => (a.lineBias = i % 2 ? 1.2 : -1.2));
+    riders.forEach((a, i) => (a.lineBias = i % 2 ? 0.25 : -0.25));
     for (let i = 0; i < 30 * 20; i++) {
       player.s += player.v * 0.05;
       t.update(0.05, player, i * 0.05);
