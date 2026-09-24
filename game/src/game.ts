@@ -1565,14 +1565,18 @@ export class Game {
   }
 
   /** 자동 운전: 옆 차로 앞뒤가 비었는지 (뒤 15m, 앞 10m) */
-  /** 옆 차로가 비었는지: 차 앞뒤 끝이 내 차 앞 8m ~ 뒤 12m(뒤에서 더 빨리 오는 차는 1.5초 거리, 12m까지 더) 안에 걸치면 막혔다. 긴 화물차도 끝으로 본다 */
+  /**
+   * 옆 차로가 비었는지: 차 앞뒤 끝이 내 차 앞 4m+0.4초 ~ 뒤 6m+0.6초(뒤에서 더 빨리 오는 차는 1.5초 거리, 12m까지 더) 안에 걸치면 막혔다.
+   * 긴 화물차도 끝으로 본다. 기어가는 줄에서는 차 한 대 들어갈 틈이면 된다
+   */
   private laneClear(lane: number, s: number): boolean {
     const half = this.player.spec.length / 2;
     const v = this.player.speed;
     for (const a of this.traffic.agents) {
       if (a.lane !== lane && a.targetLane !== lane) continue;
-      const back = 12 + (a.s < s ? Math.min(12, Math.max(0, a.v - v) * 1.5) : 0);
-      if (a.s - a.len / 2 < s + half + 8 && a.s + a.len / 2 > s - half - back) return false;
+      const front = 4 + v * 0.4;
+      const back = 6 + v * 0.6 + (a.s < s ? Math.min(12, Math.max(0, a.v - v) * 1.5) : 0);
+      if (a.s - a.len / 2 < s + half + front && a.s + a.len / 2 > s - half - back) return false;
     }
     return true;
   }
