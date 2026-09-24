@@ -530,6 +530,42 @@ export class CityTraffic implements TrafficCity {
   }
 
   /**
+   * 자동 운전: 경로 도로 lane 차로를 따라 앞 range m 안에 들어와 있는, 같은 쪽으로 가는 자유 차까지 간격
+   * (합류하거나 차로가 모이는 곳에서 앞으로 들어오는 차. 가운데가 내 가운데보다 앞선 차만)
+   */
+  /** laneGap이 찾은 차의 (내 길 방향) 속도 */
+  laneGapV = 0;
+
+  laneGap(s: number, lane: number, len: number, width: number, range = 30): number {
+    if (!this.cars.length) return Infinity;
+    const road = this.road;
+    for (let x = len / 2 + 1; x <= range; x += 2) {
+      const ss = s + x;
+      if (ss >= road.length - 1) break;
+      const w = road.toWorld(ss, road.laneCenter(Math.max(1, Math.min(lane, road.lanesAt(ss))), ss), this.tw);
+      const px = w.e - this.ox;
+      const py = w.n - this.oy;
+      const hx = Math.cos(w.heading);
+      const hy = Math.sin(w.heading);
+      let best = Infinity;
+      for (const f of this.cars) {
+        if (f.hx * hx + f.hy * hy < 0.7) continue;
+        const rx = f.x - px;
+        const ry = f.y - py;
+        const along = rx * hx + ry * hy;
+        if (x + along < 0) continue;
+        const g = Math.max(0.1, x + along - f.a.len / 2 - len / 2);
+        if (g < best && Math.abs(along) < f.a.len / 2 + 1 && Math.abs(ry * hx - rx * hy) < (width + f.a.width) / 2 + 0.3) {
+          best = g;
+          this.laneGapV = f.a.v * (f.hx * hx + f.hy * hy);
+        }
+      }
+      if (best < Infinity) return best;
+    }
+    return Infinity;
+  }
+
+  /**
    * 자동 운전: 교차로에 이미 들어간 차(늦게 건너는 화물차 등)와 길이 엇갈리면 만나는 곳 앞까지 간격.
    * 내가 닿기 전에 상대가 다 지나가면 보지 않는다. 나도 들어갔으면 만나는 곳에 먼저 닿는 쪽이 간다 (자유 차와 같은 규칙).
    * 아직 들어가지 않은 차는 신호를 지키므로 보지 않는다
@@ -929,19 +965,65 @@ export class CityTraffic implements TrafficCity {
   private poseOf(f: Free) {
     const p = f.path;
     const u = Math.max(0, Math.min(p.len, f.u));
-    const q = pointAt(p.pts, p.cum, u, this.q);
-    f.x = q.x;
-    f.y = q.y;
-    f.hx = q.tx;
-    f.hy = q.ty;
-    const h = Math.atan2(q.ty, q.tx);
-    const q2 = pointAt(p.pts, p.cum, Math.min(p.len, u + 3), this.q2);
+    // 앞뒤 끝 가까이(바퀴 자리)가 길 위에 오게 놓는다. 가운데 접선으로 놓으면 돌 때 긴 차 꽁무니가 바깥 차로로 휘둘린다
+    const k = f.a.len * 0.45;
+    const r = this.onPath(p, u - k, this.q);
+    const rx = r.x;
+    const ry = r.y;
+    const t0 = Math.atan2(r.ty, r.tx);
+    const fr = this.onPath(p, u + k, this.q2);
+    const n = Math.hypot(fr.x - rx, fr.y - ry) || 1;
+    f.hx = (fr.x - rx) / n;
+    f.hy = (fr.y - ry) / n;
+    f.x = (rx + fr.x) / 2;
+    f.y = (ry + fr.y) / 2;
+    const h = Math.atan2(f.hy, f.hx);
     const pose = f.a.pose!;
-    pose.e = q.x + this.ox;
-    pose.n = q.y + this.oy;
+    pose.e = f.x + this.ox;
+    pose.n = f.y + this.oy;
     pose.z = this.zOf(p, u);
     pose.heading = h;
-    pose.kappa = wrapAngle(Math.atan2(q2.ty, q2.tx) - h) / 3;
+    pose.kappa = wrapAngle(Math.atan2(fr.ty, fr.tx) - t0) / Math.max(1, 2 * k);
+  }
+
+  /** 길 위 u 자리 (길 끝 너머는 끝 방향으로 곧게 늘인다) */
+  private onPath(p: Path, u: number, out: PolyPoint): PolyPoint {
+    const q = pointAt(p.pts, p.cum, u, out);
+    const over = u < 0 ? u : u > p.len ? u - p.len : 0;
+    q.x += q.tx * over;
+    q.y += q.ty * over;
+    return q;
+  }
+
+  /**
+   * 내 길 앞(1.5초 거리, 적어도 8m)이 플레이어 차체나 1초 뒤 플레이어 자리에 닿으면 그 앞까지 간격.
+   * 합류하는 곳·차로가 모이는 곳에서 나란히 가던 플레이어를 옆에서 덮치지 않는다
+   */
+  private pathMeets(f: Free, pb: PlayerBody): number {
+    const a = f.a;
+    const reach = Math.max(8, a.v * 1.5);
+    const dx = pb.x - f.x;
+    const dy = pb.y - f.y;
+    if (dx * dx + dy * dy > (reach + a.len + 10) ** 2) return Infinity;
+    // 플레이어가 통째로 내 뒤에 있으면 내가 먼저 (뒤차가 기다린다)
+    if (dx * f.hx + dy * f.hy + pb.len / 2 < -a.len / 2) return Infinity;
+    const lead = Math.max(0, pb.v);
+    for (let i = 1; i <= 8; i++) {
+      const d = (reach * i) / 8;
+      const u = f.u + a.len / 2 + d;
+      if (u > f.path.len) break;
+      const q = pointAt(f.path.pts, f.path.cum, u, this.q2);
+      const rx = q.x - pb.x;
+      const ry = q.y - pb.y;
+      const along = rx * pb.hx + ry * pb.hy;
+      if (
+        Math.abs(ry * pb.hx - rx * pb.hy) < (pb.w + a.width) / 2 + 0.2 &&
+        along > -pb.len / 2 - 0.5 &&
+        along < pb.len / 2 + 0.5 + lead
+      )
+        return Math.max(0.1, d - 1);
+    }
+    return Infinity;
   }
 
   /** 이번 걸음에 볼 몸체: 플레이어, 가까운 경로 차(반대편 포함), 자유 차 */
@@ -1107,7 +1189,16 @@ export class CityTraffic implements TrafficCity {
           }
         }
       }
-      // 정지선. 파란불이어도 건너편 나갈 자리가 막혀 있으면 들어가지 않는다 (교차로를 막지 않게)
+      // 합류: 내 길이 플레이어 쪽으로 모이면 나란히 가던 플레이어가 먼저
+      if (!f.letGo) {
+        const g = this.pathMeets(f, player);
+        if (g < gap) {
+          gap = g;
+          vl = Math.max(0, player.v * (player.hx * f.hx + player.hy * f.hy));
+          byPlayer = true;
+        }
+      }
+      // 정지선.파란불이어도 건너편 나갈 자리가 막혀 있으면 들어가지 않는다 (교차로를 막지 않게)
       if (!f.committed && f.stopU >= 0) {
         const dist = f.stopU - (f.u + a.len / 2);
         if (dist < -0.3) f.committed = true;

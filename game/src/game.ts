@@ -1542,6 +1542,13 @@ export class Game {
     // 정지선은 서 있는 앞차로 본다
     let leadV = lead ? lead.v : 0;
     let leadGap = gap;
+    // (시내) 합류하거나 차로가 모이는 곳에서 내 차로로 앞에 들어온 경로 밖 차
+    const merge = this.cityTraffic ? this.cityTraffic.laneGap(p.s, this.autoLane, p.spec.length, p.spec.width) : Infinity;
+    if (merge < leadGap) {
+      leadGap = merge;
+      leadV = Math.max(0, this.cityTraffic!.laneGapV);
+      lead = null;
+    }
     if (stopGap < leadGap) {
       leadGap = stopGap;
       leadV = 0;

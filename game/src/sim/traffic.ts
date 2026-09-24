@@ -379,8 +379,15 @@ export class Traffic {
       }
     }
     const p = this.playerInfo;
-    // 차로 번호가 어긋나도 (교차로 곡선에서 차도 밖에 남은 플레이어 등) 옆으로 겹치면 앞차로 본다
-    const overlap = p && lane === a.lane && Math.abs(p.d - a.d) < (p.w + a.width) / 2 + 0.2;
+    // 차로 번호가 어긋나도 (교차로 곡선에서 차도 밖에 남은 플레이어 등) 옆으로 겹치면 앞차로 본다.
+    // 차로가 휘거나 좁아지는 곳(갈림·합류)은 플레이어 자리에 닿았을 때 내 차로 가운데로 본다
+    let overlap = false;
+    if (p && lane === a.lane && p.s > s && p.s - s < 60) {
+      const reach = Math.min(this.road.length - 1, Math.max(0, p.s));
+      const there = a.opposite ? a.d : a.d + this.road.laneCenter(lane, reach) - this.road.laneCenter(lane, Math.max(0, Math.min(this.road.length - 1, s)));
+      const need = (p.w + a.width) / 2 + 0.2;
+      overlap = Math.abs(p.d - a.d) < need || Math.abs(p.d - there) < need;
+    }
     if (includePlayer && p && !a.opposite && (p.lanes.includes(lane) || overlap) && p.s > s) {
       const gap = p.s - p.len / 2 - (s + a.len / 2);
       if (gap < best.gap) best = { gap, v: p.v, isPlayer: true };
