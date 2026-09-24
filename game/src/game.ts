@@ -1446,7 +1446,7 @@ export class Game {
     let stopGap = Infinity;
     const st = this.city ? this.stopAhead(p.s) : null;
     const tgt = this.city ? this.laneTargets.find((x) => x.s > p.s) : undefined;
-    // 차로 옮기기: 앞에서 차로가 줄면 그 전에, 시내는 450m 앞 교차로·갈림길에서 경로로 가는 차로로.
+    // 차로 옮기기: 앞에서 차로가 줄면 그 전에, 시내는 앞 교차로·갈림길에서 경로로 가는 차로로 (500m 앞부터, 여러 차로면 더 일찍).
     // 한 번에 한 차로씩, 방향지시등을 켜고 (시내 30m, 고속도로 100m) 넘게 간 뒤 옆 차로가 비었을 때 옮긴다
     const cur = road.laneOf(p.d, p.s);
     let squeeze = false; // 꼭 옮겨야 하는데 옆 차로가 막혔다: 속도를 줄여 틈을 만든다
@@ -1459,7 +1459,9 @@ export class Game {
         fit = Math.min(fit, road.lanesAt(s));
         if (fit < cur && drop === Infinity) drop = x;
       }
-      const want = Math.min(fit, tgt && tgt.s - p.s < 450 ? Math.max(tgt.lanes[0], Math.min(tgt.lanes[1], cur)) : cur);
+      // 옮길 차로가 많을수록 일찍 (한 차로에 200m씩 더)
+      const need = tgt ? Math.max(tgt.lanes[0], Math.min(tgt.lanes[1], cur)) : cur;
+      const want = Math.min(fit, tgt && tgt.s - p.s < 300 + 200 * Math.abs(need - cur) ? need : cur);
       const next = cur + Math.sign(want - cur);
       if (next === cur) this.autoLcTo = 0;
       else if (this.autoLcTo !== next) {
@@ -1524,10 +1526,10 @@ export class Game {
     const grip = p.grip(p.speed * 3.6);
     let vc = v0;
     if (this.city) {
-      // 교차로 회전: 80m 안의 가장 굽은 곳에 맞춰 (2m/s²로 줄여 가며) 속도를 정한다
+      // 교차로 회전: 80m 안의 가장 굽은 곳에 맞춰 (1.5m/s²로 줄여 가며) 속도를 정한다
       for (let x = 0; x <= 80; x += 4) {
         const k = Math.abs(road.sample(Math.min(road.length - 1, p.s + x)).kappa);
-        if (k > 1e-4) vc = Math.min(vc, Math.sqrt((2.5 * grip) / k + 2 * 2 * x));
+        if (k > 1e-4) vc = Math.min(vc, Math.sqrt((2.5 * grip) / k + 2 * 1.5 * x));
       }
     } else {
       const kk = Math.abs(road.sample(Math.min(road.length - 1, p.s + 120)).kappa);
@@ -1541,7 +1543,7 @@ export class Game {
       leadV = 0;
     }
     const has = Number.isFinite(leadGap);
-    const sStar = (this.city ? 1.5 : 3) + Math.max(0, v * (this.city ? 1.2 : 1.6) + (has ? (v * (v - leadV)) / (2 * Math.sqrt(2 * 3)) : 0));
+    const sStar = (this.city ? 1.5 : 3) + Math.max(0, v * (this.city ? 1.2 : 1.6) + (has ? (v * (v - leadV)) / (2 * Math.sqrt(2 * 2)) : 0));
     const free = 2 * (1 - (v / Math.max(0.5, vc)) ** 4);
     let accel = free - (has ? 2 * (sStar / Math.max(0.5, leadGap)) ** 2 : 0);
     // ACC (Kesting·Treiber 2010): 앞으로 끼어든 차가 더 빠르거나 조금만 느리면 IDM처럼 급히 밟지 않고,

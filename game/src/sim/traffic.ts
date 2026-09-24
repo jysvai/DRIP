@@ -149,7 +149,7 @@ export class Traffic {
   private typeWeights: { idx: number; w: number }[] = [];
   private categoryWeights: [string, number][] = [];
   private byLane = new Map<number, Agent[]>();
-  private playerInfo: { s: number; v: number; len: number; lanes: number[] } | null = null;
+  private playerInfo: { s: number; v: number; len: number; lanes: number[]; d: number; w: number } | null = null;
 
   constructor(
     private road: Road,
@@ -352,7 +352,7 @@ export class Traffic {
       const lanes = new Set<number>();
       lanes.add(road.laneOf(player.d - player.width / 2 + 0.2, player.s));
       lanes.add(road.laneOf(player.d + player.width / 2 - 0.2, player.s));
-      this.playerInfo = { s: player.s, v: player.v, len: player.len, lanes: [...lanes] };
+      this.playerInfo = { s: player.s, v: player.v, len: player.len, lanes: [...lanes], d: player.d, w: player.width };
     } else {
       this.playerInfo = null;
     }
@@ -379,7 +379,9 @@ export class Traffic {
       }
     }
     const p = this.playerInfo;
-    if (includePlayer && p && !a.opposite && p.lanes.includes(lane) && p.s > s) {
+    // 차로 번호가 어긋나도 (교차로 곡선에서 차도 밖에 남은 플레이어 등) 옆으로 겹치면 앞차로 본다
+    const overlap = p && lane === a.lane && Math.abs(p.d - a.d) < (p.w + a.width) / 2 + 0.2;
+    if (includePlayer && p && !a.opposite && (p.lanes.includes(lane) || overlap) && p.s > s) {
       const gap = p.s - p.len / 2 - (s + a.len / 2);
       if (gap < best.gap) best = { gap, v: p.v, isPlayer: true };
     }
@@ -599,13 +601,15 @@ export class Traffic {
       const fol = this.followerOf(a, tl, a.s, true);
       if (lead.gap < a.s0 * 0.5 || fol.gap < 2) continue;
       const aNew = idm(a.v, v0, lead.gap, a.v - lead.v, a);
+      // 끝나는 차로 맨 앞에 서 버린 차는 지퍼식으로 끼어든다 (뒤차가 세게 줄여 준다고 본다)
+      const zipper = endAhead < 15 && a.v < 1 && fol.gap > 4;
       let followerLoss = 0;
       if (fol.agent) {
         const f = fol.agent;
         const fv0 = this.desiredSpeed(f, f.s);
         const before = this.accelIn(f, tl, f.s, fv0);
         const after = idm(f.v, fv0, fol.gap, f.v - a.v, f);
-        if (after < -a.safeDecel) continue;
+        if (after < -a.safeDecel * (zipper ? 2 : 1)) continue;
         followerLoss = after - before;
       } else if (fol.isPlayer && fol.gap < 6 + Math.max(0, fol.v - a.v) * 1.5) {
         continue;

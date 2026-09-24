@@ -228,7 +228,7 @@ export class Road {
     if (zUnit >= 0.05) {
       const zw = Math.max(1, Math.round(Z_SMOOTH / f.step));
       for (let pass = 0; pass < 2; pass++) boxSmooth(this.z, zw);
-    }
+    } else easeKinks(this.z, f.step);
     this.gradeAt = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       const a = Math.max(0, i - 1);
@@ -390,9 +390,16 @@ export class Road {
     return this.width[i] + (this.width[i + 1] - this.width[i]) * (f - i);
   }
 
-  /** lane: 1이 가장 왼쪽 차로 */
+  /**
+   * lane: 1이 가장 왼쪽 차로. 시내 갈라지기·합치기 곡선에서는 차도 안에 둔다: 차도가 좁아지는 동안
+   * 없어지는 쪽 차로(오른쪽 갈래로 가는 차)는 연석으로 밀려나지 않고 좁아지는 차도를 따라 들어온다
+   */
   laneCenter(lane: number, s: number): number {
-    return -this.widthAt(s) / 2 + (lane - 0.5) * this.laneWidth;
+    const w = this.widthAt(s);
+    const d = -w / 2 + (lane - 0.5) * this.laneWidth;
+    if (!this.box || this.box[this.index(s)] !== 2) return d;
+    const edge = Math.max(0, w / 2 - this.laneWidth / 2);
+    return Math.max(-edge, Math.min(edge, d));
   }
 
   /** d가 속한 차로 번호 (차도 밖이면 0 또는 lanes+1) */
@@ -444,12 +451,13 @@ export class Road {
       const left = opp > 0 && !this.hardMedianAt(at) ? -ww / 2 - this.medianAt(at) - opp * this.laneWidth - 0.45 : -ww / 2 - 0.35;
       return [left, right];
     };
-    if (!this.inBox(s)) {
+    // 갈라지기·합치기 곡선도 교차로처럼 연석을 열어 둔다 (갈래 차도가 겹쳐 그려지는 곳이라 경로 폭으로 막으면 없는 연석에 부딪힌다)
+    if (!this.inJunction(s)) {
       // 교차로 바로 앞뒤: 모서리를 돌아 나가는 곳이라 조금씩 넓힌다
       let near = Infinity;
       for (let k = 1; k <= 3; k++) {
-        if (this.inBox(s + k * 2)) near = Math.min(near, k * 2);
-        if (this.inBox(s - k * 2)) near = Math.min(near, k * 2);
+        if (this.inJunction(s + k * 2)) near = Math.min(near, k * 2);
+        if (this.inJunction(s - k * 2)) near = Math.min(near, k * 2);
       }
       const [l, r] = curb(s);
       if (near === Infinity) return [l, r];
@@ -570,6 +578,32 @@ function lerpPoints(r: [number, number][] | undefined, s: number): number {
 }
 
 /** 앞뒤 w점 이동 평균 (양 끝은 있는 점만) */
+/**
+ * 시내 경로 높이: 교차로 바닥과 나가는 도로가 만나는 곳처럼 기울기가 갑자기 꺾이는 곳만 풀어 준다.
+ * 그린 차도에서 20cm 넘게 뜨거나 가라앉지 않게 (차 높이는 그린 차도 높이를 따른다)
+ */
+export function easeKinks(z: Float64Array, step: number, maxDev = 0.2) {
+  const n = z.length;
+  if (n < 5) return;
+  const orig = Float64Array.from(z);
+  // 2m 간격에서 기울기 변화 3cm (50km/h로 약 1.5m/s²) 넘는 곳
+  const lim = 0.03 * (step / 2) ** 2;
+  for (let pass = 0; pass < 60; pass++) {
+    let moved = false;
+    for (let i = 1; i + 1 < n; i++) {
+      const d2 = z[i - 1] - 2 * z[i] + z[i + 1];
+      if (Math.abs(d2) <= lim) continue;
+      const want = z[i] + 0.25 * (d2 - Math.sign(d2) * lim);
+      const next = Math.max(orig[i] - maxDev, Math.min(orig[i] + maxDev, want));
+      if (Math.abs(next - z[i]) > 1e-4) {
+        z[i] = next;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
 function boxSmooth(v: Float64Array, w: number) {
   const n = v.length;
   if (n < 3) return;

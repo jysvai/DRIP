@@ -20,6 +20,22 @@ describe("서울 시내 도로망", () => {
     expect(real.length).toBeGreaterThan(1000);
   });
 
+  it("곧게 갈라지는 곳은 갈래가 놓인 쪽 차로에서 나간다 (오른쪽 램프는 오른쪽 차로)", () => {
+    let splits = 0;
+    for (const j of net.junctions) {
+      for (const i of j.inbound) {
+        const ss = j.movements.map((id) => net.movements[id]).filter((m) => m.from === i && m.turn === "S");
+        if (ss.length < 2) continue;
+        splits++;
+        ss.sort((a, b) => b.angle - a.angle);
+        const n = net.links[i].lanes;
+        expect(ss[0].fromLanes[0]).toBe(1);
+        expect(ss[ss.length - 1].fromLanes[1]).toBe(n);
+      }
+    }
+    expect(splits).toBeGreaterThan(100);
+  });
+
   it("강동역 → 삼원타워 길을 찾아 한 줄 도로로 만든다", () => {
     const a = searchCityPlaces(graph.places, "강동역")[0];
     const b = searchCityPlaces(graph.places, "삼원타워")[0];

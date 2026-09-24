@@ -97,6 +97,8 @@ interface Free {
   ghost: boolean;
   /** 플레이어와 맞닿은 채 둘 다 서 버려서, 플레이어도 무시하고 먼저 빠져나간다 */
   letGo: boolean;
+  /** 교차로를 넘은 뒤 플레이어 때문에 둘 다 서 있은 시간 (s) */
+  playerWait: number;
 }
 
 /** 부딪힘을 볼 몸체 (도로망 좌표) */
@@ -153,6 +155,7 @@ export class CityTraffic implements TrafficCity {
     }
   >();
   private lastS = new Map<Agent, number>();
+  private boxStuck = new Map<Agent, number>();
   private primed = new Set<number>();
   private lanePolys = new Map<string, { pts: Poly; cum: Float64Array }>();
   private bodies: Body[] = [];
@@ -168,6 +171,10 @@ export class CityTraffic implements TrafficCity {
    * 이 차로의 차는 차로가 끝나는 것이 아니라 그 갈래로 빠져나간다 (예: 3차로 중 1차로만 고가로 올라가는 곳)
    */
   private splits = new Map<number, Map<number, Movement>>();
+  /** 갈림길에서 경로가 가는 이동 (경로 링크 번호 → 이동) */
+  private splitMv = new Map<number, Movement>();
+  /** 차로 번호를 나갈 도로 것으로 바꾸는 곳: 교차로·갈림길 곡선 가운데 s와 그 이동 (s 순) */
+  private remaps: { mid: number; mv: Movement }[] = [];
 
   constructor(
     private net: CityNet,
@@ -190,6 +197,7 @@ export class CityTraffic implements TrafficCity {
       const from = net.movementsFrom(c.links[i][2]);
       const mv = from.find((m) => m.to === c.links[i + 1][2]);
       if (!mv || !net.junctions[mv.junction].minor) continue;
+      this.splitMv.set(i, mv);
       const lanes = new Map<number, Movement>();
       for (let lane = 1; lane <= net.links[c.links[i][2]].lanes; lane++) {
         if (inLanes(lane, mv.fromLanes)) continue;
@@ -198,6 +206,15 @@ export class CityTraffic implements TrafficCity {
       }
       if (lanes.size) this.splits.set(i, lanes);
     }
+    for (const st of this.stops) this.remaps.push({ mid: (st.s + st.sExit) / 2, mv: net.movements[st.movement] });
+    // 갈림길 곡선도: 오른쪽으로 빠지는 갈래로 가는 3차로는 나갈 도로 1차로가 된다
+    for (const [bs0, bs1, , minor] of c.boxes) {
+      if (!minor) continue;
+      const i = this.routeLinks.findIndex((e) => Math.abs(e[1] - bs0) < 0.5);
+      const mv = this.splitMv.get(i);
+      if (mv) this.remaps.push({ mid: (bs0 + bs1) / 2, mv });
+    }
+    this.remaps.sort((a, b) => a.mid - b.mid);
   }
 
   /** s가 든 경로 링크 번호 (링크 뒤 교차로 곡선도 그 링크 것으로) */
@@ -214,6 +231,18 @@ export class CityTraffic implements TrafficCity {
   }
 
   // ---------------- 경로 차에 알려 주는 것 ----------------
+
+  /** 곡선 가운데가 s보다 뒤인 첫 차로 번호 바꾸는 곳 */
+  private remapIndex(s: number): number {
+    let lo = 0;
+    let hi = this.remaps.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.remaps[mid].mid <= s) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
 
   /** 정지선이 s 이상인 첫 교차로 번호 */
   private stopIndex(s: number): number {
@@ -399,9 +428,10 @@ export class CityTraffic implements TrafficCity {
     for (let ds = 0; ds <= lim; ds += 25) {
       const at = Math.min(road.length - 1, s + ds);
       if (road.lanesAt(at) >= lane) continue;
-      // 갈림길 곡선에서 줄어드는 차로가 다른 갈래로 가면 끝나는 것이 아니다 (거기서 빠져나간다)
+      // 갈림길 곡선에서 줄어드는 차로가 다른 갈래로 가면 (거기서 빠져나간다) 또는 경로 갈래로 이어지면 (곡선 가운데에서 번호가 바뀐다) 끝나는 것이 아니다
       const i = this.routeIndex(at);
-      if (at > this.routeLinks[i][1] && this.splits.get(i)?.has(lane)) return Infinity;
+      const mv = this.splitMv.get(i);
+      if (at > this.routeLinks[i][1] && (this.splits.get(i)?.has(lane) || (mv && inLanes(lane, mv.fromLanes)))) return Infinity;
       return ds;
     }
     if (st && st.s - s < 600) {
@@ -502,11 +532,32 @@ export class CityTraffic implements TrafficCity {
   // ---------------- 한 걸음 ----------------
 
   update(dt: number, time: number, player: PlayerBody) {
+    this.unjam(dt);
     this.remapLanes();
     this.leaveRoute();
     this.leaveAtSplits();
     this.feed(dt, player.s);
     this.stepFree(dt, time, player);
+  }
+
+  /**
+   * 교차로·갈림길 곡선 안에 25초 넘게 서 있는 경로 차는 뺀다 (어떤 이유로든 서로 기다리는 교착이 나도 길이 영영 막히지 않게).
+   * 곡선 밖 신호 대기 줄은 건드리지 않는다
+   */
+  private unjam(dt: number) {
+    const road = this.road;
+    for (const a of this.traffic.agents) {
+      if (a.parked || a.opposite) continue;
+      if (a.v < 0.3 && road.inJunction(Math.max(0, Math.min(road.length - 1, a.s)))) {
+        const t = (this.boxStuck.get(a) ?? 0) + dt;
+        this.boxStuck.set(a, t);
+        if (t > 25) a.gone = true;
+      } else if (this.boxStuck.size) this.boxStuck.delete(a);
+    }
+    if (this.boxStuck.size > 200) {
+      const live = new Set(this.traffic.agents);
+      for (const a of this.boxStuck.keys()) if (!live.has(a)) this.boxStuck.delete(a);
+    }
   }
 
   /** 교차로 곡선 가운데를 지나면 차로 번호를 나갈 도로 것으로 (예: 편도 4차로 끝 차로에서 우회전 → 나갈 도로 2차로) */
@@ -516,12 +567,9 @@ export class CityTraffic implements TrafficCity {
       const prev = this.lastS.get(a);
       this.lastS.set(a, a.s);
       if (prev === undefined || a.s <= prev) continue;
-      for (let k = this.stopIndex(prev - 150); k < this.stops.length; k++) {
-        const st = this.stops[k];
-        const mid = (st.s + st.sExit) / 2;
-        if (mid <= prev) continue;
+      for (let k = this.remapIndex(prev); k < this.remaps.length; k++) {
+        const { mid, mv } = this.remaps[k];
         if (mid > a.s) break;
-        const mv = this.net.movements[st.movement];
         const lane = Math.max(
           mv.toLanes[0],
           Math.min(mv.toLanes[1], mv.toLanes[0] + (a.lane - mv.fromLanes[0])),
@@ -815,6 +863,7 @@ export class CityTraffic implements TrafficCity {
       stuck: 0,
       ghost: false,
       letGo: false,
+      playerWait: 0,
     };
     this.poseOf(car);
     return car;
@@ -920,7 +969,8 @@ export class CityTraffic implements TrafficCity {
       const a = f.a;
       let gap = Infinity;
       let vl = 0;
-      if (f.ghost && f.u > f.mvEnd + a.len) f.ghost = false;
+      let byPlayer = false;
+      if (f.ghost && !f.letGo && f.u > f.mvEnd + a.len) f.ghost = false;
       for (const b of bodies) {
         if (
           b.ref === a ||
@@ -971,6 +1021,7 @@ export class CityTraffic implements TrafficCity {
         if (g < gap) {
           gap = g;
           vl = Math.max(0, b.v * (b.hx * f.hx + b.hy * f.hy));
+          byPlayer = b.ref === "player";
         }
       }
       // 같은 접근로 차로의 앞차: 길이 꺾여 있어도 정지선까지 남은 거리로 본다
@@ -990,6 +1041,7 @@ export class CityTraffic implements TrafficCity {
           if (g < gap) {
             gap = g;
             vl = o.a.v;
+            byPlayer = false;
           }
         }
       }
@@ -1010,6 +1062,7 @@ export class CityTraffic implements TrafficCity {
           if (g < gap) {
             gap = g;
             vl = o.a.v;
+            byPlayer = false;
           }
         }
       }
@@ -1028,6 +1081,7 @@ export class CityTraffic implements TrafficCity {
           if (g < gap) {
             gap = g;
             vl = 0;
+            byPlayer = false;
           }
         }
       }
@@ -1047,7 +1101,14 @@ export class CityTraffic implements TrafficCity {
       if (f.committed && f.u < f.mvEnd && a.v < 0.3) {
         f.stuck += dt;
         if (f.stuck > GRIDLOCK_SEC) f.ghost = true;
+        // 그래도 못 빠져나가면 (정지선의 플레이어와 서로 기다리는 교착) 플레이어도 보지 않고, 끝내 서 있으면 지운다
+        if (f.stuck > GRIDLOCK_SEC * 2) f.letGo = true;
       } else if (a.v > 1) f.stuck = 0;
+      // 교차로에 들어간 뒤 서 있는 플레이어와 코를 맞댄 채 서로 기다리면 6초 뒤 먼저 비켜 간다
+      if (f.committed && byPlayer && a.v < 0.3 && player.v < 0.5) {
+        f.playerWait += dt;
+        if (f.playerWait > 6) f.letGo = f.ghost = true;
+      } else f.playerWait = 0;
       // 방향지시등: 교차로 40m 앞부터 곡선을 다 돌 때까지
       a.signal =
         f.turn !== "S" && front > f.mvStart - 40 && f.u < f.mvEnd
@@ -1063,7 +1124,7 @@ export class CityTraffic implements TrafficCity {
       const f = this.cars[i];
       const far = (f.x - player.x) ** 2 + (f.y - player.y) ** 2 > 450 * 450;
       const handed = !!f.handoff && f.u > f.mvEnd + 3 && this.handOff(f);
-      if (handed || far || f.u >= f.path.len - f.a.len / 2) {
+      if (handed || far || f.u >= f.path.len - f.a.len / 2 || f.stuck > GRIDLOCK_SEC * 4) {
         this.cars.splice(i, 1);
         if (!handed) f.a.pose = null;
         removed = true;

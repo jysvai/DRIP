@@ -432,8 +432,50 @@ export class CityNet {
           this.movements.push(mv);
           j.movements.push(mv.id);
         }
+        this.splitLanes(j, i);
+        this.coverLanes(j, i);
       }
     }
+  }
+
+  /**
+   * 어느 이동에도 들지 않는 차로가 없게: 예를 들어 편도 4차로에서 직진이 1~2차로, 우회전이 4차로면 3차로 차는
+   * 갈 곳이 없어 정지선에서 끝없이 옆 차로를 기다린다. 가장 가까운 이동(같으면 직진)에 붙인다
+   */
+  private coverLanes(j: Junction, inbound: number) {
+    const mvs = j.movements.map((id) => this.movements[id]).filter((m) => m.from === inbound);
+    if (!mvs.length) return;
+    const n = this.links[inbound].lanes;
+    for (let lane = 1; lane <= n; lane++) {
+      if (mvs.some((m) => lane >= m.fromLanes[0] && lane <= m.fromLanes[1])) continue;
+      let best = mvs[0];
+      let bestD = Infinity;
+      for (const m of mvs) {
+        const d = lane < m.fromLanes[0] ? m.fromLanes[0] - lane : lane - m.fromLanes[1];
+        const score = d + (m.turn === "S" ? 0 : 0.5);
+        if (score < bestD) {
+          bestD = score;
+          best = m;
+        }
+      }
+      best.fromLanes = [Math.min(best.fromLanes[0], lane), Math.max(best.fromLanes[1], lane)];
+    }
+  }
+
+  /**
+   * 한 도로가 곧게 여러 갈래로 나뉘면(램프가 오른쪽으로 빠지는 곳 등) 갈래마다 놓인 쪽의 차로에서 나간다:
+   * 가장 왼쪽 갈래는 왼쪽 차로부터, 가장 오른쪽 갈래는 오른쪽 차로까지, 가운데는 그 사이
+   */
+  private splitLanes(j: Junction, inbound: number) {
+    const straight = j.movements.map((id) => this.movements[id]).filter((m) => m.from === inbound && m.turn === "S");
+    if (straight.length < 2) return;
+    straight.sort((a, b) => b.angle - a.angle);
+    const n = this.links[inbound].lanes;
+    straight.forEach((m, rank) => {
+      const k = m.fromLanes[1] - m.fromLanes[0] + 1;
+      const first = 1 + Math.round((rank / (straight.length - 1)) * (n - k));
+      m.fromLanes = [first, first + k - 1];
+    });
   }
 
   /** 링크에서 나갈 수 있는 이동 */
