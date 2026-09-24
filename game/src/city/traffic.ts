@@ -101,6 +101,8 @@ interface Free {
   playerWait: number;
   /** 정지선에 닿기 전 다른 차에 막혀 서 있은 시간 */
   idle: number;
+  /** 이번 걸음에 속도를 정한 것 (검수용): 앞 몸체, 같은 차로 앞차, 합류하는 플레이어, 신호·교차로 막힘 */
+  by: string;
 }
 
 /** 부딪힘을 볼 몸체 (도로망 좌표) */
@@ -567,9 +569,69 @@ export class CityTraffic implements TrafficCity {
     return Infinity;
   }
 
+  /** crossGap이 찾은 차의 (내 길 방향) 속도 */
+  crossGapV = 0;
+  private corridor: { x: number; y: number; hx: number; hy: number; at: number }[] = [];
+
+  /**
+   * 자동 운전: 앞으로 2초 동안 경로 밖 차가 갈 길을 0.5초마다 짚어, 그 차가 내 차로(경로 도로 lane 차로 range m 앞까지) 폭에 걸리는 첫 곳까지 간격.
+   * 교차로에서 돌아 나와 비스듬히 내 차로로 넘어오는 차처럼 거의 나란히 가다 들어오는 차는 yieldGap(엇갈리는 각이 15° 넘는 차)이 못 본다.
+   * 내가 거기 닿을 때(vs: 길 따라 나아가는 빠르기) 벌써 지나가 있을 차는 보지 않는다. 정지선 앞에 선 차는 신호를 지키므로 보지 않는다
+   */
+  crossGap(s: number, lane: number, len: number, width: number, vs: number, range = 40): number {
+    if (!this.cars.length) return Infinity;
+    const road = this.road;
+    const cor = this.corridor;
+    cor.length = 0;
+    for (let x = len / 2 + 1; x <= range; x += 2) {
+      const ss = s + x;
+      if (ss >= road.length - 1) break;
+      const w = road.toWorld(ss, road.laneCenter(Math.max(1, Math.min(lane, road.lanesAt(ss))), ss), this.tw);
+      cor.push({ x: w.e - this.ox, y: w.n - this.oy, hx: Math.cos(w.heading), hy: Math.sin(w.heading), at: x });
+    }
+    if (!cor.length) return Infinity;
+    const c0 = cor[0];
+    let best = Infinity;
+    for (const f of this.cars) {
+      if (f.ghost || (!f.committed && f.a.v < 0.5)) continue;
+      if ((f.x - c0.x) ** 2 + (f.y - c0.y) ** 2 > (range + 25) ** 2) continue;
+      const a = f.a;
+      // 통째로 내 뒤에 있는 차는 뒤차 몫이다
+      if ((f.x - c0.x) * c0.hx + (f.y - c0.y) * c0.hy < -len - a.len / 2) continue;
+      for (let k = 1; k <= 4; k++) {
+        const t = 0.5 * k;
+        const u = f.u + a.len / 2 + Math.max(1, a.v * t);
+        if (u > f.path.len) break;
+        const q = this.onPath(f.path, u, this.q2);
+        let hit: (typeof cor)[number] | null = null;
+        for (const c of cor) {
+          const rx = q.x - c.x;
+          const ry = q.y - c.y;
+          if (Math.abs(rx * c.hx + ry * c.hy) > 1.2) continue;
+          if (Math.abs(ry * c.hx - rx * c.hy) < (width + a.width) / 2 + 0.2) {
+            hit = c;
+            break;
+          }
+        }
+        if (!hit) continue;
+        // 그 차가 내 차로를 빠져나가는 때보다 내가 한참 뒤에 닿으면 (벌써 지나가 있다) 보지 않는다
+        const clear = t + (a.len + width) / Math.max(1, a.v);
+        if (hit.at / Math.max(1, vs) > clear + 0.5) break;
+        const g = Math.max(0.1, hit.at - len / 2 - 1);
+        if (g < best) {
+          best = g;
+          this.crossGapV = a.v * (q.tx * hit.hx + q.ty * hit.hy);
+        }
+        break;
+      }
+    }
+    return best;
+  }
+
   /**
    * 자동 운전: 교차로에 이미 들어간 차(늦게 건너는 화물차 등)와 길이 엇갈리면 만나는 곳 앞까지 간격.
    * 내가 닿기 전에 상대가 다 지나가면 보지 않는다. 나도 들어갔으면 만나는 곳에 먼저 닿는 쪽이 간다 (자유 차와 같은 규칙).
+   * 아직 안 들어갔어도 통째로 내 뒤에서 오며 나보다 늦게 닿는 차는 보지 않는다.
    * 아직 들어가지 않은 차는 신호를 지키므로 보지 않는다
    */
   yieldGap(
@@ -599,6 +661,9 @@ export class CityTraffic implements TrafficCity {
       const tm = arrive(t - mine, v);
       // 상대 꽁무니가 만나는 곳을 빠져나가는 때 (지금 속도, 적어도 2m/s로 본다)
       if (tm > (s + theirs) / Math.max(2, f.a.v) + 0.5) continue;
+      // 통째로 내 뒤에서 비스듬히 따라오다 나보다 늦게 닿는 차는 그 차가 기다린다
+      // (갈라지기 곡선을 막 지난 곳은 옆 도로 차도와 겹쳐, 곧게 늘인 두 길이 내 앞에서 만나는 것처럼 보인다)
+      if (!entered && rx * hx + ry * hy + (f.a.len / 2) * (f.hx * hx + f.hy * hy) < -len / 2 && arrive(s - theirs, f.a.v) > tm + 0.5) continue;
       if (entered && Math.abs(s) >= theirs) {
         const tb = arrive(s - theirs, f.a.v);
         if (f.a.v < 0.5 || !(tb < tm - 0.3 || (Math.abs(tb - tm) <= 0.3 && x > f.x))) continue;
@@ -685,7 +750,7 @@ export class CityTraffic implements TrafficCity {
       const e = this.routeLinks[i];
       if (front < e[1] - 1 || front > e[1] + 6) continue;
       const alt = this.splits.get(i)?.get(a.lane);
-      if (!alt || this.cars.length >= MAX_FREE) continue;
+      if (!alt) continue;
       const back = 8;
       const l = this.net.links[e[2]];
       const car = this.makeFree(a, alt, a.lane, l.length - l.stopDist - back, a.v, -1);
@@ -700,16 +765,27 @@ export class CityTraffic implements TrafficCity {
     if (out) this.traffic.agents = this.traffic.agents.filter((a) => !out!.has(a));
   }
 
-  /** 경로를 벗어나기로 한 차가 정지선을 넘으면 자유 차로 */
+  /**
+   * 경로를 벗어나기로 한 차가 정지선을 넘으면 자유 차로. 경로로 돌 수 없는 차로에서 차로를 옮기다 만 채 정지선을 넘은 차도
+   * 지금 차로에서 갈 수 있는 쪽으로 보낸다 (경로를 따라 돌면 곡선 가운데에서 나갈 도로 차로로 옮겨지며 옆 차로를 가로지른다).
+   * 경로 차가 자유 차로 바뀔 뿐이라 자유 차 수 상한은 보지 않는다
+   */
   private leaveRoute() {
     let out: Set<Agent> | null = null;
     for (const a of this.traffic.agents) {
       if (a.parked) continue;
-      const f = this.fates.get(a);
-      if (!f || !f.leave || f.lane !== a.lane) continue;
+      let f = this.fates.get(a);
+      if (!f) continue;
       const front = a.s + a.len / 2;
       if (front < f.st.s || front > f.st.s + 6) continue;
-      if (this.cars.length >= MAX_FREE) continue;
+      if (f.lane !== a.lane && !inLanes(a.lane, f.st.lanes)) {
+        a.targetLane = a.lane;
+        a.lcProgress = 0;
+        a.pendingLane = 0;
+        a.signal = 0;
+        f = this.fate(a, f.st);
+      }
+      if (!f.leave || f.lane !== a.lane) continue;
       const back = 8;
       const l = this.net.links[f.st.link];
       const car = this.makeFree(
@@ -945,6 +1021,7 @@ export class CityTraffic implements TrafficCity {
       ghost: false,
       letGo: false,
       playerWait: 0,
+      by: "",
       idle: 0,
     };
     this.poseOf(car);
@@ -1152,6 +1229,7 @@ export class CityTraffic implements TrafficCity {
           vl = Math.max(0, b.v * (b.hx * f.hx + b.hy * f.hy));
           byPlayer = b.ref === "player";
           byBody = true;
+          f.by = b.ref === "player" ? "player" : `body:${(b.ref as Agent).type.id}`;
         }
       }
       // 같은 접근로 차로의 앞차: 길이 꺾여 있어도 정지선까지 남은 거리로 본다
@@ -1173,6 +1251,7 @@ export class CityTraffic implements TrafficCity {
             vl = o.a.v;
             byPlayer = false;
             byBody = false;
+            f.by = `queue:${o.a.type.id}`;
           }
         }
       }
@@ -1195,6 +1274,7 @@ export class CityTraffic implements TrafficCity {
             vl = o.a.v;
             byPlayer = false;
             byBody = false;
+            f.by = `merge:${o.a.type.id}`;
           }
         }
       }
@@ -1206,6 +1286,7 @@ export class CityTraffic implements TrafficCity {
           vl = Math.max(0, player.v * (player.hx * f.hx + player.hy * f.hy));
           byPlayer = true;
           byBody = true;
+          f.by = "meets";
         }
       }
       // 정지선.파란불이어도 건너편 나갈 자리가 막혀 있으면 들어가지 않는다 (교차로를 막지 않게)
@@ -1225,9 +1306,11 @@ export class CityTraffic implements TrafficCity {
             vl = 0;
             byPlayer = false;
             byBody = false;
+            f.by = "stop";
           }
         }
       }
+      if (gap === Infinity) f.by = "";
       // 원하는 속도: 교차로 곡선에서는 회전 속도로 (25m 앞부터 줄인다)
       const front = f.u + a.len / 2;
       let v0 = f.v0;
